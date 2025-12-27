@@ -5,3 +5,4 @@ requests
 ta
 python-dateutil
 pytz
+flask

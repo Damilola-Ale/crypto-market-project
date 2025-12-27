@@ -16,6 +16,8 @@ open_positions.json
 
 # Deprecated
 _execution_engine.py
+strategy/
+_risk.py
 
 # Editor / OS
 .vscode/
