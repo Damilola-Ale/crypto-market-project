@@ -1,11 +1,6 @@
-# execution/notifier.py
 import requests
 import os
 from typing import Optional
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")     # or import from config/settings.py
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 class TelegramNotifier:
     def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
@@ -26,9 +21,6 @@ class TelegramNotifier:
         stop_loss: Optional[float] = None,
         trade_quality: Optional[float] = None
     ):
-        """
-        Sends a formatted trade signal to Telegram.
-        """
         if direction == 1:
             dir_text = "LONG 📈"
         elif direction == -1:
@@ -51,11 +43,8 @@ class TelegramNotifier:
             "parse_mode": "Markdown"
         }
 
-        try:
-            response = requests.post(self.api_url, data=payload, timeout=10)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"[TelegramNotifier] Failed to send message for {symbol}: {e}")
+        response = requests.post(self.api_url, json=payload, timeout=10)
+        response.raise_for_status()
 
     def send_text(self, message: str):
         payload = {

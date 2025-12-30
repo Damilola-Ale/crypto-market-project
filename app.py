@@ -20,10 +20,8 @@ def run():
 @app.route("/test-telegram")
 def test_telegram():
     notifier = TelegramNotifier()
-    notifier.send_signal("✅ Telegram connected to Render successfully")
+    notifier.send_text("✅ Telegram connected to Render successfully")
     return {"status": "telegram_test_sent"}, 200
-
-import os
 
 @app.route("/debug-env")
 def debug_env():
@@ -31,7 +29,6 @@ def debug_env():
         "BOT": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
         "CHAT": bool(os.getenv("TELEGRAM_CHAT_ID"))
     }
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
