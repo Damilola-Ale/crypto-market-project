@@ -9,11 +9,13 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessag
 
 class TelegramNotifier:
     def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
-        self.bot_token = bot_token or TELEGRAM_BOT_TOKEN
-        self.chat_id = chat_id or TELEGRAM_CHAT_ID
-        self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+
         if not self.bot_token or not self.chat_id:
             raise ValueError("Telegram bot token and chat ID must be set.")
+
+        self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
 
     def send_signal(
         self,
@@ -54,3 +56,11 @@ class TelegramNotifier:
             response.raise_for_status()
         except Exception as e:
             print(f"[TelegramNotifier] Failed to send message for {symbol}: {e}")
+
+    def send_text(self, message: str):
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message
+        }
+        response = requests.post(self.api_url, json=payload, timeout=10)
+        response.raise_for_status()
