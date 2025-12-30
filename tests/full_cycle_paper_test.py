@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from strategy.account_state import account_state
 from strategy.lifecycle import PositionManager
-from strategy.risk import compute_risk
+from strategy._risk import compute_risk
 from execution.candle_gate import is_new_candle
 
 # ==========================================================

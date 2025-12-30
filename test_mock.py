@@ -74,14 +74,14 @@ class MockTelegramNotifier:
 # Test Runner
 # -------------------------------------------------
 def test_execution_engine():
-    import execution_engine
+    import _execution_engine
     from indicators.indicators import generate_signal
     from execution.signal_store import SignalStore
 
     # Patch dependencies
-    execution_engine.update_symbol = mock_update_symbol
-    execution_engine.TelegramNotifier = lambda: MockTelegramNotifier()
-    execution_engine.SignalStore = SignalStore
+    _execution_engine.update_symbol = mock_update_symbol
+    _execution_engine.TelegramNotifier = lambda: MockTelegramNotifier()
+    _execution_engine.SignalStore = SignalStore
 
     # Patch generate_signal to FORCE a signal on last candle
     original_generate_signal = generate_signal
@@ -93,10 +93,10 @@ def test_execution_engine():
         df.loc[df.index[-1], "trade_quality"] = 0.75
         return df
 
-    execution_engine.generate_signal = patched_generate_signal
+    _execution_engine.generate_signal = patched_generate_signal
 
     print("=== START MOCK EXECUTION ENGINE TEST ===")
-    execution_engine.run()
+    _execution_engine.run()
     print("=== END MOCK EXECUTION ENGINE TEST ===")
 
 
