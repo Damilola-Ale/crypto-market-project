@@ -1,6 +1,5 @@
 # execution/hourly_runner.py
 
-from strategy.account_state import account_state
 from data_pipeline.updater import update_symbol
 from indicators.indicators import generate_signal
 from strategy.lifecycle import PositionManager
@@ -46,8 +45,6 @@ def run_hourly():
                 print(f"[{symbol}] ⏭️ Same candle — skipped")
                 continue
 
-            gate.mark_candle(symbol, last_ts)
-
             # --------------------------------------------------
             # Generate signal (indicators expect deep history)
             # --------------------------------------------------
@@ -61,8 +58,10 @@ def run_hourly():
             # --------------------------------------------------
             event = pm.update(df, symbol)
 
+            gate.mark_candle(symbol, last_ts)
+
             if event:
-                print(f"[{symbol}] 📌 EVENT → {event['state']}")
+                print(f"[{symbol}] 📌 EVENT → {event}")
             else:
                 print(f"[{symbol}] ⚪ No action")
 
