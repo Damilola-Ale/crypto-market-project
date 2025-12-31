@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 import pandas as pd
 
+from execution.notifier import TelegramNotifier
 from strategy.account_state import account_state
 
 POSITIONS_DIR = "data/positions"
@@ -16,6 +17,7 @@ POSITION_EXPIRY_CANDLES = 48
 class PositionManager:
     def __init__(self):
         self.positions = {}
+        self.notifier = TelegramNotifier()  # 🔔 notifier initialized once
         os.makedirs(POSITIONS_DIR, exist_ok=True)
         self._load()
 
@@ -66,6 +68,15 @@ class PositionManager:
         self.positions[symbol] = position
         account_state.on_position_open()
         self._save()
+
+        # 🔔 TELEGRAM OPEN ALERT
+        self.notifier.send_text(
+            f"🚀 OPEN {symbol}\n"
+            f"Direction: {'LONG' if direction == 1 else 'SHORT'}\n"
+            f"Entry: {price}\n"
+            f"Time: {ts.isoformat()}"
+        )
+
         return position
 
     # --------------------------------------------------
@@ -86,6 +97,16 @@ class PositionManager:
 
         account_state.on_position_close(pnl)
         self._save()
+
+        # 🔔 TELEGRAM CLOSE ALERT
+        self.notifier.send_text(
+            f"❌ CLOSE {symbol}\n"
+            f"Reason: {reason}\n"
+            f"Exit: {price}\n"
+            f"PnL: {pnl:.2f}\n"
+            f"Time: {ts.isoformat()}"
+        )
+
         return position
 
     # --------------------------------------------------
@@ -102,7 +123,10 @@ class PositionManager:
         if int(row.get("final_signal", 0)) == -direction:
             return "OPPOSITE_SIGNAL"
 
-        age = (row.name - datetime.fromisoformat(pos["entry_time"])).total_seconds() / 3600
+        age = (
+            row.name - datetime.fromisoformat(pos["entry_time"])
+        ).total_seconds() / 3600
+
         if age >= POSITION_EXPIRY_CANDLES:
             return "TIME_EXPIRY"
 
