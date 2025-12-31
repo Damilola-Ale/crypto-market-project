@@ -1,6 +1,6 @@
 from flask import Flask, request, abort
 from execution.notifier import TelegramNotifier
-from execution.hourly_runner import run_hourly
+from execution.hourly_runner import run_hourly, SYMBOLS
 import os
 
 app = Flask(__name__)
