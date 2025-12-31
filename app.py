@@ -30,6 +30,22 @@ def debug_env():
         "CHAT": bool(os.getenv("TELEGRAM_CHAT_ID"))
     }
 
+@app.route("/debug-candles")
+def debug_candles():
+    from data_pipeline.updater import update_symbol
+    summary = {}
+    for symbol in SYMBOLS:
+        try:
+            df = update_symbol(symbol)
+            summary[symbol] = {
+                "candles": len(df),
+                "first": str(df.index[0]),
+                "last": str(df.index[-1])
+            }
+        except Exception as e:
+            summary[symbol] = {"error": str(e)}
+    return summary, 200
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
