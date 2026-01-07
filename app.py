@@ -46,8 +46,8 @@ def debug_candles():
             summary[symbol] = {"error": str(e)}
     return summary, 200
 
-@app.route("/debug/candles")
-def debug_candles():
+@app.route("/debug/candles", endpoint="debug_candles_state")
+def debug_candles_state():
     path = "data/last_candles.json"
     if not os.path.exists(path):
         return {"exists": False, "candles": {}}
@@ -58,17 +58,17 @@ def debug_candles():
             "candles": json.load(f)
         }
 
-@app.route("/debug/positions")
-def debug_positions():
+@app.route("/debug/positions", endpoint="debug_positions_state")
+def debug_positions_state():
     path = "data/positions/open_positions.json"
     if not os.path.exists(path):
-        return jsonify({"exists": False, "positions": {}})
+        return {"exists": False, "positions": {}}
 
     with open(path, "r") as f:
-        return jsonify({
+        return {
             "exists": True,
             "positions": json.load(f)
-        })
+        }
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
