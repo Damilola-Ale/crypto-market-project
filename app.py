@@ -1,4 +1,4 @@
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 from execution.notifier import TelegramNotifier
 from execution.hourly_runner import run_hourly, SYMBOLS
 import os
@@ -45,6 +45,30 @@ def debug_candles():
         except Exception as e:
             summary[symbol] = {"error": str(e)}
     return summary, 200
+
+@app.route("/debug/candles")
+def debug_candles():
+    path = "data/last_candles.json"
+    if not os.path.exists(path):
+        return {"exists": False, "candles": {}}
+
+    with open(path, "r") as f:
+        return {
+            "exists": True,
+            "candles": json.load(f)
+        }
+
+@app.route("/debug/positions")
+def debug_positions():
+    path = "data/positions/open_positions.json"
+    if not os.path.exists(path):
+        return jsonify({"exists": False, "positions": {}})
+
+    with open(path, "r") as f:
+        return jsonify({
+            "exists": True,
+            "positions": json.load(f)
+        })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
