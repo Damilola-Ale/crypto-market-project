@@ -1,5 +1,9 @@
 # execution/hourly_runner.py
 
+import os
+import json
+from datetime import datetime, timezone
+
 from data_pipeline.updater import update_symbol
 from indicators.indicators import generate_signal
 from strategy.lifecycle import PositionManager
@@ -24,6 +28,20 @@ TIMEFRAME = "1h"  # informational only
 def run_hourly():
     print("=== CRYPTO MARKET PROJECT :: HOURLY EXECUTION ===")
 
+    # --------------------------------------------------
+    # 🔒 GUARANTEE #1 — RUN HEARTBEAT
+    # --------------------------------------------------
+    os.makedirs("data", exist_ok=True)
+    with open("data/last_run.json", "w") as f:
+        json.dump(
+            {
+                "ran_at": datetime.now(timezone.utc).isoformat(),
+                "symbols": SYMBOLS,
+            },
+            f,
+            indent=2,
+        )
+
     pm = PositionManager()
     gate = CandleGate()
 
@@ -32,29 +50,27 @@ def run_hourly():
 
         try:
             # --------------------------------------------------
-            # Fetch & maintain LONG-HISTORY data (authoritative)
+            # Fetch authoritative history
             # --------------------------------------------------
             df = update_symbol(symbol)
-
-            # --------------------------------------------------
-            # Candle gate (single authority)
-            # --------------------------------------------------
             last_ts = df.index[-1]
 
-            if gate.is_same_candle(symbol, last_ts):
-                print(f"[{symbol}] ⏭️ Same candle — skipped")
+            # --------------------------------------------------
+            # Candle gate
+            # --------------------------------------------------
+            allowed, reason = gate.allow(symbol, last_ts)
+
+            if not allowed:
+                print(f"[{symbol}] ⏭️ Skipped → {reason}")
                 continue
 
             # --------------------------------------------------
-            # Generate signal (indicators expect deep history)
-            # --------------------------------------------------
-            # --------------------------------------------------
-            # Generate indicators + signals INTO df
+            # Generate indicators & signal
             # --------------------------------------------------
             df = generate_signal(df)
 
             # --------------------------------------------------
-            # Lifecycle decision (single authority)
+            # Lifecycle decision
             # --------------------------------------------------
             event = pm.update(df, symbol)
 

@@ -17,7 +17,7 @@ POSITION_EXPIRY_CANDLES = 48
 class PositionManager:
     def __init__(self):
         self.positions = {}
-        self.notifier = TelegramNotifier()  # 🔔 notifier initialized once
+        self.notifier = TelegramNotifier()
         os.makedirs(POSITIONS_DIR, exist_ok=True)
         self._load()
 
@@ -69,7 +69,6 @@ class PositionManager:
         account_state.on_position_open()
         self._save()
 
-        # 🔔 TELEGRAM OPEN ALERT
         self.notifier.send_text(
             f"🚀 OPEN {symbol}\n"
             f"Direction: {'LONG' if direction == 1 else 'SHORT'}\n"
@@ -98,7 +97,6 @@ class PositionManager:
         account_state.on_position_close(pnl)
         self._save()
 
-        # 🔔 TELEGRAM CLOSE ALERT
         self.notifier.send_text(
             f"❌ CLOSE {symbol}\n"
             f"Reason: {reason}\n"
