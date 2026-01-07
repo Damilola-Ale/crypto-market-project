@@ -32,6 +32,14 @@ class PositionManager:
 
         # ================= ENTRY =================
         if position is None:
+            if final_signal != 0:
+                print(
+                    f"[SIGNAL-DETECTED] {symbol} | "
+                    f"signal={final_signal} | "
+                    f"price={price} | "
+                    f"time={timestamp.isoformat()}"
+                )
+                
             if final_signal == 0:
                 return None
 
