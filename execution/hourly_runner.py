@@ -8,82 +8,137 @@ from data_pipeline.updater import update_symbol
 from indicators.indicators import generate_signal
 from strategy.lifecycle import PositionManager
 from execution.candle_gate import CandleGate
+from execution.notifier import TelegramNotifier
 
 SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "BNBUSDT",
-    "LINKUSDT",
-    "SOLUSDT",
-    "AVAXUSDT",
-    "ETCUSDT",
-    "VETUSDT",
+    "ZENUSDT", "EGLDUSDT", "BANDUSDT", "AVAXUSDT", "TRXUSDT",
+    "BTCUSDT", "LINKUSDT", "PAXGUSDT", "BCHUSDT", "LDOUSDT"
 ]
 
-TIMEFRAME = "1h"  # informational only
+SIGNAL_STORE = "data/signals.json"
 
 
 def run_hourly():
-    print("=== CRYPTO MARKET PROJECT :: HOURLY EXECUTION ===")
 
-    # --------------------------------------------------
-    # 🔒 GUARANTEE #1 — RUN HEARTBEAT
-    # --------------------------------------------------
+    print("\n==============================")
+    print("CRYPTO MARKET PROJECT EXECUTION")
+    print("==============================\n")
+
     os.makedirs("data", exist_ok=True)
+
+    # --------------------------------
+    # HEARTBEAT
+    # --------------------------------
     with open("data/last_run.json", "w") as f:
         json.dump(
             {
                 "ran_at": datetime.now(timezone.utc).isoformat(),
-                "symbols": SYMBOLS,
+                "symbols": SYMBOLS
             },
             f,
-            indent=2,
+            indent=2
         )
 
     pm = PositionManager()
     gate = CandleGate()
+    notifier = TelegramNotifier()
+
+    signals = []
 
     for symbol in SYMBOLS:
-        print(f"\n--- Processing {symbol} ---")
+
+        print(f"\n======= {symbol} =======")
 
         try:
-            # --------------------------------------------------
-            # Fetch authoritative history
-            # --------------------------------------------------
-            df = update_symbol(symbol)
+
+            # --------------------------------
+            # FETCH DATA
+            # --------------------------------
+            df, htf_df = update_symbol(symbol)
+
             last_ts = df.index[-1]
 
-            # --------------------------------------------------
-            # Candle gate
-            # --------------------------------------------------
+            print(f"[DATA] LTF candles: {len(df)}")
+            print(f"[DATA] HTF candles: {len(htf_df)}")
+
+            # --------------------------------
+            # CANDLE GATE
+            # --------------------------------
             allowed, reason = gate.allow(symbol, last_ts)
 
             if not allowed:
-                print(f"[{symbol}] ⏭️ Skipped → {reason}")
+                print(f"[GATE] skipped → {reason}")
                 continue
 
-            # --------------------------------------------------
-            # Generate indicators & signal
-            # --------------------------------------------------
-            df = generate_signal(df)
+            print("[GATE] new candle detected")
 
-            # --------------------------------------------------
-            # Lifecycle decision
-            # --------------------------------------------------
+            # --------------------------------
+            # SIGNAL GENERATION
+            # --------------------------------
+            df = generate_signal(df, htf_df)
+
+            latest = df.iloc[-1]
+
+            signal = int(latest.get("final_signal", 0))
+            price = float(latest["close"])
+
+            print(f"[SIGNAL] final_signal={signal}")
+
+            # --------------------------------
+            # STORE SIGNAL
+            # --------------------------------
+            signal_event = {
+                "symbol": symbol,
+                "timestamp": last_ts.isoformat(),
+                "price": price,
+                "signal": signal
+            }
+
+            signals.append(signal_event)
+
+            # --------------------------------
+            # TELEGRAM ALERT (signal detection)
+            # --------------------------------
+            if signal != 0:
+
+                notifier.send_signal(
+                    symbol=symbol,
+                    direction=signal,
+                    timestamp=last_ts.isoformat(),
+                    price=price,
+                    stop_loss=latest.get("stop_loss"),
+                    trade_quality=latest.get("ASYM_SCORE")
+                )
+
+                print("[TELEGRAM] signal alert sent")
+
+            # --------------------------------
+            # POSITION LIFECYCLE
+            # --------------------------------
             event = pm.update(df, symbol)
 
+            if event:
+                print(f"[POSITION] event → {event}")
+            else:
+                print("[POSITION] no change")
+
+            # --------------------------------
+            # MARK CANDLE
+            # --------------------------------
             gate.mark_candle(symbol, last_ts)
 
-            if event:
-                print(f"[{symbol}] 📌 EVENT → {event}")
-            else:
-                print(f"[{symbol}] ⚪ No action")
-
-            print(f"[{symbol}] ✅ OK | Candles: {len(df)}")
+            print(f"[{symbol}] COMPLETE")
 
         except Exception as e:
-            print(f"[{symbol}] ❌ FAILED → {e}")
 
-    print("\n=== EXECUTION CYCLE COMPLETE ===")
+            print(f"[ERROR] {symbol} → {e}")
+
+    # --------------------------------
+    # STORE SIGNAL HISTORY
+    # --------------------------------
+    with open(SIGNAL_STORE, "w") as f:
+        json.dump(signals, f, indent=2)
+
+    print("\nSignals stored:", len(signals))
+
+    print("\n=== EXECUTION COMPLETE ===\n")

@@ -2,407 +2,1016 @@ import pandas as pd
 import numpy as np
 
 # ==========================================================
-# Core Indicators
+# CORE UTILITIES
 # ==========================================================
-def SMA(df, period=20):
-    val = df['close'].rolling(period, min_periods=1).mean()
-    return val.bfill()
-
-def EMA(df, period=20):
-    val = df['close'].ewm(span=period, adjust=False).mean()
-    return val.bfill()
-
-def RSI(df, period=14):
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period, min_periods=1).mean()
-    avg_loss = loss.rolling(period, min_periods=1).mean()
-    rs = avg_gain / (avg_loss + 1e-8)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # neutral value
+def EMA(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
 def ATR(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.rolling(period, min_periods=1).mean()
-    return atr.bfill()
+    tr = np.maximum.reduce([
+        df['high'] - df['low'],
+        (df['high'] - df['close'].shift()).abs(),
+        (df['low'] - df['close'].shift()).abs()
+    ])
+    return pd.Series(tr, index=df.index).rolling(period).mean()
+
+def parkinson_vol(df, period=14):
+    hl_ratio = np.log(df['high'] / df['low'])
+    return (hl_ratio.pow(2).rolling(period).mean() / (4 * np.log(2))).pow(0.5)
+
+def RSI(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(period).mean() / loss.rolling(period).mean()
+    return 100 - (100 / (1 + rs))
 
 # ==========================================================
-# Multi-Timeframe Trend
+# TREND CONTEXT
 # ==========================================================
-def multi_tf_trend(df, periods={'4H':12,'Daily':48,'Weekly':336}, polarity_threshold=0.33):
-    scores = pd.Series(0.0, index=df.index)
-    for p in periods.values():
-        htf_close = df['close'].rolling(p, min_periods=1).mean()
-        htf_sma = htf_close.rolling(p, min_periods=1).mean()
-        trend = pd.Series(0, index=df.index)
-        trend[htf_close > htf_sma] = 1
-        trend[htf_close < htf_sma] = -1
-        scores += trend
-    scores /= len(periods)
-    df['HTF_Score'] = scores.fillna(0)
-    df['HTF_Polarized'] = (scores.abs() >= polarity_threshold).fillna(False)
+def trend_bias(df, window=50):
+
+    df['TREND_SLOPE'] = rolling_slope(df['close'], window)
+    df['TREND_R2'] = rolling_r2(df['close'], window)
+
+    # Combine direction + velocity + reliability
+    df['TREND_QUALITY'] = df['TREND_SLOPE'] * df['TREND_R2']
+
+    # Normalize to stable range (important)
+    scale = df['close'].rolling(window).std()
+    df['TREND_QUALITY'] = df['TREND_QUALITY'] / (scale + 1e-9)
+
     return df
 
 # ==========================================================
-# Volatility & Structure
+# WICK ANALYSIS
 # ==========================================================
-def atr_expansion(df, period=14):
-    atr = ATR(df, period)
-    atr_ma = atr.rolling(period, min_periods=1).mean()
-    df['ATR_Expansion'] = (atr / (atr_ma + 1e-8)).fillna(1)
-    return df
+def wick_rejection(df):
+    body = (df['close'] - df['open']).abs()
+    upper = df['high'] - df[['close', 'open']].max(axis=1)
+    lower = df[['close', 'open']].min(axis=1) - df['low']
 
-def donchian_channel_width(df, period=20):
-    dc_high = df['high'].rolling(period, min_periods=1).max()
-    dc_low = df['low'].rolling(period, min_periods=1).min()
-    df['DC_High'] = dc_high.bfill()
-    df['DC_Low'] = dc_low.bfill()
-    df['DCW'] = ((dc_high - dc_low) / (df['close'] + 1e-8)).fillna(0)
-    df['DCW_Slope'] = df['DCW'].diff().fillna(0)
-    df['DC_Pos'] = ((df['close'] - dc_low) / (dc_high - dc_low + 1e-8)).fillna(0.5)
+    df['UPPER_WICK_RATIO'] = upper / (body + 1e-9)
+    df['LOWER_WICK_RATIO'] = lower / (body + 1e-9)
+
     return df
 
 # ==========================================================
-# EMA Ribbon + Trend Ignition
+# VOLUME CONFIRMATION
 # ==========================================================
-def ema_ribbon(df, periods=(8,13,21)):
-    for p in periods:
-        df[f'EMA_{p}'] = EMA(df, p)
-    slopes = [df[f'EMA_{p}'].diff().fillna(0) for p in periods]
-    score = pd.Series(0, index=df.index)
-    for s in slopes:
-        score += s.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
-    df['EMA_Ribbon_Score'] = score.fillna(0)
-    ema_fast = df[f'EMA_{periods[0]}']
-    ema_slow = df[f'EMA_{periods[-1]}']
-    df['EMA_Spread'] = (ema_fast - ema_slow).abs().fillna(0)
-    df['EMA_Expansion'] = (df['EMA_Spread'].diff().fillna(0) > 0)
+def volume_confirmation(df, lookback=20):
+    df['VOL_MA'] = df['volume'].rolling(lookback).mean()
+    df['VOL_RATIO'] = df['volume'] / (df['VOL_MA'] + 1e-9)
     return df
 
 # ==========================================================
-# Momentum
+# SUPPORT / RESISTANCE
 # ==========================================================
-def roc_momentum(df, period=3):
-    df['ROC'] = df['close'].pct_change(periods=period).fillna(0)
-    atr_val = ATR(df, 14)
-    df['ROC_norm'] = (df['ROC'] / ((atr_val / df['close']) + 1e-8)).fillna(0)
+def support_resistance(df, lookback=20):
+    df['RESISTANCE'] = df['high'].rolling(lookback).max()
+    df['SUPPORT'] = df['low'].rolling(lookback).min()
     return df
 
 # ==========================================================
-# Directional Volatility
+# BREAKOUT LOGIC
 # ==========================================================
-def directional_volatility(df, lookback=50):
-    df['DIR_VOL'] = ((df['close'] - df['open']).abs() / (df['high'] - df['low'] + 1e-8)).fillna(0)
-    dir_vol_baseline = df['DIR_VOL'].rolling(lookback, min_periods=1).median().fillna(1)
-    df['DIR_VOL_REL'] = df['DIR_VOL'] / dir_vol_baseline
-    rel_max = df['DIR_VOL_REL'].rolling(lookback, min_periods=1).max().fillna(1)
-    df['DIR_VOL_REL_norm'] = (df['DIR_VOL_REL'] / rel_max).clip(0,1)
-    return df
-
-# ==========================================================
-# Early Entry Logic
-# ==========================================================
-def early_entry(df):
-    ema_ribbon(df)
-    roc_momentum(df)
-    df['EARLY_ENTRY_LONG'] = ((df['EMA_Ribbon_Score'] > 0) &
-                              (df['EMA_Ribbon_Score'].shift().fillna(0) <= 0) &
-                              (df['ROC_norm'] > 0)).fillna(False)
-    df['EARLY_ENTRY_SHORT'] = ((df['EMA_Ribbon_Score'] < 0) &
-                               (df['EMA_Ribbon_Score'].shift().fillna(0) >= 0) &
-                               (df['ROC_norm'] < 0)).fillna(False)
-    return df
-
-# ==========================================================
-# ATR Squeeze Filter
-# ==========================================================
-def atr_squeeze_filter(df, period=20, low_percentile=20):
-    atr_vals = ATR(df, period)
-    thresh = np.percentile(atr_vals.dropna(), low_percentile)
-    df['ATR_Squeeze_OK'] = (atr_vals >= thresh).fillna(False)
-    return df
-
-# ==========================================================
-# Participation / Volume Efficiency
-# ==========================================================
-def participation_metrics(df, lookback=3, vol_mult=1.0):
-    df['Confirmed_Long'] = False
-    df['Confirmed_Short'] = False
-    vol_ma = df['volume'].rolling(lookback, min_periods=1).mean().fillna(1)
-
-    for i in range(lookback, len(df)):
-        if all(df['close'].iloc[i-j] > df['close'].iloc[i-j-1] for j in range(lookback)) and df['volume'].iloc[i] >= vol_ma.iloc[i]*vol_mult:
-            df.loc[df.index[i], 'Confirmed_Long'] = True
-        if all(df['close'].iloc[i-j] < df['close'].iloc[i-j-1] for j in range(lookback)) and df['volume'].iloc[i] >= vol_ma.iloc[i]*vol_mult:
-            df.loc[df.index[i], 'Confirmed_Short'] = True
-
-    df['VOL_Efficiency'] = ((df['close'] - df['close'].shift()).abs() / (df['volume'] + 1e-8)).fillna(0)
-    eff_max = df['VOL_Efficiency'].rolling(50, min_periods=1).max().fillna(1)
-    df['VOL_Eff_norm'] = (df['VOL_Efficiency'] / eff_max).clip(0.1,1)
-
-    df['DIR_VOL_EFF'] = ((df['close'] - df['close'].shift()) / (df['volume'] + 1e-8)).fillna(0)
-    dir_eff_max = df['DIR_VOL_EFF'].abs().rolling(50, min_periods=1).max().fillna(1)
-    df['DIR_VOL_EFF_norm'] = (df['DIR_VOL_EFF'] / dir_eff_max).clip(-1,1)
-    return df
-
-# ==========================================================
-# Market Regime Awareness
-# ==========================================================
-def market_regime(df):
-    df['ATR_Regime'] = df['ATR_Expansion'].rolling(5, min_periods=1).mean().fillna(1)
-    reg_max = df['ATR_Regime'].rolling(50, min_periods=1).max().fillna(1)
-    df['Regime_norm'] = (df['ATR_Regime']/reg_max).clip(0,1)
-    return df
-
-# ==========================================================
-# Post-entry Commitment
-# ==========================================================
-def post_entry_commitment(df, lookahead=3):
-    df['commitment_ok'] = False
-    if 'signal' not in df.columns:
-        df['signal'] = 0
-    for i in range(len(df)):
-        sig = df['signal'].iloc[i]
-        if sig == 0 or i+lookahead >= len(df):
-            continue
-        high_ref = df['high'].iloc[i]
-        low_ref = df['low'].iloc[i]
-        future_closes = df['close'].iloc[i+1:i+1+lookahead]
-        if sig==1 and (future_closes>high_ref).any():
-            df.loc[df.index[i], 'commitment_ok'] = True
-        elif sig==-1 and (future_closes<low_ref).any():
-            df.loc[df.index[i], 'commitment_ok'] = True
-    return df
-
-# ==========================================================
-# Structure Filter
-# ==========================================================
-def structure_filter(df, dcw_min=0.003, atr_min=1.0, regime_min=0.3):
-    df['STRUCTURE_OK'] = ((df['DCW']>dcw_min) &
-                          (df['DCW_Slope']>0) &
-                          (df['ATR_Expansion']>atr_min) &
-                          (df['Regime_norm']>regime_min)).fillna(False)
-    return df
-
-def volume_intent(df, lookback=10, smooth=3):
+def breakout_logic(df, atr_k=0.5):
     """
-    Computes directional volume intent and alignment.
-    Produces:
-    - vol_intent_raw      ∈ [-1, 1]
-    - vol_intent_strength ∈ [0, 1]
-    - vol_intent_align    ∈ [0, 1]   (1 = aligned with signal)
+    Volatility-adjusted breakout.
+    Break must clear structure by ATR fraction.
     """
 
-    # Up / down volume
-    up_vol = df['volume'].where(df['close'] >= df['open'], 0.0)
-    down_vol = df['volume'].where(df['close'] < df['open'], 0.0)
+    # Ensure ATR exists
+    if 'ATR' not in df.columns:
+        df['ATR'] = ATR(df)
 
-    vol_up = up_vol.rolling(lookback, min_periods=1).sum()
-    vol_down = down_vol.rolling(lookback, min_periods=1).sum()
+    resistance = df['RESISTANCE'].shift(1)
+    support = df['SUPPORT'].shift(1)
 
-    # Raw intent
-    intent_raw = (vol_up - vol_down) / (vol_up + vol_down + 1e-9)
+    df['BREAK_RESISTANCE'] = df['close'] > (resistance + atr_k * df['ATR'])
+    df['BREAK_SUPPORT'] = df['close'] < (support - atr_k * df['ATR'])
 
-    # Persistence (smoothed)
-    intent_smooth = intent_raw.rolling(smooth, min_periods=1).mean()
+    return df
 
-    # Strength (ignore weak noise)
-    intent_strength = intent_smooth.abs().clip(0, 1)
+def volatility_state(df, lookback=200):
 
-    # Alignment with signal
-    align = pd.Series(1.0, index=df.index)
-    align[(df['signal'] == 1) & (intent_smooth < 0)] = 0.85
-    align[(df['signal'] == -1) & (intent_smooth > 0)] = 0.85
+    pctl = df['ATR'].rolling(lookback).rank(pct=True)
 
-    df['vol_intent_raw'] = intent_smooth.fillna(0)
-    df['vol_intent_strength'] = intent_strength.fillna(0)
-    df['vol_intent_align'] = align.fillna(1.0)
+    df['VOL_STATE'] = np.select(
+        [pctl < 0.45, pctl > 0.55],  # relaxed thresholds
+        [-1, 1],
+        default=0
+    )
+
+    return df
+
+def structure_state(df, lookback=50):
+
+    width = df['high'].rolling(lookback).max() - df['low'].rolling(lookback).min()
+    norm = width / (df['ATR'] * np.sqrt(lookback) + 1e-9)
+
+    df['STRUCT_STATE'] = np.select(
+        [norm < 1.0, norm > 1.5],  # relaxed compression / expansion
+        [-1, 1],
+        default=0
+    )
+
+    return df
+
+def pressure_state(df):
+
+    close_loc = (df['close'] - df['low']) / (df['high'] - df['low'] + 1e-9)
+    df['PRESSURE'] = close_loc - 0.5
+
+    return df
 
 # ==========================================================
-# Generate Signal (unchanged, now safe)
+# INSTITUTIONAL PARTICIPATION (Magnitude-Aware VWM)
 # ==========================================================
-def generate_signal(df, conf_threshold=0,
-                    atr_exp_start=1.02, vol_spike_mult=1.5,
-                    dcw_slope_mult=0.1, atr_stop_mult=1.5,
-                    mc_lookback=3, mc_vol_mult=1.0,
-                    commitment_lookahead=3):
+# ==========================================================
+# INSTITUTIONAL PARTICIPATION (SIGNED DOLLAR FLOW MODEL)
+# ==========================================================
+def participation_state(df, lookback=20, threshold=0.5):
 
+    # ------------------------------------------------------
+    # 1️⃣ Signed institutional flow
+    # ------------------------------------------------------
+    df['FLOW'] = df['volume'] * (df['close'] - df['open'])
+
+    # ------------------------------------------------------
+    # 2️⃣ Normalize by rolling volatility (z-score style)
+    # ------------------------------------------------------
+    flow_std = df['FLOW'].rolling(50).std()
+
+    df['FLOW_Z'] = df['FLOW'] / (flow_std + 1e-9)
+
+    # ------------------------------------------------------
+    # 3️⃣ Capital accumulation (rolling flow)
+    # ------------------------------------------------------
+    df['FLOW_ROLL'] = df['FLOW_Z'].rolling(lookback).mean()
+
+    # ------------------------------------------------------
+    # 4️⃣ Institutional accumulation detector
+    # ------------------------------------------------------
+
+    # Cumulative capital inflow
+    df['ACCUMULATION'] = df['FLOW_Z'].rolling(10).sum()
+
+    # Price drift over same window
+    price_drift = df['close'].pct_change(10)
+
+    # Normalize drift by volatility so regime independent
+    vol = df['close'].pct_change().rolling(50).std()
+
+    df['PRICE_DRIFT_NORM'] = price_drift / (vol + 1e-9)
+
+    # Stealth accumulation condition
+    df['STEALTH_ACCUM'] = (
+        (df['ACCUMULATION'] > 1.5) &      # sustained positive flow
+        (df['PRICE_DRIFT_NORM'].abs() < 0.5)  # price not moving much
+    )
+
+    # Distribution version
+    df['STEALTH_DISTRIB'] = (
+        (df['ACCUMULATION'] < -1.5) &
+        (df['PRICE_DRIFT_NORM'].abs() < 0.5)
+    )
+
+    # ------------------------------------------------------
+    # 4️⃣ Final flow strength metric
+    # ------------------------------------------------------
+    df['FLOW_STRENGTH'] = df['FLOW_ROLL']
+
+    # Boost if stealth accumulation detected
+    df.loc[df['STEALTH_ACCUM'], 'FLOW_STRENGTH'] += 0.5
+    df.loc[df['STEALTH_DISTRIB'], 'FLOW_STRENGTH'] -= 0.5
+
+    # ------------------------------------------------------
+    # 5️⃣ Participation classification
+    # ------------------------------------------------------
+    df['PARTICIPATION'] = np.select(
+        [
+            df['FLOW_STRENGTH'] > threshold,
+            df['FLOW_STRENGTH'] < -threshold
+        ],
+        [1, -1],
+        default=0
+    )
+
+    return df
+
+def classify_phase(df):
+
+    df['PHASE'] = 0
+
+    pre_breakout = (
+        (df['VOL_STATE'] == -1) &
+        (df['STRUCT_STATE'] == -1) &
+        (
+            (df['PARTICIPATION'] == 1) |
+            (df['STEALTH_ACCUM'])
+        )
+    )
+
+    trend = (
+        (df['VOL_STATE'] == 1) &
+        (df['STRUCT_STATE'] == 1) &
+        (df['PARTICIPATION'] == 1)
+    )
+
+    exhaustion = (
+        (df['VOL_STATE'] == 1) &
+        (df['PARTICIPATION'] == -1)
+    )
+
+    df.loc[pre_breakout, 'PHASE'] = 1
+    df.loc[trend, 'PHASE'] = 2
+    df.loc[exhaustion, 'PHASE'] = 3
+
+    return df
+
+def divergence_state(df, lookback=14):
+
+    # --- returns
+    df['PRICE_RET'] = df['close'].pct_change()
+    df['PRESSURE_RET'] = df['PRESSURE'].diff()
+
+    # --- rolling correlation
+    df['DIV_CORR'] = df['PRICE_RET'].rolling(lookback).corr(df['PRESSURE_RET'])
+
+    # --- divergence strength (magnitude-aware)
+    df['DIV_STRENGTH'] = -df['DIV_CORR']
+
+    # --- directional classification
+    df['DIV_BULL'] = df['DIV_CORR'] < -0.2
+    df['DIV_BEAR'] = df['DIV_CORR'] < -0.2
+
+    # --- discrete signal (kept compatible with your system)
+    df['DIVERGENCE'] = 0
+    df.loc[df['DIV_CORR'] < -0.2, 'DIVERGENCE'] = np.sign(df['PRESSURE_RET'])
+
+    return df
+
+def vol_compression_slope(df, lookback=50, rv_period=20, alpha=0.2):
+    # Compute realized volatility
+    df['REALIZED_VOL'] = ewma_realized_vol(df, period=rv_period, alpha=alpha)
+
+    # Compute slope of realized volatility
+    df['RV_SLOPE'] = df['REALIZED_VOL'].diff(1)
+
+    # Rolling mean slope -> compression signal
+    df['VOL_COMPRESS'] = df['RV_SLOPE'].rolling(lookback).mean() < 0
+
+    return df
+
+def transition_detector(df):
+    df['TRANSITION_LONG'] = (
+        (df['VOL_COMPRESS']) &
+        (df['DIVERGENCE'] >= 0)
+    )
+    df['TRANSITION_SHORT'] = (
+        (df['VOL_COMPRESS']) &
+        (df['DIVERGENCE'] <= 0)
+    )
+    
+    df['TRANSITION_SIGNAL'] = 0
+    df.loc[df['TRANSITION_LONG'], 'TRANSITION_SIGNAL'] = 1
+    df.loc[df['TRANSITION_SHORT'], 'TRANSITION_SIGNAL'] = -1
+
+    return df
+
+# ==========================================================
+# CANDLESTICK PATTERNS
+# ==========================================================
+def candle_body(df):
+    df['body'] = df['close'] - df['open']
+    df['body_dir'] = np.where(df['body'] > 0, 1, np.where(df['body'] < 0, -1, 0))
+    df['body_size'] = df['body'].abs()
+    return df
+
+def composite_pressure(df):
+
+    # Ensure VOL_RATIO exists
+    if 'VOL_RATIO' not in df.columns:
+        df = volume_confirmation(df)
+
+    # Normalize VOL_RATIO to roughly -1..1 around 1
+    vol_norm = df['VOL_RATIO'] - 1.0
+
+    # Composite: pressure * normalized volume
+    df['COMPOSITE_PRESSURE'] = df['PRESSURE'] * vol_norm
+
+    return df
+
+def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
+    body = (df['close'] - df['open']).abs()
+    range_ = df['high'] - df['low']
+
+    # --- Displacement requirement (impulsive candle)
+    DISPLACEMENT_K = 0.8
+    df['DISPLACEMENT'] = body > (df['ATR'] * DISPLACEMENT_K)
+
+    # --- Strong body relative to candle range
+    df['STRONG_BODY'] = (body / (range_ + 1e-9)) > body_ratio
+
+    # --- ATR expansion confirms real move
+    df['ATR_EXPAND'] = df['ATR'] > df['ATR'].rolling(20).mean() * atr_mult
+
+    # --- Reject fake wick breakouts
+    df['NO_UPPER_WICK_FAKE'] = df['UPPER_WICK_RATIO'] < df['DYNAMIC_WICK_LIMIT']
+    df['NO_LOWER_WICK_FAKE'] = df['LOWER_WICK_RATIO'] < df['DYNAMIC_WICK_LIMIT']
+
+    # --- Final validated breakouts
+    # Compression must occur within recent window
+    COMPRESSION_LOOKBACK = 10
+    prior_compression = df['VOL_COMPRESS'].rolling(COMPRESSION_LOOKBACK).max().shift(1)
+
+    df['VALID_BREAK_LONG'] = (
+        df['BREAK_RESISTANCE'] &
+        prior_compression &
+        df['STRONG_BODY'] &
+        df['DISPLACEMENT'] &
+        df['NO_UPPER_WICK_FAKE'] &
+        (df['COMPOSITE_PRESSURE'] > 0)
+    )
+
+    df['VALID_BREAK_SHORT'] = (
+        df['BREAK_SUPPORT'] &
+        prior_compression &
+        df['STRONG_BODY'] &
+        df['DISPLACEMENT'] &
+        df['NO_LOWER_WICK_FAKE'] &
+        (df['COMPOSITE_PRESSURE'] < 0)
+    )
+
+    return df
+
+# ==========================================================
+# MICRO CONSOLIDATION DETECTOR (INSIDE TRENDS)
+# ==========================================================
+def micro_consolidation(df, lookback=12, tightness=0.6):
+
+    # local range
+    local_high = df['high'].rolling(lookback).max()
+    local_low  = df['low'].rolling(lookback).min()
+    width = local_high - local_low
+
+    # normalize by ATR so it's regime-independent
+    norm_width = width / (df['ATR'] + 1e-9)
+
+    # tight box condition
+    df['MICRO_BOX'] = norm_width < tightness
+
+    # breakout levels (shifted so breakout is real)
+    df['MICRO_HIGH'] = local_high.shift(1)
+    df['MICRO_LOW']  = local_low.shift(1)
+
+    # breakout detection
+    df['MICRO_BREAK_LONG'] = df['close'] > df['MICRO_HIGH']
+    df['MICRO_BREAK_SHORT'] = df['close'] < df['MICRO_LOW']
+
+    # strength score (normalized)
+    expansion_strength = (width / width.rolling(lookback).mean()).clip(0,2)
+
+    df['MICRO_BREAK_SCORE'] = np.select(
+        [df['MICRO_BREAK_LONG'], df['MICRO_BREAK_SHORT']],
+        [expansion_strength, -expansion_strength],
+        default=0
+    )
+
+    return df
+
+def supertrend(df, period=10, multiplier=3, eps=1e-6):
+    atr = ATR(df, period).round(6)
+
+    hl2 = ((df['high'] + df['low']) / 2).round(6)
+
+    upper_band = (hl2 + multiplier * atr).round(6)
+    lower_band = (hl2 - multiplier * atr).round(6)
+
+    final_upper = upper_band.copy()
+    final_lower = lower_band.copy()
+
+    trend = pd.Series(1, index=df.index)
+
+    close = df['close'].round(6)
+
+    for i in range(1, len(df)):
+
+        # stable band logic
+        if close.iat[i-1] <= final_upper.iat[i-1] + eps:
+            final_upper.iat[i] = min(upper_band.iat[i], final_upper.iat[i-1])
+        else:
+            final_upper.iat[i] = upper_band.iat[i]
+
+        if close.iat[i-1] >= final_lower.iat[i-1] - eps:
+            final_lower.iat[i] = max(lower_band.iat[i], final_lower.iat[i-1])
+        else:
+            final_lower.iat[i] = lower_band.iat[i]
+
+        # stable trend flip detection
+        if close.iat[i] > final_upper.iat[i-1] + eps:
+            trend.iat[i] = 1
+        elif close.iat[i] < final_lower.iat[i-1] - eps:
+            trend.iat[i] = -1
+        else:
+            trend.iat[i] = trend.iat[i-1]
+
+    df['SUPERTREND'] = trend.astype(int)
+    return df
+
+def supertrend_htf(df, htf_df, period=10, multiplier=3):
+    """
+    Computes SuperTrend on HTF and aligns it to LTF df.
+    Returns a series of 1 (bull) / -1 (bear)
+    """
+    htf_df = htf_df.copy()
+    htf_df = supertrend(htf_df, period=period, multiplier=multiplier)
+    
+    # Align to LTF
+    return htf_df['SUPERTREND'].reindex(df.index, method='ffill').fillna(0)
+
+# ==========================================================
+# RSI RISK FILTER (NON-GATING)
+# ==========================================================
+def rsi_risk_filter(df, period=14, overbought=70, oversold=30):
+    rsi = RSI(df['close'], period)
+
+    long_ok = rsi < overbought
+    short_ok = rsi > oversold
+
+    return long_ok.fillna(True), short_ok.fillna(True)
+
+# ==========================================================
+# ANCHORED VWAP RISK FILTER (NON-GATING)
+# ==========================================================
+def anchored_vwap_risk(df, anchor_period=50):
+
+    typical = (df['high'] + df['low'] + df['close']) / 3
+    vol_price = typical * df['volume']
+
+    rolling_vol_price = vol_price.rolling(anchor_period).sum()
+    rolling_vol = df['volume'].rolling(anchor_period).sum()
+
+    avwap = rolling_vol_price / (rolling_vol + 1e-9)
+
+    long_ok = df['close'] >= avwap
+    short_ok = df['close'] <= avwap
+
+    return long_ok.fillna(True), short_ok.fillna(True)
+
+def momentum_continuity(df, window=20, min_move=0.001):
+
+    ret = df['close'].pct_change()
+
+    # ignore tiny moves (noise)
+    ret = np.where(np.abs(ret) < min_move, 0, ret)
+
+    sign_ret = np.sign(ret)
+
+    persistence = (
+        (sign_ret * pd.Series(sign_ret).shift(1)) > 0
+    ).astype(int)
+
+    df['MOMENTUM_CONTINUITY'] = (
+        pd.Series(persistence, index=df.index)
+        .rolling(window)
+        .mean()
+    )
+
+    return df
+
+# ==========================================================
+# DYNAMIC STATE ENGINE (INSTITUTIONAL GRADE)
+# ==========================================================
+def dynamic_state_engine(df, window=10):
+
+    # -----------------------------------
+    # BASE STATE (composite environment)
+    # -----------------------------------
+    df['STATE_SCORE'] = (
+        0.25 * df['VOL_STATE'] +
+        0.25 * df['STRUCT_STATE'] +
+        0.25 * df['PARTICIPATION'] +
+        0.25 * np.sign(df['COMPOSITE_PRESSURE'])
+    )
+
+    # normalize to -1 → 1
+    df['STATE_SCORE'] = df['STATE_SCORE'].clip(-1,1)
+
+    # -----------------------------------
+    # VELOCITY → first derivative
+    # -----------------------------------
+    df['STATE_VELOCITY'] = df['STATE_SCORE'].diff()
+
+    # -----------------------------------
+    # ACCELERATION → second derivative
+    # -----------------------------------
+    df['STATE_ACCEL'] = df['STATE_VELOCITY'].diff()
+
+    # -----------------------------------
+    # INFLECTION POINTS
+    # sign flip of velocity
+    # -----------------------------------
+    df['STATE_INFLECT'] = (
+        np.sign(df['STATE_VELOCITY']) !=
+        np.sign(df['STATE_VELOCITY'].shift(1))
+    )
+
+    df['PRESSURE_VOL'] = pressure_volatility(df, period=20, alpha=0.2)
+    df['PRESSURE_VOL_NORM'] = df['PRESSURE_VOL'] / (df['PRESSURE_VOL'].rolling(200).max() + 1e-9)
+
+    # -----------------------------------
+    # STABILITY
+    # low variance = stable regime
+    # -----------------------------------
+    df['STATE_STABILITY'] = (
+        1 /
+        (df['STATE_SCORE'].rolling(window).std() + 1e-9)
+    )
+
+    # normalize stability
+    df['STATE_STABILITY'] = (
+        df['STATE_STABILITY'] /
+        df['STATE_STABILITY'].rolling(window).max()
+    ).clip(0,1)
+
+    df['STATE_STABILITY'] *= (1 - 0.5 * df['PRESSURE_VOL_NORM'])  # volatile regimes are less stable
+
+    # -----------------------------------
+    # STABILITY DECAY
+    # detects regime breakdown
+    # -----------------------------------
+    df['STABILITY_DECAY'] = df['STATE_STABILITY'].diff()
+
+    # -----------------------------------
+    # TRANSITION INTENSITY
+    # combines velocity + accel + decay
+    # -----------------------------------
+    df['TRANSITION_FORCE'] = (
+        df['STATE_VELOCITY'].abs() +
+        df['STATE_ACCEL'].abs() +
+        df['STABILITY_DECAY'].abs()
+    )
+
+    # Damp TRANSITION_FORCE based on volatility instability
+    df['TRANSITION_FORCE'] *= (1 - 0.5 * df['PRESSURE_VOL_NORM'])  # max 50% damp
+
+    return df
+
+# ==========================================================
+# TREND QUALITY UTILITIES (Slope + R²)
+# ==========================================================
+
+def rolling_slope(series, window=50):
+    """
+    Linear regression slope over rolling window.
+    Measures directional velocity.
+    """
+    x = np.arange(window)
+
+    def slope_func(y):
+        if np.any(np.isnan(y)):
+            return np.nan
+        return np.polyfit(x, y, 1)[0]
+
+    return series.rolling(window).apply(slope_func, raw=False)
+
+
+def rolling_r2(series, window=50):
+    """
+    Rolling R² (trend reliability).
+    Measures how clean the trend is.
+    """
+    x = np.arange(window)
+
+    def r2_func(y):
+        if np.any(np.isnan(y)):
+            return np.nan
+        coeffs = np.polyfit(x, y, 1)
+        p = np.poly1d(coeffs)
+        y_hat = p(x)
+        ss_res = ((y - y_hat) ** 2).sum()
+        ss_tot = ((y - y.mean()) ** 2).sum()
+        return 1 - ss_res / (ss_tot + 1e-9)
+
+    return series.rolling(window).apply(r2_func, raw=False)
+
+def efficiency_ratio(series, window=50):
+
+    direction = (series - series.shift(window)).abs()
+    volatility = series.diff().abs().rolling(window).sum()
+
+    er = direction / (volatility + 1e-9)
+
+    return er.clip(0,1)
+
+# ==========================================================
+# VOLATILITY UTILITIES
+# ==========================================================
+def ewma_realized_vol(df, period=20, alpha=0.2):
+    log_ret = np.log(df['close']).diff()
+    rv = log_ret.pow(2).ewm(alpha=alpha, adjust=False).mean().pow(0.5)
+    return rv
+
+def pressure_volatility(df, period=20, alpha=0.2):
+    """
+    EWMA volatility of COMPOSITE_PRESSURE
+    Captures magnitude jitter and institutional activity instability
+    """
+    if 'COMPOSITE_PRESSURE' not in df.columns:
+        df = composite_pressure(df)  # generate if missing
+    pv = df['COMPOSITE_PRESSURE'].ewm(alpha=alpha, adjust=False).std()
+    return pv
+
+def parkinson_vol(df, period=14):
+    hl_ratio = np.log(df['high'] / df['low'])
+    return (hl_ratio.pow(2).rolling(period).mean() / (4 * np.log(2))).pow(0.5)
+
+def htf_structural_stack(df, htf_df,
+                         vol_lookback=200,
+                         part_lookback=50,
+                         regime_window=10,
+                         er_window=20):
+
+    htf = htf_df.copy()
+
+    # ======================================================
+    # 1️⃣ DIRECTION (Hard Anchor)
+    # ======================================================
+
+    htf = supertrend(htf, period=10, multiplier=3)
+    htf['HTF_DIRECTION'] = htf['SUPERTREND']  # 1 / -1
+
+    # ======================================================
+    # 2️⃣ VOLATILITY STATE (Continuous)
+    # ======================================================
+
+    htf['HTF_ATR'] = ATR(htf, 14)
+    htf['HTF_VOL_PCTL'] = (
+        htf['HTF_ATR']
+        .rolling(vol_lookback)
+        .rank(pct=True)
+    )
+
+    # Normalize to 0–1 range around expansion bias
+    htf['VOL_SCORE'] = (htf['HTF_VOL_PCTL'] - 0.5).clip(0, 1)
+
+    # ======================================================
+    # 3️⃣ PARTICIPATION (Continuous)
+    # ======================================================
+
+    htf['HTF_VOL_MA'] = htf['volume'].rolling(part_lookback).mean()
+    htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_MA'] + 1e-9)
+
+    htf['PART_SCORE'] = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
+
+    # ======================================================
+    # 4️⃣ REGIME PERSISTENCE (Continuous)
+    # ======================================================
+
+    direction_series = htf['HTF_DIRECTION']
+    htf['HTF_REGIME_PERSIST'] = (
+        direction_series
+        .rolling(regime_window)
+        .apply(lambda x: abs(x.mean()), raw=False)
+    )
+
+    htf['REGIME_SCORE'] = htf['HTF_REGIME_PERSIST'].clip(0, 1)
+
+    # ======================================================
+    # 5️⃣ STRUCTURE QUALITY (Continuous)
+    # ======================================================
+
+    htf['HTF_ER'] = efficiency_ratio(htf['close'], er_window)
+    htf['STRUCTURE_SCORE'] = htf['HTF_ER'].clip(0, 1)
+
+    # ======================================================
+    # 6️⃣ COMPOSITE QUALITY SCORE
+    # ======================================================
+
+    htf['HTF_QUALITY'] = (
+        0.30 * htf['VOL_SCORE'] +
+        0.25 * htf['PART_SCORE'] +
+        0.25 * htf['REGIME_SCORE'] +
+        0.20 * htf['STRUCTURE_SCORE']
+    )
+
+    # ======================================================
+    # ALIGN TO LTF
+    # ======================================================
+
+    aligned = htf[[
+        'HTF_DIRECTION',
+        'HTF_QUALITY'
+    ]].reindex(df.index, method='ffill')
+
+    return aligned.fillna(0)
+
+# ==========================================================
+# INTEGRATE INTO SIGNAL GENERATION
+# ==========================================================
+def generate_signal(df, htf_df, atr_mult=1.5):
     if df.empty:
         return df
 
-    # ======================================================
-    # CORE INDICATORS
-    # ======================================================
-    early_entry(df)
-    atr_expansion(df)
-    donchian_channel_width(df)
-    multi_tf_trend(df)
-    atr_squeeze_filter(df)
-    directional_volatility(df)
-    participation_metrics(df, mc_lookback, mc_vol_mult)
-    market_regime(df)
+    # =========================
+    # Core processing
+    # =========================
+    df = trend_bias(df)
+    df = wick_rejection(df)
+    df = volume_confirmation(df)
+    df = support_resistance(df)
+    df = breakout_logic(df)
 
-    # ======================================================
-    # STRUCTURE FILTER (gate, not dominance)
-    # ======================================================
-    if 'STRUCTURE_OK' not in df.columns:
-        df['STRUCTURE_OK'] = True
-    structure_filter(df)
+    df['ATR'] = parkinson_vol(df, period=14)
 
-    atr_vals = ATR(df).fillna(0)
-    vol_ma = df['volume'].rolling(20, min_periods=1).mean()
+    # --- ATR percentile for adaptive thresholds
+    df['ATR_PERCENTILE'] = (
+        df['ATR']
+        .rolling(200)
+        .rank(pct=True)
+    )
+    df['DYNAMIC_WICK_LIMIT'] = 1.2 + (df['ATR_PERCENTILE'] * 1.0)
 
-    # ======================================================
-    # ABSOLUTE STRUCTURE FLOORS
-    # ======================================================
-    dcw_min = 0.003
-    atr_ok = df['ATR_Expansion'].fillna(0) >= atr_exp_start
-    vol_ok = df['volume'] >= vol_ma * vol_spike_mult
+    # =========================
+    # STATE ENGINE
+    # =========================
+    df = volatility_state(df)
+    df = structure_state(df)
+    df = pressure_state(df)
+    df = participation_state(df)
+    df = classify_phase(df)
+    df = composite_pressure(df)  # 🔹 generate COMPOSITE_PRESSURE metric
+    df = vol_compression_slope(df, lookback=50, rv_period=20)
+    df = validated_breakouts(df)
+    # --- Dynamic state analytics
+    df = dynamic_state_engine(df)
 
-    dcw_thresh = dcw_slope_mult * df['DCW'].rolling(5, min_periods=1).mean()
-    dcw_breakout = df['DCW_Slope'].abs() > dcw_thresh
+    # =========================
+    # NEW HTF STRUCTURAL STACK
+    # =========================
 
-    # ======================================================
-    # EARLY ENTRY MATURITY (permissive)
-    # ======================================================
-    str_dcw = (df['DCW'] / df['DCW'].rolling(20, min_periods=1).max()).clip(0, 1)
-    str_atr = (df['ATR_Expansion'] / atr_exp_start).clip(0, 1)
-    str_vol = (df['volume'] / (vol_ma * vol_spike_mult)).clip(0, 1)
+    htf_stack = htf_structural_stack(df, htf_df)
 
-    early_maturity = (
-        0.4 * str_dcw +
-        0.3 * str_atr +
-        0.3 * str_vol
-    ).fillna(0.6).clip(0.4, 1.0)
+    df = pd.concat([df, htf_stack], axis=1)
 
-    # ======================================================
-    # RAW ENTRY LOGIC (UNCHANGED)
-    # ======================================================
-    long_condition = (
-        df['EARLY_ENTRY_LONG'] &
-        (df['DCW'] > dcw_min) &
-        (df['EMA_Ribbon_Score'] > 0) &
-        dcw_breakout & atr_ok & vol_ok &
-        df['ATR_Squeeze_OK'] &
-        df['STRUCTURE_OK']
+    HTF_QUALITY_TH = 0.45  # tune 0.40–0.60
+
+    HTF_LONG_OK = (
+        (df['HTF_DIRECTION'] == 1) &
+        (df['HTF_QUALITY'] > HTF_QUALITY_TH)
     )
 
-    short_condition = (
-        df['EARLY_ENTRY_SHORT'] &
-        (df['DCW'] > dcw_min) &
-        (df['EMA_Ribbon_Score'] < 0) &
-        dcw_breakout & atr_ok & vol_ok &
-        df['ATR_Squeeze_OK'] &
-        df['STRUCTURE_OK']
+    HTF_SHORT_OK = (
+        (df['HTF_DIRECTION'] == -1) &
+        (df['HTF_QUALITY'] > HTF_QUALITY_TH)
     )
+
+    # =========================
+    # PREDICTIVE MODULES
+    # =========================
+    df = divergence_state(df)
+    df = transition_detector(df)
+    df = micro_consolidation(df)
+    df = momentum_continuity(df)
+
+    # ==========================================================
+    # 🧠 PREDICTIVE-WEIGHTED ASYMMETRY ENGINE
+    # ==========================================================
+
+    # --- Directional pressure sign
+    df['DIR'] = np.sign(df['COMPOSITE_PRESSURE']).fillna(0)
+
+    # ======================================================
+    # 1️⃣ LEADING SCORE (predictive signals)
+    # ======================================================
+
+    lead_score = (
+        df['VOL_COMPRESS'].astype(int) +
+        (df['DIVERGENCE'] != 0).astype(int) +
+        ((df['PHASE'] == 1) | (df['PHASE'] == 2)).astype(int) +
+        df['STEALTH_ACCUM'].astype(int)
+    )
+
+    df['LEAD_NORM'] = lead_score / 4
+    lead_norm = df['LEAD_NORM']
+
+    # ======================================================
+    # 2️⃣ CONFIRMATION SCORE (reactive signals)
+    # ======================================================
+
+    confirm_score = (
+        df['VALID_BREAK_LONG'].astype(int) +
+        df['STRONG_BODY'].astype(int) +
+        df['ATR_EXPAND'].astype(int) +
+        (df['COMPOSITE_PRESSURE'] > 0).astype(int)
+    )
+
+    mom = df['MOMENTUM_CONTINUITY']
+
+    df['MOMENTUM_SCORE'] = (
+        (mom - 0.5) / 0.2
+    ).clip(-1, 1)
+
+    confirm_norm = (confirm_score / 4) + (0.20 * df['MOMENTUM_SCORE'])
+
+    # ===============================
+    # RSI + VWAP RISK ADJUSTMENTS
+    # ===============================
+    rsi_long_ok, rsi_short_ok = rsi_risk_filter(df)
+    vwap_long_ok, vwap_short_ok = anchored_vwap_risk(df)
+
+    risk_penalty = (
+        (~rsi_long_ok).astype(int) * 0.2 +
+        (~rsi_short_ok).astype(int) * 0.2 +
+        (~vwap_long_ok).astype(int) * 0.25 +
+        (~vwap_short_ok).astype(int) * 0.25
+    )
+
+    fail_score = (
+        (df['DIVERGENCE'] != 0).astype(int) +
+        (df['UPPER_WICK_RATIO'] > df['DYNAMIC_WICK_LIMIT']).astype(int) +
+        (df['LOWER_WICK_RATIO'] > df['DYNAMIC_WICK_LIMIT']).astype(int) +
+        (df['PARTICIPATION'] == -1).astype(int)
+    )
+
+    fail_norm = (fail_score / 4) + risk_penalty
+
+    # ======================================================
+    # 4️⃣ STRUCTURAL CONTEXT WEIGHT
+    # ======================================================
+
+    trend_weight = df['TREND_QUALITY'].abs().clip(0, 1)
+
+    # ======================================================
+    # 5️⃣ FINAL ASYMMETRY CALCULATION
+    # ======================================================
+
+    micro_weight = 1 + df['MICRO_BREAK_SCORE'].clip(-0.6, 0.6)
+    state_weight = (
+        df['STATE_STABILITY'] *
+        (1 - df['TRANSITION_FORCE'].clip(0,1)) *
+        (1 + df['STATE_ACCEL'].clip(-0.5,0.5))
+    )
+    lead_dynamic_weight = 0.3 + 0.7 * df['TRANSITION_FORCE'].clip(0,1)
+
+    df['ASYM_RAW'] = state_weight * micro_weight * trend_weight * (
+        (lead_dynamic_weight * lead_norm) +
+        (0.7 * confirm_norm) -
+        fail_norm
+    )
+
+    # ======================================================
+    # 6️⃣ SMOOTHING (REGIME STABILITY)
+    # ======================================================
+
+    df['ASYM_SCORE'] = df['ASYM_RAW'].ewm(span=3, adjust=False).mean() # tune here <-
+
+    # ==========================================================
+    # ASYM CANDIDATES
+    # ==========================================================
+    ASYM_LONG_TH = 0.005
+    ASYM_SHORT_TH = -0.005
+
+    df['ASYM_CANDIDATE'] = 0
+    df.loc[df['ASYM_SCORE'] > ASYM_LONG_TH, 'ASYM_CANDIDATE'] = 1
+    df.loc[df['ASYM_SCORE'] < ASYM_SHORT_TH, 'ASYM_CANDIDATE'] = -1
+
+    # ==========================================================
+    # STABILITY FILTER (Replaces persistence)
+    # ==========================================================
+
+    STABILITY_WINDOW = 3
+    STABILITY_THRESHOLD = 0.015
+
+    score_std = df['ASYM_SCORE'].rolling(STABILITY_WINDOW).std()
+
+    stable = score_std < STABILITY_THRESHOLD
+
+    df['ASYM_PERSIST'] = 0
+    df.loc[(stable) & (df['ASYM_SCORE'] > 0), 'ASYM_PERSIST'] = 1
+    df.loc[(stable) & (df['ASYM_SCORE'] < 0), 'ASYM_PERSIST'] = -1
+
+    # ==========================================================
+    # STATE MACHINE (MEMORY PRESERVING)
+    # ==========================================================
+    df['ASYM_STATE'] = 0
+    df['ASYM_COOLDOWN'] = 0
+
+    current_state = 0
+    cooldown = 0
+
+    for i in range(len(df)):
+        candidate = df.iat[i, df.columns.get_loc('ASYM_PERSIST')]
+        score = df.iat[i, df.columns.get_loc('ASYM_SCORE')]
+        # --- Dynamic cooldown based on TRANSITION_FORCE (0 → 1) ---
+        transition_force = df.iat[i, df.columns.get_loc('TRANSITION_FORCE')]
+        transition_force = 0 if pd.isna(transition_force) else transition_force
+        MAX_COOLDOWN = 5
+        MIN_COOLDOWN = 1
+        cooldown = int(round(MAX_COOLDOWN - (transition_force * (MAX_COOLDOWN - MIN_COOLDOWN))))
+        cooldown = max(MIN_COOLDOWN, cooldown)  # enforce min cooldown
+
+        # cooldown active → hold state
+        if cooldown > 0:
+            cooldown -= 1
+            df.iat[i, df.columns.get_loc('ASYM_STATE')] = current_state
+            df.iat[i, df.columns.get_loc('ASYM_COOLDOWN')] = cooldown
+            continue
+
+        # --- Compute adaptive threshold based on predictive signal ---
+        lead_weight = df['LEAD_NORM'].iat[i]
+        BASE_THRESHOLD = 0.05
+        adaptive_thresh = BASE_THRESHOLD * (1 - lead_weight)  # stronger lead → lower threshold
+
+        # --- Apply dynamic threshold ---
+        if candidate != 0 and candidate != current_state and abs(score) > adaptive_thresh:
+            current_state = candidate
+            # cooldown will be handled dynamically (next step)
+
+        df.iat[i, df.columns.get_loc('ASYM_STATE')] = current_state
+        df.iat[i, df.columns.get_loc('ASYM_COOLDOWN')] = cooldown
+
+    # =========================
+    # RANGE LOCATION FILTER
+    # =========================
+    range_lookback = 50
+    df['RANGE_HIGH'] = df['high'].rolling(range_lookback).max()
+    df['RANGE_LOW'] = df['low'].rolling(range_lookback).min()
+    df['RANGE_POS'] = (df['close'] - df['RANGE_LOW']) / (df['RANGE_HIGH'] - df['RANGE_LOW'])
+    df['RANGE_LONG_OK'] = df['RANGE_POS'] > 0.55
+    df['RANGE_SHORT_OK'] = df['RANGE_POS'] < 0.45
+
+    LONG_CONDITION = (df['VALID_BREAK_LONG']) & (df['ASYM_STATE'] >= 0)
+    SHORT_CONDITION = (df['VALID_BREAK_SHORT']) & (df['ASYM_STATE'] <= 0)
+
+    STATE_OK = (
+        (df['STATE_STABILITY'] > 0.3) &
+        (df['TRANSITION_FORCE'] < 2.2)
+    )
+
+    LONG_CONDITION &= STATE_OK
+    SHORT_CONDITION &= STATE_OK
+
+    LONG_CONDITION &= ~(df['STATE_INFLECT'] & (df['STATE_VELOCITY'] < 0))
+    SHORT_CONDITION &= ~(df['STATE_INFLECT'] & (df['STATE_VELOCITY'] > 0))
+
+    LONG_CONDITION &= HTF_LONG_OK
+    SHORT_CONDITION &= HTF_SHORT_OK
+
+    df['LONG_CANDIDATE'] = ((df['PHASE'] == 1) | (df['PHASE'] == 2)) & LONG_CONDITION
+    df['SHORT_CANDIDATE'] = ((df['PHASE'] == 1) | (df['PHASE'] == 2)) & SHORT_CONDITION
 
     df['signal'] = 0
-    df.loc[long_condition, 'signal'] = 1
-    df.loc[short_condition, 'signal'] = -1
+    df.loc[LONG_CONDITION, 'signal'] = 1
+    df.loc[SHORT_CONDITION, 'signal'] = -1
 
-    # ======================================================
-    # POST-ENTRY COMMITMENT
-    # ======================================================
-    post_entry_commitment(df, commitment_lookahead)
-    df.loc[~df['commitment_ok'], 'signal'] = 0
+    ASYM_EXIT_TH = 0.0
 
-    # ======================================================
-    # VOLUME INTENT (confidence + risk only)
-    # ======================================================
-    volume_intent(df)
+    EXIT_LONG = (
+        (df['ASYM_SCORE'] < ASYM_EXIT_TH) |
+        (df['STATE_STABILITY'] < 0.3)
+    )
 
-    volume_scalar = (
-        1.0
-        - 0.15 * df['vol_intent_strength']
-        + 0.15 * df['vol_intent_strength'] * df['vol_intent_align']
-    ).fillna(1.0).clip(0.85, 1.15)
+    EXIT_SHORT = (
+        (df['ASYM_SCORE'] > -ASYM_EXIT_TH) |
+        (df['STATE_STABILITY'] < 0.3)
+    )
 
-    # ======================================================
-    # DIRECTIONAL STACKING (single pass, capped)
-    # ======================================================
-    ema_norm = (
-        df['EMA_Ribbon_Score'].abs() /
-        df['EMA_Ribbon_Score'].abs().rolling(100, min_periods=1).max()
-    ).fillna(0).clip(0, 1)
+    NO_EXPANSION = (
+        df['ATR_PERCENTILE'] < 0.4
+    )
 
-    direction_strength = (
-        ema_norm * df['EMA_Expansion'].astype(int) +
-        df['DIR_VOL_REL_norm'].fillna(0).clip(0, 1) +
-        df['DIR_VOL_EFF_norm'].abs().fillna(0).clip(0, 1) +
-        df['HTF_Polarized'].astype(float).clip(0, 1)
-    ).clip(0, 2.5) / 2.5
+    EXIT_LONG |= NO_EXPANSION
+    EXIT_SHORT |= NO_EXPANSION
 
-    # ======================================================
-    # DC POSITION CONFIDENCE
-    # ======================================================
-    conf_dc = pd.Series(1.0, index=df.index)
-    conf_dc[df['signal'] == 1] = (1 - df['DC_Pos']).clip(0, 1)
-    conf_dc[df['signal'] == -1] = df['DC_Pos'].clip(0, 1)
+    REGIME_BREAK = (
+        (df['STATE_STABILITY'] < 0.35) &
+        (df['TRANSITION_FORCE'] > 0.8)
+    )
 
-    # ======================================================
-    # RELATIVE NORMALIZATION (once, controlled)
-    # ======================================================
-    relative_boost = (
-        0.5 * df['DIR_VOL_REL_norm'].fillna(0) +
-        0.5 * df['VOL_Eff_norm'].fillna(0)
-    ).clip(0.7, 1.2)
+    EXIT_LONG |= REGIME_BREAK
+    EXIT_SHORT |= REGIME_BREAK
 
-    maturity_scalar = early_maturity * relative_boost * volume_scalar
+    # =========================
+    # REGIME DISCIPLINE
+    # =========================
+    df.loc[(df['ASYM_STATE'] == -1) & (df['signal'] == 1), 'signal'] = 0
+    df.loc[(df['ASYM_STATE'] == 1) & (df['signal'] == -1), 'signal'] = 0
 
-    # ======================================================
-    # TRADE QUALITY
-    # ======================================================
-    df['trade_quality'] = (
-        0.45 * direction_strength +
-        0.35 * early_maturity +
-        0.20 * conf_dc
-    ) * df['Regime_norm'].fillna(0) * maturity_scalar
-
-    quality_thresh = df['trade_quality'].quantile(0.1)
-    df.loc[df['trade_quality'] < quality_thresh, 'signal'] = 0
-
-    # ======================================================
-    # FINAL CONFIDENCE
-    # ======================================================
-    df['confidence'] = (
-        0.5 * direction_strength +
-        0.35 * early_maturity +
-        0.15 * conf_dc
-    ) * df['Regime_norm'].fillna(0) * maturity_scalar * 100
-
-    # ======================================================
-    # STOPS (volume intent tightens only)
-    # ======================================================
-    df['stop_loss'] = np.nan
-    base_stop = atr_stop_mult * atr_vals * df['ATR_Expansion'].fillna(1)
-
-    tighten = np.ones(len(df))
-    tighten[df['DIR_VOL_REL_norm'] >= 0.6] *= 0.85
-    tighten[df['DIR_VOL_REL_norm'] >= 0.8] *= 0.7
-
-    edge = 0.15
-    tighten[(df['DC_Pos'] <= edge) | (df['DC_Pos'] >= 1 - edge)] *= 0.85
-
-    tighten *= 1 / (1 + 0.2 * df['HTF_Score'].abs().fillna(0))
-    tighten *= 1 / (1 + 0.15 * df['EMA_Expansion'].astype(int))
-    tighten *= np.where(df['commitment_ok'], 1.0, 0.8)
-
-    # Volume intent opposition → tighter stops only
-    tighten *= np.where(df['vol_intent_align'] < 1.0, 0.9, 1.0)
-
-    adj_stop = base_stop * tighten
-    df.loc[df['signal'] == 1, 'stop_loss'] = df['close'] - adj_stop
-    df.loc[df['signal'] == -1, 'stop_loss'] = df['close'] + adj_stop
-
-    # ======================================================
-    # FINAL SIGNAL
-    # ======================================================
     df['final_signal'] = df['signal']
-    if conf_threshold > 0:
-        df.loc[df['confidence'] < conf_threshold, 'final_signal'] = 0
+
+    df.loc[(df['final_signal'] == 1) & EXIT_LONG, 'final_signal'] = 0
+    df.loc[(df['final_signal'] == -1) & EXIT_SHORT, 'final_signal'] = 0
+
+    # =========================
+    # DIAGNOSTICS
+    # =========================
+    print("\n=== STATE DIAGNOSTICS ===")
+    print("Phase counts:\n", df['PHASE'].value_counts())
+    print("Asymmetry states:\n", df['ASYM_STATE'].value_counts())
+    print("Breakouts: Long =", df['BREAK_RESISTANCE'].sum(), "Short =", df['BREAK_SUPPORT'].sum())
+    print("Transition signals:", df['TRANSITION_SIGNAL'].value_counts())
 
     return df

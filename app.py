@@ -47,24 +47,43 @@ def debug_env():
 
 @app.route("/debug/data")
 def debug_data_health():
-    """
-    Confirms that market data is being fetched correctly
-    """
+
     from data_pipeline.updater import update_symbol
 
     summary = {}
+
     for symbol in SYMBOLS:
+
         try:
-            df = update_symbol(symbol)
+
+            df, htf = update_symbol(symbol)
+
             summary[symbol] = {
-                "candles": len(df),
-                "first": str(df.index[0]),
-                "last": str(df.index[-1]),
+                "ltf_candles": len(df),
+                "htf_candles": len(htf),
+                "ltf_first": str(df.index[0]),
+                "ltf_last": str(df.index[-1]),
+                "htf_first": str(htf.index[0]),
+                "htf_last": str(htf.index[-1]),
             }
+
         except Exception as e:
+
             summary[symbol] = {"error": str(e)}
 
     return summary, 200
+
+
+@app.route("/debug/signals")
+def debug_signals():
+
+    path = "data/signals.json"
+
+    if not os.path.exists(path):
+        return {"exists": False}
+
+    with open(path) as f:
+        return {"exists": True, "signals": json.load(f)}
 
 
 @app.route("/debug/run")
