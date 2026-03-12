@@ -557,6 +557,13 @@ def dynamic_state_engine(df, window=10):
     # Damp TRANSITION_FORCE based on volatility instability
     df['TRANSITION_FORCE'] *= (1 - 0.5 * df['PRESSURE_VOL_NORM'])  # max 50% damp
 
+    # -----------------------------------
+    # VOLATILITY SHOCK REGIME INSTABILITY
+    # -----------------------------------
+
+    if 'VOL_SHOCK' in df.columns:
+        df['TRANSITION_FORCE'] += 0.5 * df['VOL_SHOCK_INTENSITY']
+
     return df
 
 # ==========================================================
@@ -709,6 +716,142 @@ def htf_structural_stack(df, htf_df,
     return aligned.fillna(0)
 
 # ==========================================================
+# INSTITUTIONAL EXIT MODEL
+# ==========================================================
+def institutional_exit_model(df):
+    # ------------------------------------------------------
+    # CAPITAL WITHDRAWAL (Liquidity leaving trend)
+    # ------------------------------------------------------
+
+    # participation momentum
+    df['FLOW_MOMENTUM'] = (
+        df['FLOW_STRENGTH']
+        .diff()
+        .ewm(span=3)
+        .mean()
+    )
+
+    # smoothed participation trend
+    df['FLOW_TREND'] = (
+        df['FLOW_STRENGTH']
+        .rolling(10)
+        .mean()
+    )
+
+    # momentum decay
+    flow_momentum_decay = (
+        df['FLOW_MOMENTUM']
+        .rolling(5)
+        .mean() < 0
+    )
+
+    # participation weakening
+    flow_trend_decay = (
+        df['FLOW_TREND'].diff() < 0
+    )
+
+    # ensure a trend is still active
+    trend_active = df['TREND_QUALITY'].abs() > 0.1
+
+    # final liquidity withdrawal signal
+    df['FLOW_DECAY'] = (
+        flow_momentum_decay &
+        flow_trend_decay &
+        trend_active
+    )
+
+    # ------------------------------------------------------
+    # 2️⃣ EDGE DECAY (your asymmetry engine weakening)
+    # ------------------------------------------------------
+
+    df['ASYM_DECAY'] = (
+        df['ASYM_SCORE']
+        .diff()
+        .rolling(3)
+        .mean() < 0
+    )
+
+    # ------------------------------------------------------
+    # 3️⃣ REGIME WEAKENING (state engine deterioration)
+    # ------------------------------------------------------
+
+    df['STATE_WEAKEN'] = (
+        (df['STATE_STABILITY'] < 0.45) |
+        (df['TRANSITION_FORCE'] > 0.7)
+    )
+
+    # ------------------------------------------------------
+    # 4️⃣ TREND ENERGY DECAY
+    # ------------------------------------------------------
+
+    df['TREND_ENERGY'] = (
+        df['TREND_QUALITY'].abs() *
+        df['MOMENTUM_CONTINUITY']
+    )
+
+    df['TREND_ENERGY_DECAY'] = (
+        df['TREND_ENERGY']
+        .diff()
+        .rolling(5)
+        .mean() < 0
+    )
+
+    # ------------------------------------------------------
+    # 5️⃣ STRUCTURAL EFFICIENCY DECAY
+    # ------------------------------------------------------
+
+    df['STRUCT_EFF'] = efficiency_ratio(df['close'], 20)
+
+    df['STRUCT_DECAY'] = (
+        df['STRUCT_EFF']
+        .diff()
+        .rolling(5)
+        .mean() < 0
+    )
+
+    # ------------------------------------------------------
+    # 6️⃣ EXIT PRESSURE SCORE
+    # ------------------------------------------------------
+
+    df['NO_EXPANSION'] = (df['ATR_PERCENTILE'] < 0.4)
+
+    df['REGIME_BREAK'] = (
+        (df['STATE_STABILITY'] < 0.35) &
+        (df['TRANSITION_FORCE'] > 0.8)
+    )
+
+    df['EXIT_PRESSURE'] = (
+        # 0.25 * df['TREND_ENERGY_DECAY'].astype(int) +
+        # 0.20 * df['FLOW_DECAY'].astype(int) +
+        # 0.20 * df['STRUCT_DECAY'].astype(int) +
+        # 0.15 * df['MICRO_BREAK_SCORE'].abs().gt(1.2).astype(int) +
+        # 0.10 * df['NO_EXPANSION'].astype(int) +
+        1.0 * df['REGIME_BREAK'].astype(int)
+    )
+
+    df['EXIT_PRESSURE'] = df['EXIT_PRESSURE'].ewm(span=3).mean()
+
+    return df
+
+# ==========================================================
+# VOLATILITY SHOCK DETECTOR
+# ==========================================================
+def volatility_shock(df, lookback=20, shock_mult=1.8):
+
+    # baseline volatility
+    atr_mean = df['ATR'].rolling(lookback).mean()
+
+    # shock ratio
+    shock_ratio = df['ATR'] / (atr_mean + 1e-9)
+
+    df['VOL_SHOCK'] = (shock_ratio > shock_mult).astype(int)
+
+    # intensity (continuous)
+    df['VOL_SHOCK_INTENSITY'] = (shock_ratio - 1).clip(0, 3)
+
+    return df
+
+# ==========================================================
 # INTEGRATE INTO SIGNAL GENERATION
 # ==========================================================
 def generate_signal(df, htf_df, atr_mult=1.5):
@@ -725,6 +868,8 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     df = breakout_logic(df)
 
     df['ATR'] = parkinson_vol(df, period=14)
+
+    df = volatility_shock(df)
 
     # --- ATR percentile for adaptive thresholds
     df['ATR_PERCENTILE'] = (
@@ -784,25 +929,40 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     df['DIR'] = np.sign(df['COMPOSITE_PRESSURE']).fillna(0)
 
     # ======================================================
-    # 1️⃣ LEADING SCORE (predictive signals)
+    # 1️⃣ DIRECTIONAL LEADING SCORES
     # ======================================================
 
-    lead_score = (
+    phase_long = ((df['PHASE'] == 1) | (df['PHASE'] == 2)).astype(int)
+    phase_short = (df['PHASE'] == 3).astype(int)
+
+    div_long = (df['DIVERGENCE'] > 0).astype(int)
+    div_short = (df['DIVERGENCE'] < 0).astype(int)
+
+    lead_long = (
         df['VOL_COMPRESS'].astype(int) +
-        (df['DIVERGENCE'] != 0).astype(int) +
-        ((df['PHASE'] == 1) | (df['PHASE'] == 2)).astype(int) +
+        phase_long +
+        div_long +
         df['STEALTH_ACCUM'].astype(int)
     )
 
-    df['LEAD_NORM'] = lead_score / 4
-    lead_norm = df['LEAD_NORM']
+    lead_short = (
+        df['VOL_COMPRESS'].astype(int) +
+        phase_short +
+        div_short +
+        df['STEALTH_DISTRIB'].astype(int)
+    )
+
+    lead_total = lead_long + lead_short + 1e-9
+
+    df['LEAD_BIAS'] = (lead_long - lead_short) / lead_total
+    lead_norm = df['LEAD_BIAS']
 
     # ======================================================
     # 2️⃣ CONFIRMATION SCORE (reactive signals)
     # ======================================================
 
     confirm_score = (
-        df['VALID_BREAK_LONG'].astype(int) +
+        (df['VALID_BREAK_LONG'] | df['VALID_BREAK_SHORT']).astype(int) +
         df['STRONG_BODY'].astype(int) +
         df['ATR_EXPAND'].astype(int) +
         (df['COMPOSITE_PRESSURE'] > 0).astype(int)
@@ -862,143 +1022,59 @@ def generate_signal(df, htf_df, atr_mult=1.5):
         fail_norm
     )
 
+    # -----------------------------------------
+    # Directional Asymmetry Injection
+    # -----------------------------------------
+    df['DIR'] = np.sign(
+        df['COMPOSITE_PRESSURE'].ewm(span=3).mean()
+    ).fillna(0)
+
+    df['ASYM_RAW'] *= df['DIR']
+
     # ======================================================
     # 6️⃣ SMOOTHING (REGIME STABILITY)
     # ======================================================
 
     df['ASYM_SCORE'] = df['ASYM_RAW'].ewm(span=3, adjust=False).mean() # tune here <-
 
-    # ==========================================================
-    # ASYM CANDIDATES
-    # ==========================================================
-    ASYM_LONG_TH = 0.005
-    ASYM_SHORT_TH = -0.005
-
-    df['ASYM_CANDIDATE'] = 0
-    df.loc[df['ASYM_SCORE'] > ASYM_LONG_TH, 'ASYM_CANDIDATE'] = 1
-    df.loc[df['ASYM_SCORE'] < ASYM_SHORT_TH, 'ASYM_CANDIDATE'] = -1
-
-    # ==========================================================
-    # STABILITY FILTER (Replaces persistence)
-    # ==========================================================
-
-    STABILITY_WINDOW = 3
-    STABILITY_THRESHOLD = 0.015
-
-    score_std = df['ASYM_SCORE'].rolling(STABILITY_WINDOW).std()
-
-    stable = score_std < STABILITY_THRESHOLD
-
-    df['ASYM_PERSIST'] = 0
-    df.loc[(stable) & (df['ASYM_SCORE'] > 0), 'ASYM_PERSIST'] = 1
-    df.loc[(stable) & (df['ASYM_SCORE'] < 0), 'ASYM_PERSIST'] = -1
-
-    # ==========================================================
-    # STATE MACHINE (MEMORY PRESERVING)
-    # ==========================================================
-    df['ASYM_STATE'] = 0
-    df['ASYM_COOLDOWN'] = 0
-
-    current_state = 0
-    cooldown = 0
-
-    for i in range(len(df)):
-        candidate = df.iat[i, df.columns.get_loc('ASYM_PERSIST')]
-        score = df.iat[i, df.columns.get_loc('ASYM_SCORE')]
-        # --- Dynamic cooldown based on TRANSITION_FORCE (0 → 1) ---
-        transition_force = df.iat[i, df.columns.get_loc('TRANSITION_FORCE')]
-        transition_force = 0 if pd.isna(transition_force) else transition_force
-        MAX_COOLDOWN = 5
-        MIN_COOLDOWN = 1
-        cooldown = int(round(MAX_COOLDOWN - (transition_force * (MAX_COOLDOWN - MIN_COOLDOWN))))
-        cooldown = max(MIN_COOLDOWN, cooldown)  # enforce min cooldown
-
-        # cooldown active → hold state
-        if cooldown > 0:
-            cooldown -= 1
-            df.iat[i, df.columns.get_loc('ASYM_STATE')] = current_state
-            df.iat[i, df.columns.get_loc('ASYM_COOLDOWN')] = cooldown
-            continue
-
-        # --- Compute adaptive threshold based on predictive signal ---
-        lead_weight = df['LEAD_NORM'].iat[i]
-        BASE_THRESHOLD = 0.05
-        adaptive_thresh = BASE_THRESHOLD * (1 - lead_weight)  # stronger lead → lower threshold
-
-        # --- Apply dynamic threshold ---
-        if candidate != 0 and candidate != current_state and abs(score) > adaptive_thresh:
-            current_state = candidate
-            # cooldown will be handled dynamically (next step)
-
-        df.iat[i, df.columns.get_loc('ASYM_STATE')] = current_state
-        df.iat[i, df.columns.get_loc('ASYM_COOLDOWN')] = cooldown
-
     # =========================
-    # RANGE LOCATION FILTER
+    # INSTITUTIONAL EXIT MODEL
     # =========================
-    range_lookback = 50
-    df['RANGE_HIGH'] = df['high'].rolling(range_lookback).max()
-    df['RANGE_LOW'] = df['low'].rolling(range_lookback).min()
-    df['RANGE_POS'] = (df['close'] - df['RANGE_LOW']) / (df['RANGE_HIGH'] - df['RANGE_LOW'])
-    df['RANGE_LONG_OK'] = df['RANGE_POS'] > 0.55
-    df['RANGE_SHORT_OK'] = df['RANGE_POS'] < 0.45
 
-    LONG_CONDITION = (df['VALID_BREAK_LONG']) & (df['ASYM_STATE'] >= 0)
-    SHORT_CONDITION = (df['VALID_BREAK_SHORT']) & (df['ASYM_STATE'] <= 0)
+    df = institutional_exit_model(df)
 
-    STATE_OK = (
-        (df['STATE_STABILITY'] > 0.3) &
-        (df['TRANSITION_FORCE'] < 2.2)
+    LONG_CONDITION = (df['VALID_BREAK_LONG'])
+    SHORT_CONDITION = (df['VALID_BREAK_SHORT'])
+
+    df['STATE_DIRECTION'] = np.sign(df['STATE_SCORE'])
+
+    LONG_CONDITION &= df['STATE_DIRECTION'] >= 0
+    SHORT_CONDITION &= df['STATE_DIRECTION'] <= 0
+
+    state_momentum_decay = (
+        df['STATE_VELOCITY']
+        .rolling(3)
+        .mean()
     )
 
-    LONG_CONDITION &= STATE_OK
-    SHORT_CONDITION &= STATE_OK
-
-    LONG_CONDITION &= ~(df['STATE_INFLECT'] & (df['STATE_VELOCITY'] < 0))
-    SHORT_CONDITION &= ~(df['STATE_INFLECT'] & (df['STATE_VELOCITY'] > 0))
+    LONG_CONDITION &= ~(state_momentum_decay < -0.05)
+    SHORT_CONDITION &= ~(state_momentum_decay > 0.05)
 
     LONG_CONDITION &= HTF_LONG_OK
     SHORT_CONDITION &= HTF_SHORT_OK
-
-    df['LONG_CANDIDATE'] = ((df['PHASE'] == 1) | (df['PHASE'] == 2)) & LONG_CONDITION
-    df['SHORT_CANDIDATE'] = ((df['PHASE'] == 1) | (df['PHASE'] == 2)) & SHORT_CONDITION
 
     df['signal'] = 0
     df.loc[LONG_CONDITION, 'signal'] = 1
     df.loc[SHORT_CONDITION, 'signal'] = -1
 
-    ASYM_EXIT_TH = 0.0
+    # ==========================================================
+    # INSTITUTIONAL EXIT CONDITIONS
+    # ==========================================================
 
-    EXIT_LONG = (
-        (df['ASYM_SCORE'] < ASYM_EXIT_TH) |
-        (df['STATE_STABILITY'] < 0.3)
-    )
+    EXIT_THRESHOLD = 0.50
 
-    EXIT_SHORT = (
-        (df['ASYM_SCORE'] > -ASYM_EXIT_TH) |
-        (df['STATE_STABILITY'] < 0.3)
-    )
-
-    NO_EXPANSION = (
-        df['ATR_PERCENTILE'] < 0.4
-    )
-
-    EXIT_LONG |= NO_EXPANSION
-    EXIT_SHORT |= NO_EXPANSION
-
-    REGIME_BREAK = (
-        (df['STATE_STABILITY'] < 0.35) &
-        (df['TRANSITION_FORCE'] > 0.8)
-    )
-
-    EXIT_LONG |= REGIME_BREAK
-    EXIT_SHORT |= REGIME_BREAK
-
-    # =========================
-    # REGIME DISCIPLINE
-    # =========================
-    df.loc[(df['ASYM_STATE'] == -1) & (df['signal'] == 1), 'signal'] = 0
-    df.loc[(df['ASYM_STATE'] == 1) & (df['signal'] == -1), 'signal'] = 0
+    EXIT_LONG = df['EXIT_PRESSURE'] > EXIT_THRESHOLD
+    EXIT_SHORT = df['EXIT_PRESSURE'] > EXIT_THRESHOLD
 
     df['final_signal'] = df['signal']
 
@@ -1010,7 +1086,6 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     # =========================
     print("\n=== STATE DIAGNOSTICS ===")
     print("Phase counts:\n", df['PHASE'].value_counts())
-    print("Asymmetry states:\n", df['ASYM_STATE'].value_counts())
     print("Breakouts: Long =", df['BREAK_RESISTANCE'].sum(), "Short =", df['BREAK_SUPPORT'].sum())
     print("Transition signals:", df['TRANSITION_SIGNAL'].value_counts())
 

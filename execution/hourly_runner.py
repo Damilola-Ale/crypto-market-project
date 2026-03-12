@@ -11,8 +11,8 @@ from execution.candle_gate import CandleGate
 from execution.notifier import TelegramNotifier
 
 SYMBOLS = [
-    "ZENUSDT", "EGLDUSDT", "BANDUSDT", "AVAXUSDT", "TRXUSDT",
-    "BTCUSDT", "LINKUSDT", "PAXGUSDT", "BCHUSDT", "LDOUSDT"
+    "FETUSDT", "QNTUSDT", "EOSUSDT", "DOTUSDT", "SUIUSDT",
+    "ADAUSDT", "LDOUSDT", "AVAXUSDT", "BANDUSDT", "BTCUSDT"
 ]
 
 SIGNAL_STORE = "data/signals.json"
