@@ -72,19 +72,31 @@ def fetch_binance(symbol, interval, limit):
 
 
 # ==========================================================
-# CONFIG
+# CONFIG LINK, AAVE, BTC, TRX, FXS, FIL, RUNE, ARB, OP, UNI, XTZ, ADA, SUI, CRV, MKR, XLM, BIO, JTO | DOGE, NEAR, SNX, LDO, MATIC, YFI
 # ==========================================================
 
-SYMBOL = "BTCUSDT"
+SYMBOL = "ARBUSDT"
 
 LTF_INTERVAL = "1h"
 HTF_INTERVAL = "4h"
 
+# LTF_LIMIT = 43800   # ~30 days of 1h candles
+# HTF_LIMIT = 10950   # ~120 days of 4h candles
+
+# LTF_LIMIT = 35040   # ~30 days of 1h candles
+# HTF_LIMIT = 8760   # ~120 days of 4h candles
+
+LTF_LIMIT = 26280   # ~30 days of 1h candles
+HTF_LIMIT = 6570   # ~120 days of 4h candles
+
 # LTF_LIMIT = 17520   # ~30 days of 1h candles
 # HTF_LIMIT = 4380   # ~120 days of 4h candles
 
-LTF_LIMIT = 8760   # ~30 days of 1h candles
-HTF_LIMIT = 2190   # ~120 days of 4h candles
+# LTF_LIMIT = 8760   # ~30 days of 1h candles
+# HTF_LIMIT = 2190   # ~120 days of 4h candles
+
+# LTF_LIMIT = 4380   # ~30 days of 1h candles
+# HTF_LIMIT = 1095   # ~120 days of 4h candles
 
 
 # ==========================================================

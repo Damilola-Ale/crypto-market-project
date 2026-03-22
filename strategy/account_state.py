@@ -21,6 +21,14 @@ class AccountState:
     def can_open(self) -> tuple[bool, str | None]:
         self._reset_if_new_day()
 
+        if self.open_positions < 0:
+            print("[ACCOUNT] fixing negative open_positions")
+            self.open_positions = 0
+
+        if self.open_positions > 100:  # unrealistic
+            print("[ACCOUNT] fixing abnormal open_positions")
+            self.open_positions = 0
+
         if self.open_positions >= MAX_CONCURRENT_POSITIONS:
             return False, "max_concurrent_positions"
 
@@ -58,9 +66,13 @@ class AccountState:
         today = datetime.now(timezone.utc).date().isoformat()
 
         if self.day != today:
+            print(f"[ACCOUNT] New day detected → resetting PnL")
+
             self.day = today
             self.realized_pnl_today = 0.0
             self.today_pnl = 0.0
+
+            self._save()
 
     # ==================================================
     # PERSISTENCE

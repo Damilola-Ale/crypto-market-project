@@ -42,15 +42,13 @@ class CandleGate:
 
     # --------------------------------------------------
     def _log(self, symbol, ts, allowed, reason):
-        with open(GATE_LOG, "w") as f:
-            json.dump(
-                {
-                    "symbol": symbol,
-                    "timestamp": ts,
-                    "allowed": allowed,
-                    "reason": reason,
-                    "logged_at": datetime.now(timezone.utc).isoformat(),
-                },
-                f,
-                indent=2,
-            )
+        log_entry = {
+            "symbol": symbol,
+            "timestamp": ts,
+            "allowed": allowed,
+            "reason": reason,
+            "logged_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(GATE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")

@@ -20,28 +20,51 @@ class PositionManager:
         self.notifier = TelegramNotifier()
         os.makedirs(POSITIONS_DIR, exist_ok=True)
         self._load()
+        account_state.open_positions = len(self.positions)
+        account_state._save()
 
     # --------------------------------------------------
-    def update(self, df: pd.DataFrame, symbol: str) -> Optional[dict]:
-        latest = df.iloc[-1]
+    def update(self, df: pd.DataFrame, symbol: str, external_signal: Optional[int] = None, external_row: Optional[pd.Series] = None) -> Optional[dict]:
+        if external_signal is not None and external_row is not None:
+            # 🔥 Use runner-provided signal (PRIMARY PATH)
+            final_signal = int(external_signal)
+            latest = external_row
+
+            print(f"[PM] Using EXTERNAL signal for {symbol} → {final_signal}")
+
+        else:
+            # ⚠️ Fallback (should rarely be used)
+            recent = df.iloc[-3:]
+            signals_recent = recent[recent['final_signal'] != 0]
+
+            if not signals_recent.empty:
+                latest = signals_recent.iloc[-1]
+            else:
+                latest = df.iloc[-1]
+
+            final_signal = int(latest.get("final_signal", 0))
+
+            print(f"[PM] Using INTERNAL fallback signal for {symbol} → {final_signal}")
+
+        # Unified fields
         timestamp = latest.name
         price = float(latest["close"])
-        final_signal = int(latest.get("final_signal", 0))
 
         position = self.positions.get(symbol)
 
         # ================= ENTRY =================
         if position is None:
-            if final_signal != 0:
-                print(
-                    f"[SIGNAL-DETECTED] {symbol} | "
-                    f"signal={final_signal} | "
-                    f"price={price} | "
-                    f"time={timestamp.isoformat()}"
-                )
-                
             if final_signal == 0:
+                print(f"[PM] No entry condition met for {symbol} | latest close={price}")
                 return None
+
+            # Only print when a valid signal is detected
+            print(
+                f"[SIGNAL-DETECTED] {symbol} | "
+                f"signal={final_signal} | "
+                f"price={price} | "
+                f"time={timestamp.isoformat()}"
+            )
 
             allowed, reason = account_state.can_open()
             if not allowed:
@@ -129,11 +152,14 @@ class PositionManager:
         if int(row.get("final_signal", 0)) == -direction:
             return "OPPOSITE_SIGNAL"
 
-        age = (
-            row.name - datetime.fromisoformat(pos["entry_time"])
-        ).total_seconds() / 3600
+        # -------------------------
+        # SAFER TIME CALCULATION
+        # -------------------------
+        entry_time = pd.Timestamp(pos["entry_time"])
+        age = (row.name - entry_time).total_seconds() / 3600
 
         if age >= POSITION_EXPIRY_CANDLES:
+            print(f"[PM] Position for {pos['symbol']} expired due to TIME_EXPIRY | age={age:.2f}h")
             return "TIME_EXPIRY"
 
         return None
