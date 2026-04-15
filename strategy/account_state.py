@@ -3,6 +3,7 @@
 import os
 import json
 from datetime import datetime, timezone
+import config.runtime
 
 STATE_FILE = "data/account/account_state.json"
 
@@ -101,19 +102,17 @@ class AccountState:
         self._reset_if_new_day()
 
     def _save(self):
+        try:
+            if config.runtime.STATE_MODE == "MEMORY":
+                return
+        except Exception:
+            pass
+
+        os.makedirs("data/account", exist_ok=True)
+
         with open(STATE_FILE + ".tmp", "w") as f:
-            json.dump(
-                {
-                    "day": self.day,
-                    "realized_pnl_today": self.realized_pnl_today,
-                    "today_pnl": self.today_pnl,
-                    "total_pnl": self.total_pnl,
-                    "open_positions": self.open_positions,
-                    "equity": self.equity,
-                },
-                f,
-                indent=2,
-            )
+            json.dump(self.__dict__, f, indent=2)
+
         os.replace(STATE_FILE + ".tmp", STATE_FILE)
 
 

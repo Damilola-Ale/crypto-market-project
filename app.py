@@ -47,6 +47,8 @@ def debug_env():
 
 @app.route("/debug/data")
 def debug_data_health():
+    if request.args.get("key") != os.getenv("RUN_KEY", "local"):
+        abort(403)
 
     from data_pipeline.updater import update_symbol
 
@@ -56,15 +58,18 @@ def debug_data_health():
 
         try:
 
-            df, htf = update_symbol(symbol)
+            df, htf_df, lltf_df = update_symbol(symbol)
 
             summary[symbol] = {
                 "ltf_candles": len(df),
-                "htf_candles": len(htf),
+                "htf_candles": len(htf_df),
+                "lltf_candles": len(lltf_df),
                 "ltf_first": str(df.index[0]),
                 "ltf_last": str(df.index[-1]),
-                "htf_first": str(htf.index[0]),
-                "htf_last": str(htf.index[-1]),
+                "htf_first": str(htf_df.index[0]),
+                "htf_last": str(htf_df.index[-1]),
+                "lltf_first": str(lltf_df.index[0]),
+                "lltf_last": str(lltf_df.index[-1]),
             }
 
         except Exception as e:
@@ -121,8 +126,17 @@ def debug_gate_log():
     if not os.path.exists(path):
         return {"exists": False}
 
-    with open(path, "r") as f:
-        return {"exists": True, "gate": json.load(f)}
+    entries = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    return {"exists": True, "gate": entries}
 
 
 @app.route("/debug/positions")

@@ -1,55 +1,115 @@
 import requests
 import os
+import uuid
 from typing import Optional
+
 
 class TelegramNotifier:
     def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        self.chat_id   = chat_id   or os.getenv("TELEGRAM_CHAT_ID")
 
         if not self.bot_token or not self.chat_id:
             raise ValueError("Telegram bot token and chat ID must be set.")
 
         self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
 
-    def send_signal(
+    # ------------------------------------------------------------------
+    # PUBLIC API
+    # ------------------------------------------------------------------
+    def notify_open(
         self,
         symbol: str,
         direction: int,
+        entry_price: float,
+        stop_loss: float,
         timestamp,
-        price: Optional[float] = None,
-        stop_loss: Optional[float] = None,
-        trade_quality: Optional[float] = None
-    ):
-        if direction == 1:
-            dir_text = "LONG 📈"
-        elif direction == -1:
-            dir_text = "SHORT 📉"
-        else:
-            dir_text = "FLAT ⬜"
+        trade_id: str,
+        risk_usd: float,
+        quantity: float,
+        position_value: float,
+    ) -> None:
+        dir_text   = "BUY" if direction == 1 else "SELL"
+        trade_id   = trade_id or self._make_id(symbol)
+        position_value = float(position_value or 0)
+        quantity = float(quantity or 0)
+        risk_usd = float(risk_usd or 0)
+        stop_dist  = abs(entry_price - stop_loss)
+        stop_pct   = (stop_dist / entry_price * 100) if entry_price else 0
 
-        msg = f"*{symbol}* → *{dir_text}*\n"
-        msg += f"Time (UTC): `{timestamp}`\n"
-        if price is not None:
-            msg += f"Entry Price: `{price}`\n"
-        if stop_loss is not None:
-            msg += f"ATR Stop: `{stop_loss}`\n"
-        if trade_quality is not None:
-            msg += f"Trade Quality: `{trade_quality:.2f}`\n"
+        msg = (
+            f"🟢 *TRADE READY*\n"
+            f"ID: `{trade_id}`\n"
+            f"Symbol: `{symbol}`\n"
+            f"Side: `{dir_text}`\n"
+            f"Entry Price: `{entry_price:.6f}`\n"
+            f"Stop Loss: `{stop_loss:.6f}`\n"
+            f"Stop Distance: `{stop_dist:.6f}` (`{stop_pct:.2f}%`)\n"
+            f"Position Value: `${position_value:.0f}`\n"
+            f"Quantity: `{quantity}`\n"
+            f"Risk: `${risk_usd:.3f}`\n"
+            f"\n*EXECUTE ON EXCHANGE* 👇\n"
+            f"Market Order: `{symbol} {quantity}`\n"
+            f"Stop Order: `{stop_loss:.6f}`"
+        )
+        self._send(msg)
 
-        payload = {
-            "chat_id": self.chat_id,
-            "text": msg,
-            "parse_mode": "Markdown"
-        }
+    def notify_close(
+        self,
+        symbol:             str,
+        direction:          int,
+        exit_price:         float,
+        timestamp,
+        reason:             str,
+        pnl_r:              float,
+        trade_id:           Optional[str] = None,
+        trailing_activated: bool = False,
+        risk_usd:           float = 0,
+    ) -> None:
+        dir_text  = "LONG" if direction == 1 else "SHORT"
+        trade_id  = trade_id or "unknown"
+        risk_usd  = float(risk_usd or 0)
+        pnl_usd   = pnl_r * risk_usd
 
-        response = requests.post(self.api_url, json=payload, timeout=10)
-        response.raise_for_status()
+        msg = (
+            f"🔴 *TRADE CLOSED*\n"
+            f"ID: `{trade_id}`\n"
+            f"Symbol: `{symbol}`\n"
+            f"Direction: `{dir_text}`\n"
+            f"Exit Price: `{exit_price:.6f}`\n"
+            f"Reason: `{reason}`\n"
+            f"Result:\n"
+            f"PnL: `{pnl_r:+.2f}R`\n"
+            f"PnL: `${pnl_usd:+.3f}`\n"
+            f"Trailing Activated: `{trailing_activated}`"
+        )
+        self._send(msg)
 
-    def send_text(self, message: str):
-        payload = {
-            "chat_id": self.chat_id,
-            "text": message
-        }
+    def send_text(self, message: str) -> None:
+        self._send(message, parse_mode="Markdown")
+
+    # ------------------------------------------------------------------
+    # HELPERS
+    # ------------------------------------------------------------------
+    @staticmethod
+    def make_trade_id(symbol: str) -> str:
+        return f"{symbol}-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _make_id(symbol: str) -> str:
+        return TelegramNotifier.make_trade_id(symbol)
+
+    @staticmethod
+    def _dir_label(direction: int) -> str:
+        return {1: "LONG 📈", -1: "SHORT 📉"}.get(direction, "FLAT ⬜")
+
+    @staticmethod
+    def _fmt_ts(ts) -> str:
+        return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+    def _send(self, message: str, parse_mode: Optional[str] = "Markdown") -> None:
+        payload: dict = {"chat_id": self.chat_id, "text": message}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         response = requests.post(self.api_url, json=payload, timeout=10)
         response.raise_for_status()

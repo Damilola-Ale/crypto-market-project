@@ -7,17 +7,13 @@ import numpy as np
 def EMA(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
-def ATR(df, period=14):
-    tr = np.maximum.reduce([
+def atr_ema(df, period=14):
+    tr = pd.concat([
         df['high'] - df['low'],
         (df['high'] - df['close'].shift()).abs(),
         (df['low'] - df['close'].shift()).abs()
-    ])
-    return pd.Series(tr, index=df.index).rolling(period).mean()
-
-def parkinson_vol(df, period=14):
-    hl_ratio = np.log(df['high'] / df['low'])
-    return (hl_ratio.pow(2).rolling(period).mean() / (4 * np.log(2))).pow(0.5)
+    ], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean()
 
 def RSI(series, period=14):
     delta = series.diff()
@@ -38,8 +34,7 @@ def trend_bias(df, window=50):
     df['TREND_QUALITY'] = df['TREND_SLOPE'] * df['TREND_R2']
 
     # Normalize to stable range (important)
-    scale = df['close'].rolling(window).std()
-    df['TREND_QUALITY'] = df['TREND_QUALITY'] / (scale + 1e-9)
+    df['TREND_QUALITY'] = hybrid_zscore(df['TREND_QUALITY'])
 
     return df
 
@@ -83,7 +78,7 @@ def breakout_logic(df, atr_k=0.5):
 
     # Ensure ATR exists
     if 'ATR' not in df.columns:
-        df['ATR'] = ATR(df)
+        df['ATR'] = atr_ema(df)
 
     resistance = df['RESISTANCE'].shift(1)
     support = df['SUPPORT'].shift(1)
@@ -93,25 +88,76 @@ def breakout_logic(df, atr_k=0.5):
 
     return df
 
-def volatility_state(df, lookback=200):
+# ==========================================================
+# VOLATILITY EXPANSION PHYSICS (REPLACES ATR PERCENTILE)
+# ==========================================================
+def volatility_expansion(df, fast=14, slow=50):
+    """
+    Volatility Expansion Ratio (VER)
+    Measures if volatility is expanding or contracting RIGHT NOW.
 
-    pctl = df['ATR'].rolling(lookback).rank(pct=True)
+    fast ATR reacts quickly
+    slow ATR defines background regime
+    """
 
+    # Fast and slow volatility
+    df['ATR_FAST'] = atr_ema(df, fast)
+    df['ATR_SLOW'] = atr_ema(df, slow)
+
+    # Volatility Expansion Ratio
+    df['VER'] = df['ATR_FAST'] / (df['ATR_SLOW'] + 1e-9)
+
+    # Smooth slightly to remove noise
+    df['VER'] = df['VER'].ewm(span=3).mean()
+
+    return df
+
+# ==========================================================
+# VOLATILITY STATE (PHYSICS VERSION)
+# ==========================================================
+def volatility_state(df):
+    """
+    Uses Volatility Expansion Ratio instead of ATR percentile.
+
+    This makes the system asset-agnostic and regime aware.
+    """
+
+    # Ensure VER exists
+    if 'VER' not in df.columns:
+        df = volatility_expansion(df)
+
+    # Regime classification
     df['VOL_STATE'] = np.select(
-        [pctl < 0.45, pctl > 0.55],  # relaxed thresholds
+        [
+            df['VER'] < 0.9,   # compression
+            df['VER'] > 1.1    # expansion
+        ],
         [-1, 1],
         default=0
     )
 
     return df
 
-def structure_state(df, lookback=50):
+def trend_efficiency_state(df, lookback=50, er_window=20):
+    """
+    Replaces raw range width with Trend Efficiency (Directional Persistence).
+    Measures how efficiently price is moving in a direction over the lookback.
+    """
 
-    width = df['high'].rolling(lookback).max() - df['low'].rolling(lookback).min()
-    norm = width / (df['ATR'] * np.sqrt(lookback) + 1e-9)
+    # ------------------------------------------------------
+    # 1️⃣ Compute rolling efficiency ratio
+    # ------------------------------------------------------
+    df['ER'] = efficiency_ratio(df['close'], er_window)
 
+    # ------------------------------------------------------
+    # 2️⃣ Define compression / expansion state
+    # Use ER instead of range width to detect sideways vs trending
+    # ------------------------------------------------------
     df['STRUCT_STATE'] = np.select(
-        [norm < 1.0, norm > 1.5],  # relaxed compression / expansion
+        [
+            df['ER'] < 0.45,  # low efficiency → sideways / compression
+            df['ER'] > 0.7    # high efficiency → trending / expansion
+        ],
         [-1, 1],
         default=0
     )
@@ -141,9 +187,7 @@ def participation_state(df, lookback=20, threshold=0.5):
     # ------------------------------------------------------
     # 2️⃣ Normalize by rolling volatility (z-score style)
     # ------------------------------------------------------
-    flow_std = df['FLOW'].rolling(50).std()
-
-    df['FLOW_Z'] = df['FLOW'] / (flow_std + 1e-9)
+    df['FLOW_Z'] = hybrid_zscore(df['FLOW'])
 
     # ------------------------------------------------------
     # 3️⃣ Capital accumulation (rolling flow)
@@ -230,28 +274,6 @@ def classify_phase(df):
 
     return df
 
-def divergence_state(df, lookback=14):
-
-    # --- returns
-    df['PRICE_RET'] = df['close'].pct_change()
-    df['PRESSURE_RET'] = df['PRESSURE'].diff()
-
-    # --- rolling correlation
-    df['DIV_CORR'] = df['PRICE_RET'].rolling(lookback).corr(df['PRESSURE_RET'])
-
-    # --- divergence strength (magnitude-aware)
-    df['DIV_STRENGTH'] = -df['DIV_CORR']
-
-    # --- directional classification
-    df['DIV_BULL'] = df['DIV_CORR'] < -0.2
-    df['DIV_BEAR'] = df['DIV_CORR'] < -0.2
-
-    # --- discrete signal (kept compatible with your system)
-    df['DIVERGENCE'] = 0
-    df.loc[df['DIV_CORR'] < -0.2, 'DIVERGENCE'] = np.sign(df['PRESSURE_RET'])
-
-    return df
-
 def vol_compression_slope(df, lookback=50, rv_period=20, alpha=0.2):
     # Compute realized volatility
     df['REALIZED_VOL'] = ewma_realized_vol(df, period=rv_period, alpha=alpha)
@@ -266,12 +288,10 @@ def vol_compression_slope(df, lookback=50, rv_period=20, alpha=0.2):
 
 def transition_detector(df):
     df['TRANSITION_LONG'] = (
-        (df['VOL_COMPRESS']) &
-        (df['DIVERGENCE'] >= 0)
+        (df['VOL_COMPRESS'])
     )
     df['TRANSITION_SHORT'] = (
-        (df['VOL_COMPRESS']) &
-        (df['DIVERGENCE'] <= 0)
+        (df['VOL_COMPRESS'])
     )
     
     df['TRANSITION_SIGNAL'] = 0
@@ -303,47 +323,172 @@ def composite_pressure(df):
 
     return df
 
+def rolling_zscore(series, window):
+    mean = series.rolling(window).mean()
+    std  = series.rolling(window).std()
+    return (series - mean) / (std + 1e-9)
+
+# ==========================================================
+# EXPANSION IGNITION ENGINE (replaces contextual_displacement)
+# ==========================================================
+def expansion_ignition(df):
+
+    # ------------------------------------------------------
+    # 1️⃣ Expansion pressure (continuous)
+    # ------------------------------------------------------
+    expansion_pressure = (
+        0.5 * df['ATR_ACCEL_NORM'] +
+        0.3 * df['TRANSITION_FORCE'] +
+        0.2 * df['PRESSURE_VOL_NORM']
+    )
+
+    df['EXPANSION_PRESSURE'] = expansion_pressure.ewm(span=3).mean()
+
+    # ------------------------------------------------------
+    # 2️⃣ Expansion inflection (birth of move)
+    # ------------------------------------------------------
+    df['EXPANSION_INFLECT'] = (
+        df['EXPANSION_PRESSURE'].diff() > 0
+    )
+
+    # ------------------------------------------------------
+    # 3️⃣ Compression release bonus
+    # ------------------------------------------------------
+    compression = (
+        (df['VOL_STATE'] == -1) &
+        (df['STRUCT_STATE'] == -1)
+    )
+
+    df.loc[compression, 'EXPANSION_PRESSURE'] += 0.3
+
+    # ------------------------------------------------------
+    # 4️⃣ Final ignition score (continuous)
+    # ------------------------------------------------------
+    df['IGNITION_SCORE'] = (
+        0.7 * df['EXPANSION_PRESSURE'] +
+        0.3 * df['STATE_STABILITY']
+    )
+
+    df['IGNITION_OK'] = df['IGNITION_SCORE'] > 0.4
+
+    return df
+
+# ==========================================================
+# EXPANSION CONTINUATION MODEL (replaces follow_through)
+# ==========================================================
+def expansion_continuation(df):
+
+    # Growth of core drivers
+    vol_growth   = df['ATR_ACCEL_NORM'].ewm(span=3).mean()
+    flow_growth  = df['FLOW_STRENGTH'].ewm(span=3).mean()
+    trend_growth = df['TREND_QUALITY'].ewm(span=3).mean()
+
+    # Composite continuation strength
+    df['CONTINUATION_STRENGTH'] = (
+        0.4 * vol_growth +
+        0.3 * flow_growth +
+        0.3 * trend_growth
+    )
+
+    # Continuation velocity (important!)
+    df['CONTINUATION_VELOCITY'] = df['CONTINUATION_STRENGTH'].diff()
+
+    # Stable continuation regime
+    df['CONTINUATION_OK'] = (
+        (df['CONTINUATION_STRENGTH'] > 0) &
+        (df['CONTINUATION_VELOCITY'] > -0.1) &
+        (df['STATE_STABILITY'] > 0.4)
+    )
+
+    return df
+
 def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     body = (df['close'] - df['open']).abs()
     range_ = df['high'] - df['low']
 
-    # --- Displacement requirement (impulsive candle)
-    DISPLACEMENT_K = 0.8
-    df['DISPLACEMENT'] = body > (df['ATR'] * DISPLACEMENT_K)
+    # Ensure contextual displacement exists
+    df = dynamic_state_engine(df)
+    df = expansion_ignition(df)
+    df = expansion_continuation(df)
 
     # --- Strong body relative to candle range
-    df['STRONG_BODY'] = (body / (range_ + 1e-9)) > body_ratio
+    body_ratio_series = body / (range_ + 1e-9)
+    df['STRONG_BODY'] = hybrid_zscore(body_ratio_series) > 0.5
 
     # --- ATR expansion confirms real move
     df['ATR_EXPAND'] = df['ATR'] > df['ATR'].rolling(20).mean() * atr_mult
 
-    # --- Reject fake wick breakouts
-    df['NO_UPPER_WICK_FAKE'] = df['UPPER_WICK_RATIO'] < df['DYNAMIC_WICK_LIMIT']
-    df['NO_LOWER_WICK_FAKE'] = df['LOWER_WICK_RATIO'] < df['DYNAMIC_WICK_LIMIT']
+    pressure_z = hybrid_zscore(df['COMPOSITE_PRESSURE'])
+    recent_avg = pressure_z.rolling(20).mean()
+    recent_std = pressure_z.rolling(20).std()
+    df['PRESSURE_ELEVATED_LONG']  = pressure_z > (recent_avg + recent_std)
+    df['PRESSURE_ELEVATED_SHORT'] = pressure_z < (recent_avg - recent_std)
 
-    # --- Final validated breakouts
-    # Compression must occur within recent window
-    COMPRESSION_LOOKBACK = 7
-    prior_compression = df['VOL_COMPRESS'].rolling(COMPRESSION_LOOKBACK).max().shift(1)
-    
+    df = expansion_maturity(df)
+    df = compression_detector(df)
+    compression_ok = df['COMPRESSION_BARS'] >= 3
 
     df['VALID_BREAK_LONG'] = (
-        # df['BREAK_RESISTANCE'] &
-        df['STRONG_BODY'] &
-        prior_compression 
-        # df['NO_UPPER_WICK_FAKE'] 
+        compression_ok &
+        df['EARLY_EXPANSION'] 
+        # (df['IGNITION_OK'] |
+        # df['CONTINUATION_OK']) 
+        # df['PRESSURE_ELEVATED_LONG'] &
+        # (df['COMPOSITE_PRESSURE'] > 0) 
     )
 
     df['VALID_BREAK_SHORT'] = (
-        # df['BREAK_SUPPORT'] &
-        df['STRONG_BODY'] &
-        prior_compression 
-        # df['NO_LOWER_WICK_FAKE'] 
+        compression_ok &
+        df['EARLY_EXPANSION'] 
+        # (df['IGNITION_OK'] |
+        # df['CONTINUATION_OK']) 
+        # df['PRESSURE_ELEVATED_SHORT'] &
+        # (df['COMPOSITE_PRESSURE'] < 0) 
     )
 
-    ELASTICITY_FAIL = df['PRESS_ELAST_DIV_NORM'] < -0.5
-    df['VALID_BREAK_LONG'] &= ~ELASTICITY_FAIL
-    df['VALID_BREAK_SHORT'] &= ~ELASTICITY_FAIL
+    # ======================================================
+    # BREAKOUT AGE (ENTRY DECAY CORE)
+    # ======================================================
+    df['BARS_SINCE_LONG_BREAK']  = bars_since_event(df['VALID_BREAK_LONG'])
+    df['BARS_SINCE_SHORT_BREAK'] = bars_since_event(df['VALID_BREAK_SHORT'])
+
+    return df
+
+# ==========================================================
+# COMPRESSION DETECTOR (Replaces Resistance Age)
+# ==========================================================
+def compression_detector(df, er_window=20):
+    """
+    Detects how long price has been coiling before breakout.
+
+    Compression = low volatility + low directional efficiency
+    """
+
+    # ------------------------------------------------------
+    # 1️⃣ Ensure required inputs exist
+    # ------------------------------------------------------
+    if 'VER' not in df.columns:
+        df = volatility_expansion(df)
+
+    # Efficiency Ratio (trend efficiency)
+    df['ER'] = efficiency_ratio(df['close'], er_window)
+
+    # ------------------------------------------------------
+    # 2️⃣ Compression definition (the IMPORTANT part)
+    # ------------------------------------------------------
+    df['IS_COMPRESSION'] = (
+        (df['VER'] < 0.95) &     # volatility contracting
+        (df['ER']  < 0.45)       # price moving sideways
+    )
+
+    # ------------------------------------------------------
+    # 3️⃣ Count consecutive compression bars
+    # ------------------------------------------------------
+    comp = df['IS_COMPRESSION'].astype(int)
+
+    df['COMPRESSION_BARS'] = (
+        comp.groupby((comp == 0).cumsum()).cumsum()
+    )
 
     return df
 
@@ -372,7 +517,7 @@ def micro_consolidation(df, lookback=12, tightness=0.6):
     df['MICRO_BREAK_SHORT'] = df['close'] < df['MICRO_LOW']
 
     # strength score (normalized)
-    expansion_strength = (width / width.rolling(lookback).mean()).clip(0,2)
+    expansion_strength = hybrid_zscore(width).clip(0, 2)
 
     df['MICRO_BREAK_SCORE'] = np.select(
         [df['MICRO_BREAK_LONG'], df['MICRO_BREAK_SHORT']],
@@ -383,7 +528,7 @@ def micro_consolidation(df, lookback=12, tightness=0.6):
     return df
 
 def supertrend(df, period=10, multiplier=3, eps=1e-6):
-    atr = ATR(df, period).round(6)
+    atr = atr_ema(df, period).round(6)
 
     hl2 = ((df['high'] + df['low']) / 2).round(6)
 
@@ -466,19 +611,15 @@ def momentum_continuity(df, window=20, min_move=0.001):
     ret = df['close'].pct_change()
 
     # ignore tiny moves (noise)
-    ret = np.where(np.abs(ret) < min_move, 0, ret)
+    ret = ret.where(ret.abs() >= min_move, 0)
 
-    sign_ret = np.sign(ret)
+    sign_ret = ret.apply(np.sign)
 
     persistence = (
-        (sign_ret * pd.Series(sign_ret).shift(1)) > 0
+        (sign_ret * sign_ret.shift(1)) > 0
     ).astype(int)
 
-    df['MOMENTUM_CONTINUITY'] = (
-        pd.Series(persistence, index=df.index)
-        .rolling(window)
-        .mean()
-    )
+    df['MOMENTUM_CONTINUITY'] = persistence.rolling(window).mean()
 
     return df
 
@@ -520,22 +661,23 @@ def dynamic_state_engine(df, window=10):
     )
 
     df['PRESSURE_VOL'] = pressure_volatility(df, period=20, alpha=0.2)
-    df['PRESSURE_VOL_NORM'] = df['PRESSURE_VOL'] / (df['PRESSURE_VOL'].rolling(200).max() + 1e-9)
+    df['PRESSURE_VOL_NORM'] = (hybrid_zscore(df['PRESSURE_VOL']).clip(0, 3) / 3)
 
     # -----------------------------------
     # STABILITY
     # low variance = stable regime
     # -----------------------------------
+    state_vol = df['STATE_SCORE'].rolling(window).std()
+
     df['STATE_STABILITY'] = (
-        1 /
-        (df['STATE_SCORE'].rolling(window).std() + 1e-9)
+        1 / (state_vol + 1e-9)
     )
 
-    # normalize stability
-    df['STATE_STABILITY'] = (
-        df['STATE_STABILITY'] /
-        df['STATE_STABILITY'].rolling(window).max()
-    ).clip(0,1)
+    df['STATE_STABILITY'] = hybrid_zscore(df['STATE_STABILITY'])
+    df['STATE_STABILITY'] = df['STATE_STABILITY'].clip(-2,2)
+
+    # convert to 0–1 confidence score
+    df['STATE_STABILITY'] = (df['STATE_STABILITY'] + 2) / 4
 
     df['STATE_STABILITY'] *= (1 - 0.5 * df['PRESSURE_VOL_NORM'])  # volatile regimes are less stable
 
@@ -632,10 +774,6 @@ def pressure_volatility(df, period=20, alpha=0.2):
     pv = df['COMPOSITE_PRESSURE'].ewm(alpha=alpha, adjust=False).std()
     return pv
 
-def parkinson_vol(df, period=14):
-    hl_ratio = np.log(df['high'] / df['low'])
-    return (hl_ratio.pow(2).rolling(period).mean() / (4 * np.log(2))).pow(0.5)
-
 def htf_structural_stack(df, htf_df,
                          vol_lookback=200,
                          part_lookback=50,
@@ -655,7 +793,7 @@ def htf_structural_stack(df, htf_df,
     # 2️⃣ VOLATILITY STATE (Continuous)
     # ======================================================
 
-    htf['HTF_ATR'] = parkinson_vol(htf)
+    htf['HTF_ATR'] = atr_ema(htf)
     htf['HTF_VOL_PCTL'] = (
         htf['HTF_ATR']
         .rolling(vol_lookback)
@@ -719,10 +857,8 @@ def htf_structural_stack(df, htf_df,
     )
 
     # normalize
-    scale = htf['HTF_TREND_MOMENTUM'].rolling(200).std()
-
-    htf['HTF_TREND_MOMENTUM_NORM'] = (
-        htf['HTF_TREND_MOMENTUM'] / (scale + 1e-9)
+    htf['HTF_TREND_MOMENTUM_NORM'] = hybrid_zscore(
+        htf['HTF_TREND_MOMENTUM']
     ).clip(-2,2)
 
     # convert to 0-1 score
@@ -754,124 +890,6 @@ def htf_structural_stack(df, htf_df,
     return aligned.fillna(0)
 
 # ==========================================================
-# INSTITUTIONAL EXIT MODEL
-# ==========================================================
-def institutional_exit_model(df):
-    # ------------------------------------------------------
-    # CAPITAL WITHDRAWAL (Liquidity leaving trend)
-    # ------------------------------------------------------
-
-    # participation momentum
-    df['FLOW_MOMENTUM'] = (
-        df['FLOW_STRENGTH']
-        .diff()
-        .ewm(span=3)
-        .mean()
-    )
-
-    # smoothed participation trend
-    df['FLOW_TREND'] = (
-        df['FLOW_STRENGTH']
-        .rolling(10)
-        .mean()
-    )
-
-    # momentum decay
-    flow_momentum_decay = (
-        df['FLOW_MOMENTUM']
-        .rolling(5)
-        .mean() < 0
-    )
-
-    # participation weakening
-    flow_trend_decay = (
-        df['FLOW_TREND'].diff() < 0
-    )
-
-    # ensure a trend is still active
-    trend_active = df['TREND_QUALITY'].abs() > 0.1
-
-    # final liquidity withdrawal signal
-    df['FLOW_DECAY'] = (
-        flow_momentum_decay &
-        flow_trend_decay &
-        trend_active
-    )
-
-    # ------------------------------------------------------
-    # 2️⃣ EDGE DECAY (your asymmetry engine weakening)
-    # ------------------------------------------------------
-
-    df['ASYM_DECAY'] = (
-        df['ASYM_SCORE']
-        .diff()
-        .rolling(3)
-        .mean() < 0
-    )
-
-    # ------------------------------------------------------
-    # 3️⃣ REGIME WEAKENING (state engine deterioration)
-    # ------------------------------------------------------
-
-    df['STATE_WEAKEN'] = (
-        (df['STATE_STABILITY'] < 0.45) |
-        (df['TRANSITION_FORCE'] > 0.7)
-    )
-
-    # ------------------------------------------------------
-    # 4️⃣ TREND ENERGY DECAY
-    # ------------------------------------------------------
-
-    df['TREND_ENERGY'] = (
-        df['TREND_QUALITY'].abs() *
-        df['MOMENTUM_CONTINUITY']
-    )
-
-    df['TREND_ENERGY_DECAY'] = (
-        df['TREND_ENERGY']
-        .diff()
-        .rolling(5)
-        .mean() < 0
-    )
-
-    # ------------------------------------------------------
-    # 5️⃣ STRUCTURAL EFFICIENCY DECAY
-    # ------------------------------------------------------
-
-    df['STRUCT_EFF'] = efficiency_ratio(df['close'], 20)
-
-    df['STRUCT_DECAY'] = (
-        df['STRUCT_EFF']
-        .diff()
-        .rolling(5)
-        .mean() < 0
-    )
-
-    # ------------------------------------------------------
-    # 6️⃣ EXIT PRESSURE SCORE
-    # ------------------------------------------------------
-
-    df['NO_EXPANSION'] = (df['ATR_PERCENTILE'] < 0.4)
-
-    df['REGIME_BREAK'] = (
-        (df['STATE_STABILITY'] < 0.35) &
-        (df['TRANSITION_FORCE'] > 0.8)
-    )
-
-    df['EXIT_PRESSURE'] = (
-        # 0.25 * df['TREND_ENERGY_DECAY'].astype(int) +
-        # 0.20 * df['FLOW_DECAY'].astype(int) +
-        # 0.20 * df['STRUCT_DECAY'].astype(int) +
-        # 0.15 * df['MICRO_BREAK_SCORE'].abs().gt(1.2).astype(int) +
-        # 0.10 * df['NO_EXPANSION'].astype(int) +
-        1.0 * df['REGIME_BREAK'].astype(int)
-    )
-
-    df['EXIT_PRESSURE'] = df['EXIT_PRESSURE'].ewm(span=3).mean()
-
-    return df
-
-# ==========================================================
 # VOLATILITY SHOCK DETECTOR
 # ==========================================================
 def volatility_shock(df, lookback=20, shock_mult=1.8):
@@ -886,6 +904,15 @@ def volatility_shock(df, lookback=20, shock_mult=1.8):
 
     # intensity (continuous)
     df['VOL_SHOCK_INTENSITY'] = (shock_ratio - 1).clip(0, 3)
+
+    # ======================================================
+    # DECAY SPEED (REGIME ADAPTIVE)
+    # ======================================================
+    # normalize ATR → regime detector
+    df['ATR_Z'] = hybrid_zscore(df['ATR']).clip(-2, 2)
+
+    # high vol → faster signal expiration
+    df['DECAY_SPEED'] = np.exp(df['ATR_Z'] * 0.35)
 
     return df
 
@@ -923,11 +950,7 @@ def pressure_elasticity_divergence(df, window=5):
     ).rolling(window).mean()
 
     # normalize to stable range
-    scale = df['PRESS_ELAST_DIV'].rolling(200).std()
-
-    df['PRESS_ELAST_DIV_NORM'] = (
-        df['PRESS_ELAST_DIV'] / (scale + 1e-9)
-    ).clip(-3,3)
+    df['PRESS_ELAST_DIV_NORM'] = hybrid_zscore(df['PRESS_ELAST_DIV']).clip(-3,3)
 
     return df
 
@@ -962,242 +985,413 @@ def temporal_phase_asymmetry(df, compress_window=20, expand_window=5):
     df['TIME_ASYMM'] = expansion_time / (compression_time + 1e-9)
 
     # Normalize for stability
-    scale = df['TIME_ASYMM'].rolling(200).std()
-
-    df['TIME_ASYMM_NORM'] = (
-        df['TIME_ASYMM'] / (scale + 1e-9)
-    ).clip(0,5)
+    df['TIME_ASYMM_NORM'] = hybrid_zscore(df['TIME_ASYMM']).clip(0,5)
 
     return df
 
 # ==========================================================
-# PRE-EXPANSION PRESSURE BUILD MODEL
+# POST BREAKOUT PULLBACK ENTRY (PBPE)
 # ==========================================================
-def pressure_build_up(df, window=10):
+def post_breakout_event_window(signal, window=3):
+    """
+    Creates a forward event window after a breakout signal.
+    Marks the next N candles where entry is allowed.
+    """
+    future_window = signal.shift(1).rolling(window).max().fillna(0).astype(bool)
+    return future_window.fillna(False)
 
-    # 1. Pressure persistence (already composite)
-    pressure_trend = df['COMPOSITE_PRESSURE'].rolling(window).mean()
+def breakout_pullback_metrics(df):
+    """
+    Measures retracement after breakout using ATR-normalized distance.
+    """
 
-    # 2. Volatility contraction intensity
-    vol_contract = (
-        df['REALIZED_VOL'] /
-        (df['REALIZED_VOL'].rolling(50).mean() + 1e-9)
-    )
+    # distance from recent high/low after breakout
+    recent_high = df['high'].rolling(5).max()
+    recent_low  = df['low'].rolling(5).min()
 
-    # 3. Range tightening acceleration
-    range_width = (df['high'] - df['low'])
-    range_decay = range_width.diff().rolling(window).mean() < 0
-
-    # 4. Combine into buildup score
-    df['BUILDUP_SCORE'] = (
-        pressure_trend *
-        (1 - vol_contract) *
-        range_decay.astype(int)
-    )
-
-    # Normalize
-    scale = df['BUILDUP_SCORE'].rolling(100).std()
-    df['BUILDUP_SCORE_NORM'] = (
-        df['BUILDUP_SCORE'] / (scale + 1e-9)
-    ).clip(-3, 3)
+    df['PULLBACK_LONG'] = (recent_high - df['low']) / (df['ATR'] + 1e-9)
+    df['PULLBACK_SHORT'] = (df['high'] - recent_low) / (df['ATR'] + 1e-9)
 
     return df
 
-# ==========================================================
-# MOVE COMPLETION MODEL (TRADE LIFECYCLE AWARENESS)
-# ==========================================================
-def move_completion(df, window=20):
+def continuation_candle(df):
+    body = df['close'] - df['open']
 
-    # 1. Distance traveled vs expected expansion
-    move_up = (df['close'] - df['close'].rolling(window).min())
-    move_down = (df['close'].rolling(window).max() - df['close'])
+    df['BULL_CONT'] = (
+        (body > 0) &
+        (df['close'] > df['high'].shift(1))
+    )
 
-    expected = df['ATR'] * window
+    df['BEAR_CONT'] = (
+        (body < 0) &
+        (df['close'] < df['low'].shift(1))
+    )
 
-    df['MOVE_EFFICIENCY_UP'] = move_up / (expected + 1e-9)
-    df['MOVE_EFFICIENCY_DOWN'] = move_down / (expected + 1e-9)
-    
-    df['STATE_DIRECTION'] = np.sign(df['STATE_SCORE'])
+    return df
 
-    # 2. Trend maturity (time-based)
-    trend_time = (
-        (df['STATE_DIRECTION'] == df['STATE_DIRECTION'].shift())
+def pullback_entry(df):
+
+    ideal_pullback_long = df['PULLBACK_LONG'].between(0.2, 1.2)
+    ideal_pullback_short = df['PULLBACK_SHORT'].between(0.2, 1.2)
+
+    df['PBPE_PULLBACK_LONG'] = (
+        df['BREAKOUT_WINDOW_LONG'] &
+        ideal_pullback_long &
+        df['BULL_CONT']
+    )
+
+    df['PBPE_PULLBACK_SHORT'] = (
+        df['BREAKOUT_WINDOW_SHORT'] &
+        ideal_pullback_short &
+        df['BEAR_CONT']
+    )
+
+    return df
+
+def micro_break_entry(df):
+
+    df['PBPE_MICRO_LONG'] = (
+        df['BREAKOUT_WINDOW_LONG'] &
+        df['MICRO_BREAK_LONG']
+    )
+
+    df['PBPE_MICRO_SHORT'] = (
+        df['BREAKOUT_WINDOW_SHORT'] &
+        df['MICRO_BREAK_SHORT']
+    )
+
+    return df
+
+def delayed_continuation(df):
+
+    strong_momentum = df['MOMENTUM_CONTINUITY'] > 0.6
+
+    df['PBPE_DELAY_LONG'] = (
+        df['VALID_BREAK_LONG'].shift(2) &
+        strong_momentum &
+        (df['close'] > df['close'].shift(1))
+    )
+
+    df['PBPE_DELAY_SHORT'] = (
+        df['VALID_BREAK_SHORT'].shift(2) &
+        strong_momentum &
+        (df['close'] < df['close'].shift(1))
+    )
+
+    return df
+
+def post_breakout_entry(df):
+
+    # 1) breakout event windows
+    df['BREAKOUT_WINDOW_LONG']  = post_breakout_event_window(df['VALID_BREAK_LONG'])
+    df['BREAKOUT_WINDOW_SHORT'] = post_breakout_event_window(df['VALID_BREAK_SHORT'])
+
+    # 2) compute metrics
+    df = breakout_pullback_metrics(df)
+    df = continuation_candle(df)
+
+    # 3) entry types
+    df = pullback_entry(df)
+    df = micro_break_entry(df)
+    df = delayed_continuation(df)
+
+    # 4) final execution signal
+    df['ENTRY_LONG'] = (
+        df['PBPE_PULLBACK_LONG'] |
+        df['PBPE_MICRO_LONG'] |
+        df['PBPE_DELAY_LONG']
+    )
+
+    df['ENTRY_SHORT'] = (
+        df['PBPE_PULLBACK_SHORT'] |
+        df['PBPE_MICRO_SHORT'] |
+        df['PBPE_DELAY_SHORT']
+    )
+
+    return df
+
+def breakout_tracking_window(signal, window=5):
+    """
+    Tracks candles immediately AFTER breakout.
+    """
+    return (
+        signal.shift(1)
         .rolling(window)
-        .sum()
+        .max()
+        .fillna(0)
+        .astype(bool)
     )
 
-    df['TREND_MATURITY'] = trend_time / window
+def compression_context(df, lookback=7, memory=6):
+    if 'FRESHNESS_SHORT' not in df.columns:
+        raise RuntimeError("compression_context requires entry_freshness() to be called first")
+    
+    # 1️⃣ Recent compression existed
+    recent_compression = (
+        df['VOL_COMPRESS']
+        .rolling(lookback)
+        .max()
+    )
 
-    # 3. Expansion decay
-    df['EXPANSION_DECAY'] = (
-        df['ATR_EXPAND']
+    # 2️⃣ How long since last compression?
+    bars_since_compression = (
+        (~df['VOL_COMPRESS'])
         .astype(int)
-        .rolling(5)
-        .mean() < 0.3
+        .groupby(df['VOL_COMPRESS'].cumsum())
+        .cumcount()
     )
 
-    # 4. Direction-aware completion
-    df['MOVE_COMPLETE_LONG'] = (
-        (df['MOVE_EFFICIENCY_UP'] > 0.8) |
-        (df['TREND_MATURITY'] > 0.7) |
-        (df['EXPANSION_DECAY'])
+    # Normalize time since compression
+    freshness = 1 - (bars_since_compression / memory).clip(0,1)
+
+    # 3️⃣ Expansion hasn't already happened too long
+    expansion_decay = (
+        df['ATR_EXPAND']
+        .rolling(memory)
+        .sum() / memory
     )
 
-    df['MOVE_COMPLETE_SHORT'] = (
-        (df['MOVE_EFFICIENCY_DOWN'] > 0.8) |
-        (df['TREND_MATURITY'] > 0.7) |
-        (df['EXPANSION_DECAY'])
-    )
+    expansion_ok = expansion_decay < 0.6
+
+    # 4️⃣ Final compression score (continuous)
+    df['COMPRESSION_SCORE'] = (
+        0.5 * recent_compression.astype(float) +
+        0.5 * freshness
+    ) * expansion_ok.astype(float)
+    df['COMPRESSION_SCORE'] *= df['FRESHNESS_SHORT']
+
+    # 5️⃣ Convert to permission (like HTF_OK)
+    df['COMPRESSION_OK'] = df['COMPRESSION_SCORE'] > 0.35
 
     return df
 
 # ==========================================================
-# DIRECTIONAL TRANSITION MODEL (ROBUST VERSION)
+# ANCHORED NORMALIZATION ENGINE (Long-term memory)
 # ==========================================================
-def directional_transition_model(df):
+def anchored_zscore(series, min_periods=200):
+    """
+    Expanding (lifetime) z-score.
+    Gives the model permanent memory of what 'normal' is.
+    """
+    mean = series.expanding(min_periods=min_periods).mean()
+    std  = series.expanding(min_periods=min_periods).std()
 
-    # -----------------------------------
-    # 1. Smooth velocity (reduce noise)
-    # -----------------------------------
-    vel = df['STATE_VELOCITY'].ewm(span=3).mean()
-    acc = df['STATE_ACCEL'].ewm(span=3).mean()
+    return (series - mean) / (std + 1e-9)
 
-    # -----------------------------------
-    # 2. Directional bias (continuous, not binary)
-    # -----------------------------------
-    df['TRANSITION_BIAS'] = (
-        vel + 0.5 * acc
-    )
 
-    # normalize bias
-    scale = df['TRANSITION_BIAS'].rolling(100).std()
-    df['TRANSITION_BIAS_NORM'] = (
-        df['TRANSITION_BIAS'] / (scale + 1e-9)
-    ).clip(-2, 2)
+def hybrid_zscore(series, roll_window=200, anchor_weight=0.6):
+    """
+    Combines short-term regime awareness (rolling)
+    with long-term memory (expanding).
 
-    # -----------------------------------
-    # 3. Confidence (direction + strength)
-    # -----------------------------------
-    df['TRANSITION_CONFIDENCE'] = (
-        df['TRANSITION_FORCE'] *
-        df['TRANSITION_BIAS_NORM']
-    )
+    This is the institutional normalization pattern.
+    """
 
-    # -----------------------------------
-    # 4. Clean directional filter
-    # -----------------------------------
-    df['TRANSITION_LONG_OK'] = df['TRANSITION_CONFIDENCE'] > 0.1
-    df['TRANSITION_SHORT_OK'] = df['TRANSITION_CONFIDENCE'] < -0.1
+    # short-term regime normalization
+    roll_mean = series.rolling(roll_window).mean()
+    roll_std  = series.rolling(roll_window).std()
+    rolling_z = (series - roll_mean) / (roll_std + 1e-9)
+
+    # long-term anchored normalization
+    anchor_z = anchored_zscore(series)
+
+    # blend them (prevents restrictiveness)
+    return anchor_weight * anchor_z + (1 - anchor_weight) * rolling_z
+
+def sanitize_features_for_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Final safety airlock before signal generation.
+
+    Guarantees:
+    - No NaN / inf values reach entry or exit logic
+    - Rolling indicators remain untouched during feature engineering
+    - Live incremental updates cannot break exits
+    """
+
+    # Work on a copy to avoid side effects
+    df = df.copy()
+
+    # 1️⃣ Replace infinities from divisions / std / zscores
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # 2️⃣ Forward fill ONLY to preserve indicator continuity
+    # (critical for rolling indicators in live pipelines)
+    df.ffill(inplace=True)
+
+    # 3️⃣ Zero-fill anything still missing
+    # Remaining NaNs are from warmup periods or new columns
+    df.fillna(0, inplace=True)
 
     return df
 
 # ==========================================================
-# TRANSITION QUALITY MODEL (TIMING FILTER)
+# EVENT AGE TRACKER (NEW)
 # ==========================================================
-def transition_quality_model(df):
+def bars_since_event(event_series: pd.Series) -> pd.Series:
+    """
+    Counts number of bars since last True event.
+    Returns large number if event never happened.
+    """
+    grp = (~event_series).cumsum()
+    age = event_series.groupby(grp).cumcount()
+    age[event_series] = 0
+    return age.fillna(999)
 
-    # -----------------------------------
-    # 1️⃣ NORMALIZE COMPONENTS
-    # -----------------------------------
+# ==========================================================
+# ENTRY FRESHNESS ENGINE (NEW)
+# ==========================================================
+def entry_freshness(df, half_life=6):
 
-    # Transition force (scaled)
-    tf_scale = df['TRANSITION_FORCE'].rolling(100).max()
-    tf_norm = (df['TRANSITION_FORCE'] / (tf_scale + 1e-9)).clip(0,1)
-
-    # Predictability = stability (already 0–1)
-    predictability = df['STATE_STABILITY'].clip(0,1)
-
-    # Participation strength (bounded)
-    flow_scale = df['FLOW_STRENGTH'].rolling(100).std()
-    flow_norm = (df['FLOW_STRENGTH'] / (flow_scale + 1e-9)).clip(-2,2)
-
-    flow_strength = flow_norm.abs().clip(0,1)
-
-    # -----------------------------------
-    # 2️⃣ ALIGNMENT (CRITICAL)
-    # -----------------------------------
-    # flow must agree with direction
-    flow_dir = np.sign(df['FLOW_STRENGTH'])
-    state_dir = np.sign(df['STATE_SCORE'])
-
-    alignment = (flow_dir == state_dir).astype(float)
-
-    # soften (don’t fully kill trades)
-    alignment = 0.5 + 0.5 * alignment  # → 0.5 or 1.0
-
-    # -----------------------------------
-    # 3️⃣ TRANSITION QUALITY SCORE
-    # -----------------------------------
-    df['TRANSITION_QUALITY'] = (
-        tf_norm *
-        predictability *
-        flow_strength *
-        alignment
+    # Exponential decay of breakout relevance
+    df['FRESHNESS_LONG'] = np.exp(
+        -df['BARS_SINCE_LONG_BREAK'] /
+        (half_life * df['DECAY_SPEED'])
     )
 
-    # smooth (VERY important)
-    df['TRANSITION_QUALITY'] = (
-        df['TRANSITION_QUALITY']
-        .ewm(span=3)
+    df['FRESHNESS_SHORT'] = np.exp(
+        -df['BARS_SINCE_SHORT_BREAK'] /
+        (half_life * df['DECAY_SPEED'])
+    )
+
+    # Late-entry soft floor (prevents total death)
+    df['FRESHNESS_LONG']  = df['FRESHNESS_LONG'].clip(lower=0.15)
+    df['FRESHNESS_SHORT'] = df['FRESHNESS_SHORT'].clip(lower=0.15)
+
+    return df
+
+# ==========================================================
+# HTF TREND MATURITY ENGINE
+# Detects EARLY / MID / LATE trend lifecycle
+# ==========================================================
+def compute_htf_trend_maturity(df, htf_df):
+
+    htf = htf_structural_stack(df, htf_df)
+    htf_dir = htf['HTF_DIRECTION']
+
+    # Detect when HTF trend flips
+    trend_flip = htf_dir != htf_dir.shift(1)
+
+    # Count bars since last flip
+    trend_age = trend_flip.cumsum()
+    trend_age = trend_age.groupby(trend_age).cumcount()
+
+    # Normalize age (robust scaling)
+    age_norm = trend_age / (trend_age.rolling(200).max() + 1e-9)
+
+    # Classify lifecycle phases
+    df['HTF_TREND_EARLY'] = age_norm < 0.33
+    df['HTF_TREND_MID']   = (age_norm >= 0.33) & (age_norm < 0.66)
+    df['HTF_TREND_LATE']  = age_norm >= 0.66
+
+    return df
+
+# ==========================================================
+# LONG-TERM VOLATILITY REGIME INDEX (GLOBAL ANCHOR)
+# ==========================================================
+def volatility_regime_index(df, fast=200, slow=2000):
+    """
+    Long-term volatility anchor that prevents normalization drift.
+    
+    fast  = local volatility memory
+    slow  = multi-month / multi-year baseline
+    
+    Output:
+        VOL_REGIME_INDEX in range 0 → 1
+        0 = structurally quiet market
+        1 = structurally volatile market
+    """
+
+    # Ensure ATR exists
+    if 'ATR' not in df.columns:
+        df['ATR'] = atr_ema(df)
+
+    # Fast and slow volatility memory
+    fast_vol = df['ATR'].ewm(span=fast, adjust=False).mean()
+    slow_vol = df['ATR'].ewm(span=slow, adjust=False).mean()
+
+    # Volatility regime ratio
+    vol_ratio = fast_vol / (slow_vol + 1e-9)
+
+    # Smooth + squash to stable 0-1 range
+    vri = np.tanh((vol_ratio - 1) * 2.5)
+
+    df['VOL_REGIME_INDEX'] = (vri + 1) / 2
+
+    return df
+
+# ==========================================================
+# EXPANSION MATURITY MODEL (replaces impulse_age)
+# ==========================================================
+def expansion_maturity(df, lookback=20):
+
+    # Expansion proxy = volatility + participation + trend quality
+    expansion_raw = (
+        0.4 * df['ATR_ACCEL_NORM'] +
+        0.3 * df['FLOW_STRENGTH'] +
+        0.3 * df['TREND_QUALITY']
+    )
+
+    # Smooth expansion state
+    df['EXPANSION_STATE'] = expansion_raw.ewm(span=5).mean()
+
+    # Expansion velocity (growth vs decay)
+    df['EXPANSION_VELOCITY'] = df['EXPANSION_STATE'].diff()
+
+    # Expansion persistence (trend maturity)
+    df['EXPANSION_PERSISTENCE'] = (
+        df['EXPANSION_STATE']
+        .rolling(lookback)
         .mean()
     )
 
-    # -----------------------------------
-    # 4️⃣ FILTERS (actionable vs noise)
-    # -----------------------------------
-        
-    th = df['TRANSITION_QUALITY'].rolling(200).quantile(0.6)
-
-    df['HIGH_QUALITY_TRANSITION'] = (
-        df['TRANSITION_QUALITY'] > th
+    # Normalized maturity score 0 → 1
+    maturity = (
+        df['EXPANSION_PERSISTENCE'] -
+        df['EXPANSION_PERSISTENCE'].rolling(lookback).min()
     )
+
+    maturity /= (
+        df['EXPANSION_PERSISTENCE'].rolling(lookback).max()
+        - df['EXPANSION_PERSISTENCE'].rolling(lookback).min()
+        + 1e-9
+    )
+
+    df['EXPANSION_MATURITY'] = maturity.clip(0,1)
+
+    # Entry window = early-to-mid expansion only
+    df['EARLY_EXPANSION'] = df['EXPANSION_MATURITY'] < 0.6
 
     return df
 
-def breakout_memory(df):
+# ==========================================================
+# VOLATILITY ACCELERATION ENGINE (feeds expansion ignition)
+# ==========================================================
+def atr_acceleration(df, fast=5, slow=20):
+    """
+    Measures acceleration of volatility expansion.
+    This is the missing input for the new expansion engine.
+    Completely causal. No lookahead.
+    """
 
-    df['BREAKOUT_ACTIVE_LONG'] = 0
-    df['BREAKOUT_ACTIVE_SHORT'] = 0
+    # Ensure ATR exists
+    if 'ATR' not in df.columns:
+        df['ATR'] = atr_ema(df)
 
-    last_long = False
-    last_short = False
+    # ------------------------------------------------------
+    # 1️⃣ Fast vs slow ATR (volatility impulse)
+    # ------------------------------------------------------
+    df['ATR_FAST'] = df['ATR'].ewm(span=fast).mean()
+    df['ATR_SLOW'] = df['ATR'].ewm(span=slow).mean()
 
-    for i in range(len(df)):
+    # ------------------------------------------------------
+    # 2️⃣ Volatility acceleration (rate of change)
+    # ------------------------------------------------------
+    df['ATR_ACCEL'] = df['ATR_FAST'] - df['ATR_SLOW']
 
-        if df['VALID_BREAK_LONG'].iat[i]:
-            last_long = True
-            last_short = False
-
-        if df['VALID_BREAK_SHORT'].iat[i]:
-            last_short = True
-            last_long = False
-
-        df['BREAKOUT_ACTIVE_LONG'].iat[i] = last_long
-        df['BREAKOUT_ACTIVE_SHORT'].iat[i] = last_short
-
-    return df
-
-def breakout_retest(df, tolerance=0.5):
-
-    resistance = df['RESISTANCE'].shift(1)
-    support = df['SUPPORT'].shift(1)
-
-    # ATR tolerance band
-    tol = df['ATR'] * tolerance
-
-    # LONG retest
-    df['RETEST_LONG'] = (
-        df['BREAKOUT_ACTIVE_LONG'] &
-        (df['low'] <= resistance + tol) &
-        (df['close'] > resistance)
-    )
-
-    # SHORT retest
-    df['RETEST_SHORT'] = (
-        df['BREAKOUT_ACTIVE_SHORT'] &
-        (df['high'] >= support - tol) &
-        (df['close'] < support)
-    )
+    # ------------------------------------------------------
+    # 3️⃣ Normalize to stable regime-independent scale
+    # ------------------------------------------------------
+    df['ATR_ACCEL_NORM'] = hybrid_zscore(df['ATR_ACCEL']).clip(-3, 3) / 3
 
     return df
 
@@ -1217,153 +1411,30 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     df = support_resistance(df)
     df = breakout_logic(df)
 
-    df['ATR'] = parkinson_vol(df, period=14)
+    df['ATR'] = atr_ema(df, period=14)
 
+    df = atr_acceleration(df)
     df = volatility_shock(df)
-
-    # --- ATR percentile for adaptive thresholds
-    df['ATR_PERCENTILE'] = (
-        df['ATR']
-        .rolling(200)
-        .rank(pct=True)
-    )
-    df['DYNAMIC_WICK_LIMIT'] = 1.2 + (df['ATR_PERCENTILE'] * 1.0)
 
     # =========================
     # STATE ENGINE
     # =========================
+    df = volatility_expansion(df)
     df = volatility_state(df)
-    df = structure_state(df)
+    df = trend_efficiency_state(df)
     df = pressure_state(df)
     df = participation_state(df)
     df = classify_phase(df)
     df = composite_pressure(df)  # 🔹 generate COMPOSITE_PRESSURE metric
     df = pressure_elasticity_divergence(df)
     df = vol_compression_slope(df, lookback=50, rv_period=20)
+    df = sanitize_features_for_signals(df)
     df = validated_breakouts(df)
+    df = entry_freshness(df)
+    df = compression_context(df)
     df = temporal_phase_asymmetry(df)
     # --- Dynamic state analytics
     df = dynamic_state_engine(df)
-    df = directional_transition_model(df)
-    df = transition_quality_model(df)
-    df = pressure_build_up(df)
-    df = move_completion(df)
-
-    df['PRESSURE_PERSIST'] = (
-        np.sign(df['COMPOSITE_PRESSURE']) ==
-        np.sign(df['COMPOSITE_PRESSURE'].shift(1))
-    ).astype(int)
-
-    df['PRESSURE_PERSIST_SCORE'] = (
-        df['PRESSURE_PERSIST']
-        .rolling(5)
-        .mean()
-    )
-
-    df['PRESSURE_QUALITY'] = (
-        df['COMPOSITE_PRESSURE'] *
-        (1 - df['PRESS_ELAST_DIV_NORM'].clip(0,1)) *
-        df['STATE_STABILITY']
-    )
-
-    df['PRESSURE_EARLY'] = (
-        df['BUILDUP_SCORE_NORM'] > 0.3
-    )
-
-    PRESSURE_LONG_OK = (
-        (df['PRESSURE_QUALITY'] > 0) &
-        (df['PRESSURE_PERSIST_SCORE'] > 0.6) &
-        (df['PRESSURE_EARLY'])
-    )
-
-    PRESSURE_SHORT_OK = (
-        (df['PRESSURE_QUALITY'] < 0) &
-        (df['PRESSURE_PERSIST_SCORE'] > 0.6) &
-        (df['PRESSURE_EARLY'])
-    )
-
-    df['VALID_BREAK_LONG'] &= PRESSURE_LONG_OK
-    df['VALID_BREAK_SHORT'] &= PRESSURE_SHORT_OK
-    
-    EXPANSION_CAUSE = (
-        0.35 * df['BUILDUP_SCORE_NORM'].clip(-1, 1) +     # compression → expansion driver
-        0.25 * df['TRANSITION_FORCE'].clip(0, 1) +        # regime shift strength
-        0.25 * df['FLOW_STRENGTH'].clip(-1, 1) +          # participation
-        0.15 * df['PRESSURE_QUALITY'].clip(-1, 1)         # directional pressure quality
-    )
-
-    # normalize for stability
-    scale = EXPANSION_CAUSE.rolling(200).std()
-    df['EXPANSION_CAUSE_NORM'] = (EXPANSION_CAUSE / (scale + 1e-9)).clip(-3, 3)
-    WEAK_EXPANSION_CAUSE = (
-        df['EXPANSION_CAUSE_NORM'].abs() < 0.5
-    )
-
-    # ----------------------------------------------------------
-    # 2️⃣ LATE MOVE DETECTION (CRITICAL FIX)
-    # ----------------------------------------------------------
-    LATE_MOVE = (
-        (df['MOVE_EFFICIENCY_UP'] > 0.7) |
-        (df['MOVE_EFFICIENCY_DOWN'] > 0.7) |
-        (df['TREND_MATURITY'] > 0.6)
-    )
-
-
-    # ----------------------------------------------------------
-    # 3️⃣ PARTICIPATION FAILURE
-    # ----------------------------------------------------------
-    WEAK_PARTICIPATION = (
-        df['FLOW_STRENGTH'].abs() < 0.2
-    )
-
-
-    # ----------------------------------------------------------
-    # 4️⃣ NO STRUCTURAL BUILDUP
-    # ----------------------------------------------------------
-    NO_BUILDUP = (
-        df['BUILDUP_SCORE_NORM'].abs() < 0.2
-    )
-
-
-    # ----------------------------------------------------------
-    # 5️⃣ ELASTICITY FAILURE (VERY IMPORTANT)
-    # ----------------------------------------------------------
-    ELASTICITY_FAIL = (
-        df['PRESS_ELAST_DIV_NORM'] < -0.5
-    )
-
-
-    # ----------------------------------------------------------
-    # 6️⃣ TRANSITION MISALIGNMENT
-    # expansion without regime support
-    # ----------------------------------------------------------
-    BAD_TRANSITION = (
-        df['TRANSITION_QUALITY'] < 0.4
-    )
-
-
-    # ----------------------------------------------------------
-    # 7️⃣ FINAL SUSPICIOUS EXPANSION
-    # ----------------------------------------------------------
-    fail_count = (
-        LATE_MOVE.astype(int) +
-        WEAK_PARTICIPATION.astype(int) +
-        NO_BUILDUP.astype(int) +
-        ELASTICITY_FAIL.astype(int) +
-        BAD_TRANSITION.astype(int)+
-        WEAK_EXPANSION_CAUSE.astype(int)
-    )
-
-    SUSPICIOUS_EXPANSION = (
-        (df['ATR_EXPAND']) &
-        (fail_count >= 5)
-    )
-
-    df['VALID_BREAK_LONG'] &= ~SUSPICIOUS_EXPANSION
-    df['VALID_BREAK_SHORT'] &= ~SUSPICIOUS_EXPANSION
-
-    df = breakout_memory(df)
-    df = breakout_retest(df)
 
     # =========================
     # NEW HTF STRUCTURAL STACK
@@ -1388,10 +1459,10 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     # =========================
     # PREDICTIVE MODULES
     # =========================
-    df = divergence_state(df)
     df = transition_detector(df)
     df = micro_consolidation(df)
     df = momentum_continuity(df)
+    df = post_breakout_entry(df)
 
     # ==========================================================
     # 🧠 PREDICTIVE-WEIGHTED ASYMMETRY ENGINE
@@ -1407,20 +1478,15 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     phase_long = ((df['PHASE'] == 1) | (df['PHASE'] == 2)).astype(int)
     phase_short = (df['PHASE'] == 3).astype(int)
 
-    div_long = (df['DIVERGENCE'] > 0).astype(int)
-    div_short = (df['DIVERGENCE'] < 0).astype(int)
-
     lead_long = (
         df['VOL_COMPRESS'].astype(int) +
         phase_long +
-        div_long +
         df['STEALTH_ACCUM'].astype(int)
     )
 
     lead_short = (
         df['VOL_COMPRESS'].astype(int) +
         phase_short +
-        div_short +
         df['STEALTH_DISTRIB'].astype(int)
     )
 
@@ -1462,13 +1528,10 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     )
 
     fail_score = (
-        (df['DIVERGENCE'] != 0).astype(int) +
-        (df['UPPER_WICK_RATIO'] > df['DYNAMIC_WICK_LIMIT']).astype(int) +
-        (df['LOWER_WICK_RATIO'] > df['DYNAMIC_WICK_LIMIT']).astype(int) +
         (df['PARTICIPATION'] == -1).astype(int)
     )
 
-    fail_norm = (fail_score / 4) + risk_penalty
+    fail_norm = (fail_score) + risk_penalty
 
     # ======================================================
     # 4️⃣ STRUCTURAL CONTEXT WEIGHT
@@ -1508,112 +1571,52 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     # ======================================================
 
     df['ASYM_SCORE'] = df['ASYM_RAW'].ewm(span=3, adjust=False).mean() # tune here <-
+    
+    LONG_CONDITION = (df['VALID_BREAK_LONG'])
+    SHORT_CONDITION = (df['VALID_BREAK_SHORT'])
 
-    # =========================
-    # INSTITUTIONAL EXIT MODEL
-    # =========================
-
-    df = institutional_exit_model(df)
-
-    # =========================================
-    # EARLY TRANSITION ENTRY (PRE-EXPANSION)
-    # =========================================
-    EARLY_LONG = (
-        (df['BUILDUP_SCORE_NORM'] > 0.5) &
-        (df['VOL_COMPRESS']) &
-        (df['STATE_ACCEL'] > 0)
+    df['ENTRY_LONG'] = (
+        df['ENTRY_LONG'] &
+        df['COMPRESSION_OK'] 
+        # df['BREAKOUT_HEALTH_LONG']
     )
 
-    EARLY_SHORT = (
-        (df['BUILDUP_SCORE_NORM'] < -0.5) &
-        (df['VOL_COMPRESS']) &
-        (df['STATE_ACCEL'] < 0)
+    df['ENTRY_SHORT'] = (
+        df['ENTRY_SHORT'] &
+        df['COMPRESSION_OK'] 
+        # df['BREAKOUT_HEALTH_SHORT']
     )
 
-    df['RETEST_CONFIRM_LONG'] = (
-        df['RETEST_LONG'] &
-        (df['COMPOSITE_PRESSURE'] > 0) &
-        (df['STRONG_BODY'])
-    )
-
-    df['RETEST_CONFIRM_SHORT'] = (
-        df['RETEST_SHORT'] &
-        (df['COMPOSITE_PRESSURE'] < 0) &
-        (df['STRONG_BODY'])
-    )
-
-    # =========================================
-    # COMBINE WITH BREAKOUT SYSTEM
-    # =========================================
-    LONG_CONDITION = (
-        df['RETEST_CONFIRM_LONG'] | EARLY_LONG
-    )
-
-    SHORT_CONDITION = (
-        df['RETEST_CONFIRM_SHORT'] | EARLY_SHORT
-    )
-
-    # LONG_CONDITION &= df['STATE_DIRECTION'] >= 0
-    # SHORT_CONDITION &= df['STATE_DIRECTION'] <= 0
-
-    STATE_CONFLICT_LONG = df['STATE_SCORE'] < -0.2
-    STATE_CONFLICT_SHORT = df['STATE_SCORE'] > 0.2
-
-    # LONG_CONDITION &= ~STATE_CONFLICT_LONG
-    # SHORT_CONDITION &= ~STATE_CONFLICT_SHORT
+    LONG_CONDITION &= df['ENTRY_LONG']
+    SHORT_CONDITION &= df['ENTRY_SHORT']
 
     LONG_CONDITION &= HTF_LONG_OK
     SHORT_CONDITION &= HTF_SHORT_OK
-
-    LONG_CONDITION &= (
-        df['TRANSITION_LONG_OK'] &
-        df['HIGH_QUALITY_TRANSITION']
-    )
-    SHORT_CONDITION &= (
-        df['TRANSITION_SHORT_OK'] &
-        df['HIGH_QUALITY_TRANSITION']
-    )
-
-    LONG_CONDITION &= ~(
-        df['MOVE_COMPLETE_LONG'] &
-        (df['TRANSITION_FORCE'] < 0.5)
-    )
-
-    SHORT_CONDITION &= ~(
-        df['MOVE_COMPLETE_SHORT'] &
-        (df['TRANSITION_FORCE'] < 0.5)
-    )
 
     df['signal'] = 0
     df.loc[LONG_CONDITION, 'signal'] = 1
     df.loc[SHORT_CONDITION, 'signal'] = -1
 
-    # ==========================================================
-    # INSTITUTIONAL EXIT CONDITIONS
-    # ==========================================================
-
-    EXIT_THRESHOLD = 0.50
-
-    EXIT_LONG = (
-        (df['EXIT_PRESSURE'] > EXIT_THRESHOLD) &
-        (df['STATE_STABILITY'] < 0.35)
-    )
-    EXIT_SHORT = (
-        (df['EXIT_PRESSURE'] > EXIT_THRESHOLD) &
-        (df['STATE_STABILITY'] < 0.35)
-    )
-
     df['final_signal'] = df['signal'].shift(1)
-
-    # df.loc[(df['final_signal'] == 1) & EXIT_LONG, 'final_signal'] = 0
-    # df.loc[(df['final_signal'] == -1) & EXIT_SHORT, 'final_signal'] = 0
 
     # =========================
     # DIAGNOSTICS
     # =========================
-    print("\n=== STATE DIAGNOSTICS ===")
-    print("Phase counts:\n", df['PHASE'].value_counts())
-    print("Breakouts: Long =", df['BREAK_RESISTANCE'].sum(), "Short =", df['BREAK_SUPPORT'].sum())
-    print("Transition signals:", df['TRANSITION_SIGNAL'].value_counts())
+    # print("\n=== STATE DIAGNOSTICS ===")
+    # print("Phase counts:\n", df['PHASE'].value_counts())
+    # print("Breakouts: Long =", df['BREAK_RESISTANCE'].sum(), "Short =", df['BREAK_SUPPORT'].sum())
+    # print("Transition signals:", df['TRANSITION_SIGNAL'].value_counts())
+
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df.ffill(inplace=True)
+    df.fillna(0, inplace=True)
+
+    # ================= DEBUG SIGNAL SUMMARY =================
+    signal_count = (df["final_signal"] != 0).sum()
+
+    print(
+        f"[DBG-GEN] candles={len(df)} | signals={signal_count} | "
+        f"first={df.index[0]} | last={df.index[-1]}"
+    )
 
     return df

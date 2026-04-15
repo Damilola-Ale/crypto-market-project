@@ -72,13 +72,18 @@ def fetch_binance(symbol, interval, limit):
 
 
 # ==========================================================
-# CONFIG LINK, AAVE, BTC, TRX, FXS, FIL, RUNE, ARB, OP, UNI, XTZ, ADA, SUI, CRV, MKR, XLM, BIO, JTO | DOGE, NEAR, SNX, LDO, MATIC, YFI
+# CONFIG ETH, FIL, TRX, VET, UNI, DOGE, ETC, AAVE, BCH, BAND, TIA, XLM, SUI, BTC, AVAX
 # ==========================================================
 
-SYMBOL = "ARBUSDT"
+SYMBOL = "TRXUSDT"
 
+LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
 HTF_INTERVAL = "4h"
+
+# LLTF_LIMIT = 630720
+# LTF_LIMIT = 52560   # ~30 days of 1h candles
+# HTF_LIMIT = 13140   # ~120 days of 4h candles
 
 # LTF_LIMIT = 43800   # ~30 days of 1h candles
 # HTF_LIMIT = 10950   # ~120 days of 4h candles
@@ -86,47 +91,51 @@ HTF_INTERVAL = "4h"
 # LTF_LIMIT = 35040   # ~30 days of 1h candles
 # HTF_LIMIT = 8760   # ~120 days of 4h candles
 
-LTF_LIMIT = 26280   # ~30 days of 1h candles
-HTF_LIMIT = 6570   # ~120 days of 4h candles
+# LTF_LIMIT = 26280   # ~30 days of 1h candles
+# HTF_LIMIT = 6570   # ~120 days of 4h candles
 
+# LLTF_LIMIT = 210240
 # LTF_LIMIT = 17520   # ~30 days of 1h candles
 # HTF_LIMIT = 4380   # ~120 days of 4h candles
 
 # LTF_LIMIT = 8760   # ~30 days of 1h candles
 # HTF_LIMIT = 2190   # ~120 days of 4h candles
 
+# LLTF_LIMIT = 52560
 # LTF_LIMIT = 4380   # ~30 days of 1h candles
 # HTF_LIMIT = 1095   # ~120 days of 4h candles
 
+LLTF_LIMIT = 24000
+LTF_LIMIT = 2000   # ~30 days of 1h candles
+HTF_LIMIT = 500   # ~120 days of 4h candles
+
+# LTF_LIMIT = 1000   # ~30 days of 1h candles
+# HTF_LIMIT = 251   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
 # ==========================================================
 
-print("Downloading LTF data from Binance...")
-df = fetch_binance(SYMBOL, LTF_INTERVAL, LTF_LIMIT)
+print("Downloading LLTF data (5m)...")
+lltf_df = fetch_binance(SYMBOL, LLTF_INTERVAL, LLTF_LIMIT)
 
-print("Downloading HTF data from Binance...")
+print("Downloading LTF data (1h)...")
+ltf_df = fetch_binance(SYMBOL, LTF_INTERVAL, LTF_LIMIT)
+
+print("Downloading HTF data (4h)...")
 htf_df = fetch_binance(SYMBOL, HTF_INTERVAL, HTF_LIMIT)
-
 
 # ==========================================================
 # SIGNAL GENERATION
 # ==========================================================
 
-df = generate_signal(df, htf_df)
-
-print(
-    f"Long signals: {(df['final_signal'] == 1).sum()}, "
-    f"Short signals: {(df['final_signal'] == -1).sum()}"
-)
-
+ltf_df = generate_signal(ltf_df, htf_df)
 
 # ==========================================================
 # BACKTEST
 # ==========================================================
 
-backtester = SignalBacktester(df)
+backtester = SignalBacktester(ltf_df, htf_df=htf_df, lltf_df=lltf_df)
 
 backtest_output = backtester.run()
 
@@ -141,44 +150,11 @@ print(trade_log.head(10))
 
 print("\nColumns:", trade_log.columns)
 print("\nNumber of trades:", len(trade_log))
-print("LTF candles:", len(df))
-print("HTF candles:", len(htf_df))
-
+print("LTF candles (1h):", len(ltf_df))
+print("HTF candles (4h):", len(htf_df))
 
 # ==========================================================
 # DIAGNOSTICS
 # ==========================================================
 
 diagnostics_df = diagnose_trades(trade_log)
-
-
-# ==========================================================
-# VISUALIZATION
-# ==========================================================
-
-# plot_asymmetry(df)
-
-# plt.figure(figsize=(14, 6))
-# plt.plot(df['close'], label='Close', linewidth=1)
-
-# plt.scatter(
-#     df.index[df['final_signal'] == 1],
-#     df['close'][df['final_signal'] == 1],
-#     marker='^',
-#     label='Long',
-#     zorder=3
-# )
-
-# plt.scatter(
-#     df.index[df['final_signal'] == -1],
-#     df['close'][df['final_signal'] == -1],
-#     marker='v',
-#     label='Short',
-#     zorder=3
-# )
-
-# plt.title(f"{SYMBOL} – Strategy Signals")
-# plt.legend()
-# plt.grid(alpha=0.3)
-# plt.tight_layout()
-# plt.show()

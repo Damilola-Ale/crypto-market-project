@@ -42,6 +42,10 @@ class CandleGate:
 
     # --------------------------------------------------
     def _log(self, symbol, ts, allowed, reason):
+        # Only log allowed entries to keep file size bounded
+        if not allowed:
+            return
+
         log_entry = {
             "symbol": symbol,
             "timestamp": ts,

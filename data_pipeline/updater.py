@@ -1,16 +1,17 @@
 import os
 import pandas as pd
+import time
 from datetime import datetime, timezone, timedelta
 
 from data_pipeline.fetcher import fetch_ohlcv
-from data_pipeline.validators import validate_ohlcv
-from data_pipeline.timeframe_builder import build_htf
+from data_pipeline.validators import validate_ohlcv#
 
 
 CACHE_DIR = "data/cache"
 
-HOURS_LOOKBACK = 800
+HOURS_LOOKBACK = 1000
 
+LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
 HTF_INTERVAL = "4h"
 
@@ -26,6 +27,44 @@ def _ensure_cache_dir():
 def _cache_path(symbol: str, tf: str):
     return os.path.join(CACHE_DIR, f"{symbol}_{tf}.parquet")
 
+def _fetch_all(symbol: str, interval: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """
+    Paginating fetch — works backwards from end until start is covered.
+    Handles any window size, bypassing Binance's 1000-bar per request limit.
+    """
+    all_chunks = []
+    current_end = end
+
+    while True:
+        df = fetch_ohlcv(
+            symbol   = symbol,
+            interval = interval,
+            start    = start,
+            end      = current_end,
+            limit    = 1000,
+            verbose  = False,
+        )
+
+        if df.empty:
+            break
+
+        all_chunks.insert(0, df)
+
+        # If we've reached or passed the start, we're done
+        if df.index[0] <= start:
+            break
+
+        # Step back: next fetch ends just before the earliest bar we got
+        current_end = df.index[0] - pd.Timedelta(milliseconds=1)
+        time.sleep(0.25)   # stay within Binance rate limits
+
+    if not all_chunks:
+        return pd.DataFrame()
+
+    result = pd.concat(all_chunks)
+    result = result[~result.index.duplicated(keep="last")]
+    result = result.sort_index()
+    return result
 
 def update_symbol(symbol: str):
 
@@ -74,19 +113,17 @@ def update_symbol(symbol: str):
     # --------------------------------------------------
 
     if fetch_start <= fetch_end:
-
-        new_data = fetch_ohlcv(
-            symbol=symbol,
-            interval=LTF_INTERVAL,
-            start=fetch_start,
-            end=fetch_end,
-        )
+        new_data = _fetch_all(symbol, LTF_INTERVAL, fetch_start, fetch_end)
 
         if not new_data.empty:
 
             print("[MERGE] merging new candles")
 
             df = pd.concat([df, new_data]) if df is not None else new_data
+            df = df[~df.index.duplicated(keep="last")]
+    
+    if df is None or df.empty:
+        raise RuntimeError(f"[{symbol}] No LTF data available after fetch")
 
     # --------------------------------------------------
     # FINAL CLEAN
@@ -124,12 +161,52 @@ def update_symbol(symbol: str):
     validate_ohlcv(df, symbol, freq=LTF_INTERVAL)
 
     # --------------------------------------------------
-    # BUILD HTF
+    # BUILD HTF (incremental, cache-aware)
     # --------------------------------------------------
 
-    df_htf = build_htf(df, HTF_INTERVAL)
+    df_htf = None
+    last_htf_ts = None
 
+    # Load HTF cache if exists
+    if os.path.exists(path_htf):
+        print("[CACHE] Loading HTF cache")
+        df_htf = pd.read_parquet(path_htf)
+        df_htf.index = pd.to_datetime(df_htf.index, utc=True)
+        df_htf = df_htf.sort_index()
+        if not df_htf.empty:
+            last_htf_ts = df_htf.index[-1]
+
+    # Determine fetch window
+    htf_fetch_start = start_required if df_htf is None else last_htf_ts + timedelta(hours=4)
+    htf_fetch_end = now
+
+    print("[FETCH HTF WINDOW]")
+    print("start:", htf_fetch_start)
+    print("end:", htf_fetch_end)
+
+    # Fetch only missing HTF candles
+    if htf_fetch_start <= htf_fetch_end:
+        new_htf = _fetch_all(symbol, HTF_INTERVAL, htf_fetch_start, htf_fetch_end)
+
+        if not new_htf.empty:
+            print("[MERGE HTF] merging new candles")
+            df_htf = pd.concat([df_htf, new_htf]) if df_htf is not None else new_htf
+            df_htf = df_htf[~df_htf.index.duplicated(keep="last")]
+    
+    if df_htf is None or df_htf.empty:
+        raise RuntimeError(f"[{symbol}] No HTF data available after fetch")
+
+    df_htf = df_htf.sort_index()
+    df_htf = df_htf[df_htf.index >= start_required]
+    df_htf = df_htf.iloc[-HOURS_LOOKBACK:]
     validate_ohlcv(df_htf, symbol, freq=HTF_INTERVAL)
+
+    # Final clean + validation
+    if df_htf is not None:
+        df_htf = df_htf.sort_index()
+        df_htf = df_htf[df_htf.index >= start_required]
+        df_htf = df_htf.iloc[-HOURS_LOOKBACK:]  # keep consistent history
+        validate_ohlcv(df_htf, symbol, freq=HTF_INTERVAL)
 
     print("[HTF] candles:", len(df_htf))
 
@@ -148,4 +225,47 @@ def update_symbol(symbol: str):
 
     print("[SAVE] LTF + HTF cache updated")
 
-    return df, df_htf
+    # --------------------------------------------------
+    # BUILD LLTF (5M) — same pattern as HTF
+    # --------------------------------------------------
+    path_lltf    = _cache_path(symbol, LLTF_INTERVAL)
+    df_lltf      = None
+    last_lltf_ts = None
+
+    if os.path.exists(path_lltf):
+        print("[CACHE] Loading LLTF cache")
+        df_lltf = pd.read_parquet(path_lltf)
+        df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
+        df_lltf = df_lltf.sort_index()
+        if not df_lltf.empty:
+            last_lltf_ts = df_lltf.index[-1]
+
+    lltf_fetch_start = start_required if df_lltf is None else last_lltf_ts + timedelta(minutes=5)
+    lltf_fetch_end   = now
+
+    print("[FETCH LLTF WINDOW]")
+    print("start:", lltf_fetch_start)
+    print("end:  ", lltf_fetch_end)
+
+    if lltf_fetch_start <= lltf_fetch_end:
+        new_lltf = _fetch_all(symbol, LLTF_INTERVAL, lltf_fetch_start, lltf_fetch_end)
+        
+        if not new_lltf.empty:
+            print("[MERGE LLTF] merging new candles")
+            df_lltf = pd.concat([df_lltf, new_lltf]) if df_lltf is not None else new_lltf
+            df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+
+    if df_lltf is None or df_lltf.empty:
+        raise RuntimeError(f"[{symbol}] No LLTF data available after fetch")
+
+    df_lltf = df_lltf.sort_index()
+    df_lltf = df_lltf[df_lltf.index >= start_required]
+    validate_ohlcv(df_lltf, symbol, freq=LLTF_INTERVAL)
+
+    tmp_lltf = path_lltf + ".tmp"
+    df_lltf.to_parquet(tmp_lltf)
+    os.replace(tmp_lltf, path_lltf)
+
+    print("[SAVE] LLTF cache updated | candles:", len(df_lltf))
+
+    return df, df_htf, df_lltf
