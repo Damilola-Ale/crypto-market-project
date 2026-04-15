@@ -75,7 +75,7 @@ def fetch_binance(symbol, interval, limit):
 # CONFIG ETH, FIL, TRX, VET, UNI, DOGE, ETC, AAVE, BCH, BAND, TIA, XLM, SUI, BTC, AVAX
 # ==========================================================
 
-SYMBOL = "TRXUSDT"
+SYMBOL = "AVAXUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"

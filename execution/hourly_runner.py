@@ -12,7 +12,7 @@ from execution.notifier import TelegramNotifier
 import pandas as pd
 
 SYMBOLS = [
-    "ETHUSDT", "FILUSDT", "TRXUSDT" "VETUSDT", "UNIUSDT", "DOGEUSDT", "ETCUSDT", "AAVEUSDT",
+    "ETHUSDT", "FILUSDT", "TRXUSDT", "VETUSDT", "UNIUSDT", "DOGEUSDT", "ETCUSDT", "AAVEUSDT",
     "BCHUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT" , "BTCUSDT", "AVAXUSDT"
 ]
 

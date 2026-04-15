@@ -12,7 +12,10 @@ from data_pipeline.fetcher import fetch_ohlcv
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
-SYMBOLS = ["BCHUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT"]
+SYMBOLS = [
+    "TRXUSDT", "VETUSDT", "UNIUSDT", "DOGEUSDT", "ETCUSDT", "AAVEUSDT",
+    "BCHUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT" , "BTCUSDT", "AVAXUSDT"
+]
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL  = "1h"
