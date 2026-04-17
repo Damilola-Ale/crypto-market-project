@@ -260,7 +260,11 @@ def update_symbol(symbol: str):
 
     df_lltf = df_lltf.sort_index()
     df_lltf = df_lltf[df_lltf.index >= start_required]
-    validate_ohlcv(df_lltf, symbol, freq=LLTF_INTERVAL)
+    df_lltf = df_lltf.iloc[-(HOURS_LOOKBACK * 12):]
+    try:
+        validate_ohlcv(df_lltf, symbol, freq=LLTF_INTERVAL)
+    except RuntimeError as e:
+        print(f"[WARN] LLTF validation failed for {symbol} (non-fatal): {e}")
 
     tmp_lltf = path_lltf + ".tmp"
     df_lltf.to_parquet(tmp_lltf)

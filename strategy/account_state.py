@@ -105,8 +105,10 @@ class AccountState:
         try:
             if config.runtime.STATE_MODE == "MEMORY":
                 return
-        except Exception:
-            pass
+        except AttributeError:
+            pass  # config.runtime exists but STATE_MODE not set — continue to save
+        except Exception as e:
+            print(f"[WARN] account_state _save: config.runtime check failed ({e}) — saving anyway")
 
         os.makedirs("data/account", exist_ok=True)
 

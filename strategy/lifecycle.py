@@ -672,7 +672,16 @@ class PositionManager:
             try:
                 with open(BAR_HISTORY_FILE, "r") as f:
                     content = f.read().strip()
-                self._bar_history = json.loads(content) if content else {}
+                raw = json.loads(content) if content else {}
+                # re-cast ts strings back to pd.Timestamp (lost on JSON round-trip)
+                for sym, bars in raw.items():
+                    for bar in bars:
+                        if "ts" in bar and isinstance(bar["ts"], str):
+                            try:
+                                bar["ts"] = pd.Timestamp(bar["ts"])
+                            except Exception:
+                                pass
+                self._bar_history = raw
             except (json.JSONDecodeError, ValueError):
                 print(f"[WARN] Corrupted bar history file — starting fresh")
                 self._bar_history = {}

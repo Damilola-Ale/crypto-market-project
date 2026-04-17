@@ -57,19 +57,31 @@ def debug_data_health():
     for symbol in SYMBOLS:
 
         try:
+            path_ltf  = f"data/cache/{symbol}_1h.parquet"
+            path_htf  = f"data/cache/{symbol}_4h.parquet"
+            path_lltf = f"data/cache/{symbol}_5m.parquet"
 
-            df, htf_df, lltf_df = update_symbol(symbol)
+            def _read(path):
+                if not os.path.exists(path):
+                    return None
+                df = pd.read_parquet(path)
+                df.index = pd.to_datetime(df.index, utc=True)
+                return df
+
+            df      = _read(path_ltf)
+            htf_df  = _read(path_htf)
+            lltf_df = _read(path_lltf)
 
             summary[symbol] = {
-                "ltf_candles": len(df),
-                "htf_candles": len(htf_df),
-                "lltf_candles": len(lltf_df),
-                "ltf_first": str(df.index[0]),
-                "ltf_last": str(df.index[-1]),
-                "htf_first": str(htf_df.index[0]),
-                "htf_last": str(htf_df.index[-1]),
-                "lltf_first": str(lltf_df.index[0]),
-                "lltf_last": str(lltf_df.index[-1]),
+                "ltf_candles":  len(df)      if df      is not None else "missing",
+                "htf_candles":  len(htf_df)  if htf_df  is not None else "missing",
+                "lltf_candles": len(lltf_df) if lltf_df is not None else "missing",
+                "ltf_first":  str(df.index[0])      if df      is not None else None,
+                "ltf_last":   str(df.index[-1])     if df      is not None else None,
+                "htf_first":  str(htf_df.index[0])  if htf_df  is not None else None,
+                "htf_last":   str(htf_df.index[-1]) if htf_df  is not None else None,
+                "lltf_first": str(lltf_df.index[0]) if lltf_df is not None else None,
+                "lltf_last":  str(lltf_df.index[-1])if lltf_df is not None else None,
             }
 
         except Exception as e:
