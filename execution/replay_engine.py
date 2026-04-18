@@ -27,19 +27,30 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
     df_1h = pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
     hourly_timestamps = df_1h.index.tolist()
 
-    if from_ts:
-        hourly_timestamps = [t for t in hourly_timestamps if t >= pd.Timestamp(from_ts, tz="UTC")]
+    # apply to_ts filter if given
     if to_ts:
         hourly_timestamps = [t for t in hourly_timestamps if t <= pd.Timestamp(to_ts, tz="UTC")]
+
+    # from_ts controls where trade entries are expected, but we always
+    # start processing from bar 0 so indicators have 800+ bars of warmup.
+    # We just skip progress pings and trade notifications before from_ts.
+    warmup_done_idx = 0
+    if from_ts:
+        from_ts_parsed = pd.Timestamp(from_ts, tz="UTC")
+        warmup_done_idx = next(
+            (i for i, t in enumerate(hourly_timestamps) if t >= from_ts_parsed),
+            len(hourly_timestamps)
+        )
 
     total = len(hourly_timestamps)
 
     notifier.send_text(
         f"🔁 *REPLAY STARTED*\n"
         f"Symbol: `{symbol}`\n"
-        f"Bars: `{total}`\n"
-        f"From: `{hourly_timestamps[0]}`\n"
-        f"To: `{hourly_timestamps[-1]}`"
+        f"Total bars: `{total}` (incl. warmup)\n"
+        f"Warmup until: `{hourly_timestamps[warmup_done_idx]}`\n"
+        f"Signal window from: `{from_ts or 'start'}`\n"
+        f"To: `{to_ts or 'end'}`"
     )
 
     for i, hour_ts in enumerate(hourly_timestamps):
@@ -49,8 +60,8 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
 
         run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades)
 
-        # progress ping every 20 bars
-        if (i + 1) % 20 == 0:
+        # progress ping every 20 bars after warmup
+        if i >= warmup_done_idx and (i - warmup_done_idx + 1) % 20 == 0:
             notifier.send_text(
                 f"⏳ *REPLAY PROGRESS*\n"
                 f"`{symbol}` — bar {i + 1}/{total}\n"
