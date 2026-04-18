@@ -53,10 +53,9 @@ class PositionManager:
     TOTAL_COST_BPS = SLIPPAGE_BPS + SPREAD_BPS   # 8bps per side
     SIGNAL_EXPIRY_BARS = 6   # signal dies after 6×5m = 30 minutes
 
-    def __init__(self, persist=True, notify=True, dry_run=False):
-        self.persist  = persist
-        self.notify   = notify
-        self.dry_run  = dry_run
+    def __init__(self, persist=True, notify=True):
+        self.persist = persist
+        self.notify  = notify
         self.positions = {}
         os.makedirs(POSITIONS_DIR, exist_ok=True)
 
@@ -78,6 +77,7 @@ class PositionManager:
         self._atr_state = {}
         self._executed_signals = set()
         self._reentry_lock: dict[str, int] = {}
+        self._reentry_lock_ts: dict[str, pd.Timestamp] = {}
         self._dirty = False
 
     # --------------------------------------------------
@@ -535,19 +535,6 @@ class PositionManager:
             "last_trail_bar": 0,
         }
 
-        if self.dry_run:
-            self.notifier.send_debug("DRY-RUN OPEN", (
-                f"Symbol: `{symbol}`\n"
-                f"Direction: `{'LONG' if direction == 1 else 'SHORT'}`\n"
-                f"Entry: `{price:.6f}`\n"
-                f"Stop: `{stop:.6f}`\n"
-                f"ATR: `{atr:.6f}`\n"
-                f"Risk USD: `${risk_usd:.3f}`\n"
-                f"ts: `{ts}`"
-            ))
-            print(f"[DRY-RUN OPEN] {symbol} dir={direction} price={price}")
-            return position.copy()
-
         self.positions[symbol] = position
         if self.persist:
             self._save()
@@ -582,6 +569,7 @@ class PositionManager:
         duration_bars = pos.get("bars_in_trade", 0)
         
         self._reentry_lock[symbol] = pos["direction"]
+        self._reentry_lock_ts[symbol] = pd.Timestamp.now(tz="UTC")
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
         
@@ -625,27 +613,18 @@ class PositionManager:
         if self.USE_ACCOUNT_GATES:
             account_state.on_position_close(pnl_usd)
 
-        if self.dry_run:
-            self.notifier.send_debug("DRY-RUN CLOSE", (
-                f"Symbol: `{symbol}`\n"
-                f"Direction: `{'LONG' if direction == 1 else 'SHORT'}`\n"
-                f"Exit: `{fill_price:.6f}`\n"
-                f"Reason: `{reason}`\n"
-                f"PnL R: `{pnl_r:+.3f}`\n"
-                f"Duration: `{duration_bars}` bars\n"
-                f"ts: `{ts}`"
-            ))
-        elif self.notify:
+        if self.notify:
             self.notifier.notify_close(
                 symbol=symbol,
-                direction=pos["direction"],
-                exit_price=fill_price,
+                direction=direction,
+                exit_price=price,
                 timestamp=ts,
                 reason=reason,
                 pnl_r=pnl_r,
-                trade_id=pos.get("trade_id"),
+                trade_id=pos["trade_id"],
                 trailing_activated=pos.get("trailing_activated", False),
-                risk_usd=pos.get("risk_usd", 0)
+                risk_usd=pos.get("risk_usd", 0),
+                entry_time=pos.get("entry_time"),
             )
 
         if self.persist:
@@ -751,12 +730,24 @@ class PositionManager:
             try:
                 with open(REENTRY_LOCK_FILE, "r") as f:
                     content = f.read().strip()
-                self._reentry_lock = json.loads(content) if content else {}
-                # convert values to int
-                self._reentry_lock = {k: int(v) for k, v in self._reentry_lock.items()}
+                raw = json.loads(content) if content else {}
+                # convert values to int, drop entries older than 48h
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=48)
+                self._reentry_lock = {}
+                self._reentry_lock_ts = {}
+                for k, v in raw.items():
+                    if isinstance(v, dict):
+                        locked_at = pd.Timestamp(v.get("locked_at", "2000-01-01"), tz="UTC")
+                        if locked_at >= cutoff:
+                            self._reentry_lock[k] = int(v["direction"])
+                            self._reentry_lock_ts[k] = locked_at
+                    else:
+                        # legacy format — drop it, no timestamp to validate
+                        pass
             except (json.JSONDecodeError, ValueError):
                 print(f"[WARN] Corrupted reentry lock — starting fresh")
                 self._reentry_lock = {}
+                self._reentry_lock_ts = {}
 
     def _save(self):
         if not self.persist:
@@ -777,8 +768,15 @@ class PositionManager:
         os.replace(ENTRY_TS_FILE + ".tmp", ENTRY_TS_FILE)
 
         # REENTRY LOCK
+        lock_payload = {
+            k: {
+                "direction": v,
+                "locked_at": self._reentry_lock_ts.get(k, pd.Timestamp.now(tz="UTC")).isoformat()
+            }
+            for k, v in self._reentry_lock.items()
+        }
         with open(REENTRY_LOCK_FILE + ".tmp", "w") as f:
-            json.dump(self._reentry_lock, f, indent=2)
+            json.dump(lock_payload, f, indent=2)
         os.replace(REENTRY_LOCK_FILE + ".tmp", REENTRY_LOCK_FILE)
 
         # EXECUTED SIGNALS

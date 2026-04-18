@@ -12,9 +12,10 @@ from execution.notifier import TelegramNotifier
 import pandas as pd
 
 SYMBOLS = [
-    "ETHUSDT", "FILUSDT", "TRXUSDT", "VETUSDT", "UNIUSDT", "DOGEUSDT", "EOSUSDT", "ETCUSDT",
-    "AAVEUSDT", "BCHUSDT", "HNTUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT", "BTCUSDT",
-    "ZENUSDT", "AVAXUSDT", "MKRUSDT", "AXSUSDT", "ORDIUSDT", "LDOUSDT", "LINKUSDT",
+    # "ETHUSDT", "FILUSDT", "TRXUSDT", "VETUSDT", "UNIUSDT", "DOGEUSDT", "EOSUSDT", "ETCUSDT",
+    # "AAVEUSDT", "BCHUSDT", "HNTUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT", "BTCUSDT",
+    # "ZENUSDT", "AVAXUSDT", "MKRUSDT", "AXSUSDT", "ORDIUSDT", "LDOUSDT", "LINKUSDT"
+    "LDOUSDT"
 ]
 
 SIGNAL_STORE       = "data/signals.json"
@@ -53,8 +54,10 @@ def run_hourly():
 # ==========================================================
 # SINGLE SYMBOL ENGINE (UNIFIED LIVE + REPLAY)
 # ==========================================================
-def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, dry_run=False):
-    pm = PositionManager(persist=not replay and forced_time is None, notify=not dry_run, dry_run=dry_run)
+def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None):
+    is_live = not replay and forced_time is None
+    notify = notify_override if notify_override is not None else is_live
+    pm = PositionManager(persist=is_live, notify=notify)
     notifier = TelegramNotifier()
 
     # =========================
@@ -144,13 +147,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, dry_run=F
             os.replace(LAST_5M_FILE + ".tmp", LAST_5M_FILE)
             print(f"[FIRST RUN] {symbol} cursor seeded at {latest_ts}, skipping history")
 
-            notifier.send_debug("FIRST-RUN", (
-                f"Symbol: `{symbol}`\n"
-                f"Cursor seeded at: `{latest_ts}`\n"
-                f"Last signal: `{int(df['final_signal'].iloc[-1])}`\n"
-                f"History skipped — no orders fired"
-            ))
-
+            # Derive open trade state directly from signal data — no disk state needed
             last_signal = int(df["final_signal"].iloc[-1])
             if last_signal != 0:
                 dir_text = "LONG" if last_signal == 1 else "SHORT"
@@ -187,31 +184,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, dry_run=F
 
             ltf_row = df.iloc[int(row_5m["ltf_index"])]
 
-            # ── only fires when there is an actual signal ──
-            if bar_signal != 0 and not replay:
-                signal_age_bars = len(
-                    lltf_frozen[
-                        (lltf_frozen.index > ltf_row.name) &
-                        (lltf_frozen.index <= row_5m.name)
-                    ]
-                )
-                signal_id = (
-                    symbol + "|" +
-                    str(row_5m.name) + "|" +
-                    str(bar_signal) + "|" +
-                    str(ltf_row.name)
-                )
-                notifier.send_debug("SIGNAL-BAR", (
-                    f"Symbol: `{symbol}`\n"
-                    f"bar\\_ts: `{row_5m.name}`\n"
-                    f"signal: `{bar_signal}`\n"
-                    f"signal\\_age\\_bars: `{signal_age_bars}` / expiry=`{pm.SIGNAL_EXPIRY_BARS}`\n"
-                    f"has\\_position: `{symbol in pm.positions}`\n"
-                    f"reentry\\_lock: `{pm._reentry_lock.get(symbol, 'none')}`\n"
-                    f"signal\\_id\\_in\\_executed: `{signal_id in pm._executed_signals}`\n"
-                    f"ltf\\_row\\_ts: `{ltf_row.name}`"
-                ))
-
             result = pm.update(
                 df=df,
                 symbol=symbol,
@@ -220,13 +192,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, dry_run=F
                 external_row=ltf_row,
                 current_5m_row=row_5m
             )
-
-            if not replay and result and result.get("state") in ("OPEN", "CLOSED"):
-                notifier.send_debug("RESULT", (
-                    f"Symbol: `{symbol}`\n"
-                    f"state: `{result['state']}`\n"
-                    f"ts: `{row_5m.name}`"
-                ))
 
         # REPLAY: force-close any position still open at end of data
         if replay and symbol in pm.positions:

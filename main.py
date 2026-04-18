@@ -106,12 +106,17 @@ HTF_INTERVAL = "4h"
 # LTF_LIMIT = 4380   # ~30 days of 1h candles
 # HTF_LIMIT = 1095   # ~120 days of 4h candles
 
-LLTF_LIMIT = 24000
-LTF_LIMIT = 2000   # ~30 days of 1h candles
-HTF_LIMIT = 500   # ~120 days of 4h candles
+# LLTF_LIMIT = 24000
+# LTF_LIMIT = 2000   # ~30 days of 1h candles
+# HTF_LIMIT = 500   # ~120 days of 4h candles
 
-# LTF_LIMIT = 1000   # ~30 days of 1h candles
-# HTF_LIMIT = 251   # ~120 days of 4h candles
+LLTF_LIMIT = 12000
+LTF_LIMIT = 1000   # ~30 days of 1h candles
+HTF_LIMIT = 250   # ~120 days of 4h candles
+
+# LLTF_LIMIT = 6000
+# LTF_LIMIT = 500   # ~30 days of 1h candles
+# HTF_LIMIT = 125   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA

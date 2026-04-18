@@ -37,11 +37,14 @@ class TelegramNotifier:
         stop_dist  = abs(entry_price - stop_loss)
         stop_pct   = (stop_dist / entry_price * 100) if entry_price else 0
 
+        ts_str = self._fmt_ts(timestamp)
+
         msg = (
             f"🟢 *TRADE READY*\n"
             f"ID: `{trade_id}`\n"
             f"Symbol: `{symbol}`\n"
             f"Side: `{dir_text}`\n"
+            f"Entry Time: `{ts_str}`\n"
             f"Entry Price: `{entry_price:.6f}`\n"
             f"Stop Loss: `{stop_loss:.6f}`\n"
             f"Stop Distance: `{stop_dist:.6f}` (`{stop_pct:.2f}%`)\n"
@@ -65,17 +68,23 @@ class TelegramNotifier:
         trade_id:           Optional[str] = None,
         trailing_activated: bool = False,
         risk_usd:           float = 0,
+        entry_time:         Optional[str] = None,
     ) -> None:
         dir_text  = "LONG" if direction == 1 else "SHORT"
         trade_id  = trade_id or "unknown"
         risk_usd  = float(risk_usd or 0)
         pnl_usd   = pnl_r * risk_usd
 
+        exit_ts_str  = self._fmt_ts(timestamp)
+        entry_ts_str = entry_time or "unknown"
+
         msg = (
             f"🔴 *TRADE CLOSED*\n"
             f"ID: `{trade_id}`\n"
             f"Symbol: `{symbol}`\n"
             f"Direction: `{dir_text}`\n"
+            f"Entry Time: `{entry_ts_str}`\n"
+            f"Exit Time: `{exit_ts_str}`\n"
             f"Exit Price: `{exit_price:.6f}`\n"
             f"Reason: `{reason}`\n"
             f"Result:\n"
@@ -87,13 +96,6 @@ class TelegramNotifier:
 
     def send_text(self, message: str) -> None:
         self._send(message, parse_mode="Markdown")
-
-    def send_debug(self, tag: str, message: str) -> None:
-        msg = f"🔍 `[{tag}]`\n{message}"
-        try:
-            self._send(msg, parse_mode="Markdown")
-        except Exception as e:
-            print(f"[DEBUG NOTIFY FAILED] {tag}: {e}")
 
     # ------------------------------------------------------------------
     # HELPERS
