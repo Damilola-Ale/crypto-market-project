@@ -57,14 +57,15 @@ def run_hourly():
 def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
-    pm = PositionManager(persist=is_live, notify=notify)
+    pm = PositionManager(persist=True, notify=notify)
     notifier = TelegramNotifier()
 
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
     # =========================
-    if os.path.exists(LAST_5M_FILE):
-        with open(LAST_5M_FILE, "r") as f:
+    last_5m_file = LAST_5M_FILE if is_live else "data/replay_last_5m_seen.json"
+    if os.path.exists(last_5m_file):
+        with open(last_5m_file, "r") as f:
             last_5m_seen = json.load(f)
     else:
         last_5m_seen = {}
@@ -211,12 +212,13 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                 f"pnl_r={closed['exit']['pnl_r']:.2f}"
             )
 
-        # update cursor AFTER processing (live only)
-        if not replay and not forced_time:
+        # update cursor AFTER processing
+        if not replay:
             last_5m_seen[symbol] = new_bars.index[-1]
-            with open(LAST_5M_FILE + ".tmp", "w") as f:
+            write_file = last_5m_file
+            with open(write_file + ".tmp", "w") as f:
                 json.dump(last_5m_seen, f, indent=2)
-            os.replace(LAST_5M_FILE + ".tmp", LAST_5M_FILE)
+            os.replace(write_file + ".tmp", write_file)
 
         # ==========================================================
         # SAVE LAST PROCESSED HOUR

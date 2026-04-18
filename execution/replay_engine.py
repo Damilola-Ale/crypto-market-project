@@ -9,6 +9,7 @@ from execution.notifier import TelegramNotifier
 STATE_FILES = [
     "data/last_5m_seen.json",
     "data/last_hour_seen.json",
+    "data/replay_last_5m_seen.json",
     "data/positions/open_positions.json",
     "data/positions/bar_history.json",
     "data/positions/executed_signals.json",
