@@ -88,6 +88,13 @@ class TelegramNotifier:
     def send_text(self, message: str) -> None:
         self._send(message, parse_mode="Markdown")
 
+    def send_debug(self, tag: str, message: str) -> None:
+        msg = f"🔍 `[{tag}]`\n{message}"
+        try:
+            self._send(msg, parse_mode="Markdown")
+        except Exception as e:
+            print(f"[DEBUG NOTIFY FAILED] {tag}: {e}")
+
     # ------------------------------------------------------------------
     # HELPERS
     # ------------------------------------------------------------------

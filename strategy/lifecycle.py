@@ -53,9 +53,10 @@ class PositionManager:
     TOTAL_COST_BPS = SLIPPAGE_BPS + SPREAD_BPS   # 8bps per side
     SIGNAL_EXPIRY_BARS = 6   # signal dies after 6×5m = 30 minutes
 
-    def __init__(self, persist=True, notify=True):
-        self.persist = persist
-        self.notify  = notify
+    def __init__(self, persist=True, notify=True, dry_run=False):
+        self.persist  = persist
+        self.notify   = notify
+        self.dry_run  = dry_run
         self.positions = {}
         os.makedirs(POSITIONS_DIR, exist_ok=True)
 
@@ -534,6 +535,19 @@ class PositionManager:
             "last_trail_bar": 0,
         }
 
+        if self.dry_run:
+            self.notifier.send_debug("DRY-RUN OPEN", (
+                f"Symbol: `{symbol}`\n"
+                f"Direction: `{'LONG' if direction == 1 else 'SHORT'}`\n"
+                f"Entry: `{price:.6f}`\n"
+                f"Stop: `{stop:.6f}`\n"
+                f"ATR: `{atr:.6f}`\n"
+                f"Risk USD: `${risk_usd:.3f}`\n"
+                f"ts: `{ts}`"
+            ))
+            print(f"[DRY-RUN OPEN] {symbol} dir={direction} price={price}")
+            return position.copy()
+
         self.positions[symbol] = position
         if self.persist:
             self._save()
@@ -611,7 +625,17 @@ class PositionManager:
         if self.USE_ACCOUNT_GATES:
             account_state.on_position_close(pnl_usd)
 
-        if self.notify:
+        if self.dry_run:
+            self.notifier.send_debug("DRY-RUN CLOSE", (
+                f"Symbol: `{symbol}`\n"
+                f"Direction: `{'LONG' if direction == 1 else 'SHORT'}`\n"
+                f"Exit: `{fill_price:.6f}`\n"
+                f"Reason: `{reason}`\n"
+                f"PnL R: `{pnl_r:+.3f}`\n"
+                f"Duration: `{duration_bars}` bars\n"
+                f"ts: `{ts}`"
+            ))
+        elif self.notify:
             self.notifier.notify_close(
                 symbol=symbol,
                 direction=pos["direction"],
@@ -621,7 +645,7 @@ class PositionManager:
                 pnl_r=pnl_r,
                 trade_id=pos.get("trade_id"),
                 trailing_activated=pos.get("trailing_activated", False),
-                risk_usd=pos.get("risk_usd", 0)  # Passing the stored risk for $ calculation
+                risk_usd=pos.get("risk_usd", 0)
             )
 
         if self.persist:
