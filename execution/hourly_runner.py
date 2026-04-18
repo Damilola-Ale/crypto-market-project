@@ -94,11 +94,31 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         # -------------------
         df = generate_signal(df.copy(), htf_df.copy())
 
+        notifier.send_text(
+            f"🧠 *SIGNAL GEN CHECK*\n"
+            f"{symbol}\n"
+            f"1H candles: `{len(df)}`\n"
+            f"Non-null signals: `{df['final_signal'].notna().sum()}`\n"
+            f"Non-zero signals: `{(df['final_signal'] != 0).sum()}`\n"
+            f"Last signal value: `{df['final_signal'].iloc[-1]}`\n"
+            f"Last signal ts: `{df.index[-1]}`"
+        )
+
         lltf_df = map_ltf_to_htf(lltf_df, df)
 
         lltf_df["final_signal"] = df["final_signal"].reindex(
             lltf_df.index,
             method="ffill"
+        )
+
+        notifier.send_text(
+            f"🧬 *MAPPING CHECK*\n"
+            f"{symbol}\n"
+            f"5m candles: `{len(lltf_df)}`\n"
+            f"5m non-null signals: `{lltf_df['final_signal'].notna().sum()}`\n"
+            f"5m non-zero signals: `{(lltf_df['final_signal'] != 0).sum()}`\n"
+            f"First 5m ts: `{lltf_df.index[0]}`\n"
+            f"Last 5m ts: `{lltf_df.index[-1]}`"
         )
 
         if 'final_signal' not in df.columns or len(df) < 2:
