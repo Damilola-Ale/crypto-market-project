@@ -76,16 +76,17 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if forced_time is None and not replay:
             df, htf_df, lltf_df = update_symbol(symbol)
             df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
-
         else:
-            df = pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
-            htf_df = pd.read_parquet(f"data/cache/{symbol}_4h.parquet")
-            lltf_df = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
+            # call update_symbol once to get fresh data from Binance, then slice
+            df, htf_df, lltf_df = update_symbol(symbol)
 
             if forced_time:
-                df     = df[df.index < forced_time].copy()
-                htf_df = htf_df[htf_df.index < forced_time].copy()
+                df      = df[df.index < forced_time].copy()
+                htf_df  = htf_df[htf_df.index < forced_time].copy()
                 lltf_df = lltf_df[lltf_df.index < forced_time].copy()
+            else:
+                # replay=True with no forced_time — drop incomplete candle same as live
+                df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
 
         # -------------------
         # GENERATE & MAP SIGNALS (The Unified Way)
