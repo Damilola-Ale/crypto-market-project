@@ -138,7 +138,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         latest_ts = lltf_frozen.index[-1]
         last_seen = pd.Timestamp(last_5m_seen.get(symbol)) if last_5m_seen.get(symbol) else None
 
-        if last_seen == latest_ts:
+        if is_live and last_seen == latest_ts:
             return None
 
         # First live run: seed cursor and exit — never replay full history into live orders
