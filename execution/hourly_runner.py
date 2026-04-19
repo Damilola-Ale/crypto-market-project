@@ -234,7 +234,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
             ltf_row = df.iloc[int(row_5m["ltf_index"])]
 
-            if row_5m.get("final_signal", 0) != 0:
+            if not pd.isna(row_5m.get("final_signal", float("nan"))) and row_5m["final_signal"] != 0:
                 notifier.send_text(
                     f"🚨 *SIGNAL REACHED LIFECYCLE*\n"
                     f"{symbol}\n"
@@ -270,7 +270,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
         # update cursor AFTER processing
         if not replay:
-            last_5m_seen[symbol] = new_bars.index[-1]
+            last_5m_seen[symbol] = new_bars.index[-1].isoformat()
             write_file = last_5m_file
             with open(write_file + ".tmp", "w") as f:
                 json.dump(last_5m_seen, f, indent=2)
