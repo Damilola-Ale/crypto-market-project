@@ -60,6 +60,12 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
     pm = PositionManager(persist=True, notify=notify)
     notifier = TelegramNotifier()
 
+    notifier.send_text(
+        f"📍 *RUNNER ENTERED*\n"
+        f"`{symbol}` forced_time=`{forced_time}`\n"
+        f"is_live=`{is_live}` replay=`{replay}`"
+    )
+
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
     # =========================
@@ -74,20 +80,33 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         # -------------------
         # FETCH DATA
         # -------------------
-        if forced_time is None and not replay:
-            df, htf_df, lltf_df = update_symbol(symbol)
-            df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
-        else:
-            # call update_symbol once to get fresh data from Binance, then slice
-            df, htf_df, lltf_df = update_symbol(symbol)
-
-            if forced_time:
-                df      = df[df.index < forced_time].copy()
-                htf_df  = htf_df[htf_df.index < forced_time].copy()
-                lltf_df = lltf_df[lltf_df.index < forced_time].copy()
-            else:
-                # replay=True with no forced_time — drop incomplete candle same as live
+        try:
+            if forced_time is None and not replay:
+                df, htf_df, lltf_df = update_symbol(symbol)
                 df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
+            else:
+                df, htf_df, lltf_df = update_symbol(symbol)
+
+                if forced_time:
+                    df      = df[df.index < forced_time].copy()
+                    htf_df  = htf_df[htf_df.index < forced_time].copy()
+                    lltf_df = lltf_df[lltf_df.index < forced_time].copy()
+                else:
+                    df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
+
+        except Exception as fetch_err:
+            notifier.send_text(
+                f"💥 *UPDATE_SYMBOL FAILED*\n"
+                f"`{symbol}` forced_time=`{forced_time}`\n"
+                f"Error: `{str(fetch_err)[:300]}`"
+            )
+            return None
+
+        notifier.send_text(
+            f"✅ *UPDATE_SYMBOL OK*\n"
+            f"`{symbol}` ltf=`{len(df)}` htf=`{len(htf_df)}` lltf=`{len(lltf_df)}`\n"
+            f"forced_time=`{forced_time}`"
+        )
 
         # -------------------
         # GENERATE & MAP SIGNALS (The Unified Way)

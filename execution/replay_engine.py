@@ -59,7 +59,18 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         if forced_time is None:
             break
 
-        run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades)
+        try:
+            run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades)
+        except Exception as e:
+            import traceback
+            notifier.send_text(
+                f"💥 *REPLAY ITERATION CRASHED*\n"
+                f"`{symbol}` bar `{i+1}/{total}`\n"
+                f"forced_time=`{forced_time}`\n"
+                f"Error: `{str(e)[:300]}`"
+            )
+            traceback.print_exc()
+            continue
 
         # progress ping every 20 bars after warmup
         if i >= warmup_done_idx and (i - warmup_done_idx + 1) % 20 == 0:
