@@ -34,18 +34,32 @@ def fetch_ohlcv(
     interval: str = "1h",
     limit: int = 1000,
     retries: int = 3,
-    verbose: bool = True,       # ← NEW: suppress during pagination
+    verbose: bool = True,
 ) -> pd.DataFrame:
 
     symbol = symbol.replace("-", "").upper()
 
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-    }
+    def safe_request(params):
+        try:
+            r = requests.get(BASE_URL, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
 
-    if end:
-        params["endTime"] = _to_ms(end)
+            # 🔥 HARD GUARD: Binance sometimes returns dict error payload
+            if isinstance(data, dict):
+                raise RuntimeError(f"Binance error response: {data}")
+
+            # 🔥 HARD GUARD: empty or malformed
+            if not isinstance(data, list):
+                raise RuntimeError(f"Unexpected response type: {type(data)}")
+
+            return data
+
+        except Exception as e:
+            raise RuntimeError(f"Request failed: {e}")
+
+    start_ms = _to_ms(start) if start else None
+    end_ms = _to_ms(end) if end else None
 
     for attempt in range(retries):
 
@@ -55,11 +69,10 @@ def fetch_ohlcv(
                 print(f"[FETCH] start={start} end={end}")
 
             all_data = []
-            end_time = params.get("endTime", None)
-
-            start_ms = _to_ms(start) if start else None
+            end_time = end_ms
 
             while True:
+
                 page_params = {
                     "symbol": symbol,
                     "interval": interval,
@@ -69,24 +82,21 @@ def fetch_ohlcv(
                 if end_time:
                     page_params["endTime"] = end_time
 
-                response = requests.get(BASE_URL, params=page_params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
+                data = safe_request(page_params)
 
-                if not data:
+                if len(data) == 0:
                     break
 
-                # Binance returns newest → oldest within page
                 all_data = data + all_data
 
                 oldest_open_time = data[0][0]
-                end_time = oldest_open_time - 1  # move backward
+                end_time = oldest_open_time - 1
 
-                # STOP ONLY IF WE HAVE A REAL LOWER BOUND
-                if start_ms is not None and oldest_open_time <= start_ms:
+                # stop if we hit start boundary
+                if start_ms and oldest_open_time <= start_ms:
                     break
 
-                # safety: if Binance returns less than full page, stop
+                # safety stop for pagination correctness
                 if len(data) < 1000:
                     break
 
@@ -106,21 +116,18 @@ def fetch_ohlcv(
             df = df[["open", "high", "low", "close", "volume"]].astype(float)
 
             if verbose:
-                print(
-                    f"[FETCH] returned {len(df)} candles | "
-                    f"{df.index.min()} → {df.index.max()}"
-                )
-            
-            # Trim to requested window AFTER pagination
-            if start:
-                df = df[df.index >= pd.Timestamp(start, tz="UTC")]
-            if end:
-                df = df[df.index <= pd.Timestamp(end, tz="UTC")]
+                print(f"[FETCH] returned {len(df)} candles")
+
+            # final trim (safe even if pagination overshoots)
+            if start_ms:
+                df = df[df.index >= pd.to_datetime(start_ms, unit="ms", utc=True)]
+            if end_ms:
+                df = df[df.index <= pd.to_datetime(end_ms, unit="ms", utc=True)]
 
             return df
 
         except Exception as e:
-            print(f"[FETCH ERROR] attempt {attempt+1} : {e}")
+            print(f"[FETCH ERROR] attempt {attempt+1}: {e}")
             time.sleep(1)
 
     raise RuntimeError(f"Failed to fetch data for {symbol}")
