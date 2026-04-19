@@ -72,7 +72,13 @@ def fetch_ohlcv(
                     break
 
                 all_data = data + all_data
-                end_time = data[0][0] - 1  # step backwards
+                oldest_open_time = data[0][0]
+                end_time = oldest_open_time - 1  # step backwards
+
+                # 🚨 STOP CONDITION — prevent infinite history download
+                if start and oldest_open_time <= _to_ms(start):
+                    break
+
                 time.sleep(0.25)
 
                 if len(data) < 1000:
