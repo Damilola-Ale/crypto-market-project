@@ -61,11 +61,19 @@ def _check_index(df: pd.DataFrame, symbol: str, freq: str):
     if df.index.duplicated().any():
         raise RuntimeError(f"[{symbol}] Duplicate timestamps detected")
 
+    # Normalize Binance interval strings → pandas freq aliases
+    _FREQ_MAP = {
+        "1m": "1min", "3m": "3min", "5m": "5min", "15m": "15min", "30m": "30min",
+        "1h": "1h",   "2h": "2h",   "4h": "4h",   "6h": "6h",    "12h": "12h",
+        "1d": "1D",   "1w": "1W",
+    }
+    pd_freq = _FREQ_MAP.get(freq, freq)
+
     # Exact spacing check
     expected = pd.date_range(
         start=df.index[0],
         periods=len(df),
-        freq=freq,
+        freq=pd_freq,
         tz="UTC",
     )
     if not df.index.equals(expected):
