@@ -59,6 +59,8 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         if forced_time is None:
             break
 
+        notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
+
         try:
             run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades)
         except Exception as e:
