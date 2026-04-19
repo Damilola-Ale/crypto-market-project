@@ -70,10 +70,19 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
     # 5M STREAM MEMORY (CRITICAL FIX)
     # =========================
     last_5m_file = LAST_5M_FILE if is_live else "data/replay_last_5m_seen.json"
-    if os.path.exists(last_5m_file):
-        with open(last_5m_file, "r") as f:
-            last_5m_seen = json.load(f)
-    else:
+    try:
+        if os.path.exists(last_5m_file):
+            with open(last_5m_file, "r") as f:
+                last_5m_seen = json.load(f)
+        else:
+            last_5m_seen = {}
+    except Exception as state_err:
+        notifier.send_text(
+            f"💥 *STATE LOAD FAILED*\n"
+            f"`{symbol}`\n"
+            f"file=`{last_5m_file}`\n"
+            f"error=`{str(state_err)[:200]}`"
+        )
         last_5m_seen = {}
 
     try:
@@ -282,6 +291,11 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
     except Exception as e:
         import traceback
+        notifier.send_text(
+            f"💥 *RUNNER EXCEPTION*\n"
+            f"`{symbol}` forced_time=`{forced_time}`\n"
+            f"error=`{str(e)[:300]}`"
+        )
         error(f"[ERROR] {symbol} → {e}")
         traceback.print_exc()
         return None
