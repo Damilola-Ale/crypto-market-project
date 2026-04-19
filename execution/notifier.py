@@ -116,9 +116,24 @@ class TelegramNotifier:
     def _fmt_ts(ts) -> str:
         return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
-    def _send(self, message: str, parse_mode: Optional[str] = "Markdown") -> None:
-        payload: dict = {"chat_id": self.chat_id, "text": message}
-        if parse_mode:
-            payload["parse_mode"] = parse_mode
+    def _escape_md(self, text: str) -> str:
+        """
+        Escape Telegram MarkdownV2 special characters.
+        """
+        escape_chars = r"_*[]()~`>#+-=|{}.!"
+        for ch in escape_chars:
+            text = text.replace(ch, f"\\{ch}")
+        return text
+
+    def _send(self, message: str, parse_mode: Optional[str] = "MarkdownV2") -> None:
+        if parse_mode == "MarkdownV2":
+            message = self._escape_md(message)
+
+        payload: dict = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": parse_mode
+        }
+
         response = requests.post(self.api_url, json=payload, timeout=10)
         response.raise_for_status()
