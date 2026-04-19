@@ -58,17 +58,34 @@ def fetch_ohlcv(
                 print(f"[FETCH] {symbol} | {interval}")
                 print(f"[FETCH] start={start} end={end}")
 
-            response = requests.get(BASE_URL, params=params, timeout=10)
-            response.raise_for_status()
+            all_data = []
+            end_time = params.get("endTime", None)
 
-            data = response.json()
+            while True:
+                page_params = params.copy()
+                page_params["limit"] = 1000
 
-            if not data:
-                if verbose:
-                    print("[FETCH] No candles returned")
+                if end_time:
+                    page_params["endTime"] = end_time
+
+                response = requests.get(BASE_URL, params=page_params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+
+                if not data:
+                    break
+
+                all_data = data + all_data
+                end_time = data[0][0] - 1  # step backwards
+                time.sleep(0.25)
+
+                if len(data) < 1000:
+                    break
+
+            if not all_data:
                 return pd.DataFrame()
 
-            df = pd.DataFrame(data, columns=[
+            df = pd.DataFrame(all_data, columns=[
                 "open_time", "open", "high", "low", "close", "volume",
                 "close_time", "quote_asset_vol", "num_trades",
                 "taker_buy_base", "taker_buy_quote", "ignore"
