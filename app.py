@@ -136,119 +136,102 @@ def test_pipeline():
         notifier.send_text(
             f"🧪 *PIPELINE TEST STARTED*\n"
             f"Symbol: `{symbol}`\n"
-            f"Plan: download 800×1h, equivalent 4h+5m, then increment 200×1h"
+            f"Plan: download 800×1h warmup, then simulate 200 hourly cron ticks"
         )
 
         try:
             now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
-            # ── PHASE 1: Download 800 1h candles ──────────────────────
+            # ── PHASE 1: Download warmup ───────────────────────────────
             warmup_end   = now - timedelta(hours=200)
             warmup_start = warmup_end - timedelta(hours=800)
 
             notifier.send_text(
-                f"📥 *PHASE 1: Downloading 800×1h warmup*\n"
-                f"from `{warmup_start}`\n"
-                f"to   `{warmup_end}`"
+                f"📥 *PHASE 1: Downloading warmup*\n"
+                f"from `{warmup_start}` to `{warmup_end}`"
             )
 
             df_1h = fetch_ohlcv(symbol, start=warmup_start, end=warmup_end, interval="1h", limit=1000, verbose=False)
-
-            notifier.send_text(
-                f"✅ *1H WARMUP DONE*\n"
-                f"rows=`{len(df_1h)}`\n"
-                f"first=`{df_1h.index[0]}`\n"
-                f"last=`{df_1h.index[-1]}`"
-            )
-
-            # ── 4h equivalent ─────────────────────────────────────────
-            notifier.send_text(f"📥 *Downloading 4h warmup*")
             df_4h = fetch_ohlcv(symbol, start=warmup_start, end=warmup_end, interval="4h", limit=1000, verbose=False)
-            notifier.send_text(f"✅ *4H WARMUP DONE* rows=`{len(df_4h)}`")
-
-            # ── 5m equivalent ─────────────────────────────────────────
-            notifier.send_text(f"📥 *Downloading 5m warmup* (this is the big one)")
             df_5m = fetch_ohlcv(symbol, start=warmup_start, end=warmup_end, interval="5m", limit=1000, verbose=False)
-            notifier.send_text(f"✅ *5M WARMUP DONE* rows=`{len(df_5m)}`")
 
-            # ── Save warmup parquets ───────────────────────────────────
-            df_1h.to_parquet("data/cache/LDOUSDT_1h.parquet")
-            df_4h.to_parquet("data/cache/LDOUSDT_4h.parquet")
-            df_5m.to_parquet("data/cache/LDOUSDT_5m.parquet")
+            df_1h.to_parquet(f"data/cache/{symbol}_1h.parquet")
+            df_4h.to_parquet(f"data/cache/{symbol}_4h.parquet")
+            df_5m.to_parquet(f"data/cache/{symbol}_5m.parquet")
 
             notifier.send_text(
-                f"💾 *WARMUP PARQUETS SAVED*\n"
-                f"1h=`{len(df_1h)}` 4h=`{len(df_4h)}` 5m=`{len(df_5m)}`"
+                f"💾 *WARMUP SAVED*\n"
+                f"1h=`{len(df_1h)}` 4h=`{len(df_4h)}` 5m=`{len(df_5m)}`\n"
+                f"Cursor at `{warmup_end}` — starting sim loop"
             )
 
-            # ── PHASE 2: Increment 200×1h candles one at a time ───────
-            notifier.send_text(
-                f"🔄 *PHASE 2: Incrementing 200×1h candles*\n"
-                f"Simulating live hourly updates"
-            )
+            # ── PHASE 2: Simulated hourly cron loop ───────────────────
+            fake_now = warmup_end
 
-            increment_start = warmup_end
-            increment_end   = now
+            for tick in range(1, 201):
+                fake_now += timedelta(hours=1)
 
-            # fetch all 200 at once so we can iterate
-            df_increment_1h = fetch_ohlcv(symbol, start=increment_start, end=increment_end, interval="1h", limit=1000, verbose=False)
-            df_increment_4h = fetch_ohlcv(symbol, start=increment_start, end=increment_end, interval="4h", limit=1000, verbose=False)
-            df_increment_5m = fetch_ohlcv(symbol, start=increment_start, end=increment_end, interval="5m", limit=1000, verbose=False)
+                # reload current parquets
+                base_1h = pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
+                base_4h = pd.read_parquet(f"data/cache/{symbol}_4h.parquet")
+                base_5m = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
 
-            notifier.send_text(
-                f"📦 *INCREMENT DATA FETCHED*\n"
-                f"1h=`{len(df_increment_1h)}` 4h=`{len(df_increment_4h)}` 5m=`{len(df_increment_5m)}`"
-            )
+                for df in (base_1h, base_4h, base_5m):
+                    df.index = pd.to_datetime(df.index, utc=True)
 
-            # reload current parquets
-            base_1h = pd.read_parquet("data/cache/LDOUSDT_1h.parquet")
-            base_4h = pd.read_parquet("data/cache/LDOUSDT_4h.parquet")
-            base_5m = pd.read_parquet("data/cache/LDOUSDT_5m.parquet")
-            base_1h.index = pd.to_datetime(base_1h.index, utc=True)
-            base_4h.index = pd.to_datetime(base_4h.index, utc=True)
-            base_5m.index = pd.to_datetime(base_5m.index, utc=True)
+                cursor_1h = base_1h.index[-1]
+                cursor_4h = base_4h.index[-1]
+                cursor_5m = base_5m.index[-1]
 
-            for i, (ts, row) in enumerate(df_increment_1h.iterrows()):
+                # fetch only what's new since last cursor
+                new_1h = fetch_ohlcv(symbol, start=cursor_1h, end=fake_now, interval="1h", limit=100, verbose=False)
+                new_4h = fetch_ohlcv(symbol, start=cursor_4h, end=fake_now, interval="4h", limit=100, verbose=False)
+                new_5m = fetch_ohlcv(symbol, start=cursor_5m, end=fake_now, interval="5m", limit=100, verbose=False)
 
-                # append this 1h candle
-                new_1h = pd.DataFrame([row], index=[ts])
-                base_1h = pd.concat([base_1h, new_1h])
-                base_1h = base_1h[~base_1h.index.duplicated(keep="last")]
+                # strip rows already in base (cursor row itself may be returned)
+                new_1h = new_1h[new_1h.index > cursor_1h]
+                new_4h = new_4h[new_4h.index > cursor_4h]
+                new_5m = new_5m[new_5m.index > cursor_5m]
 
-                # append all 4h candles up to this timestamp
-                new_4h = df_increment_4h[df_increment_4h.index <= ts]
-                base_4h = pd.concat([base_4h, new_4h])
-                base_4h = base_4h[~base_4h.index.duplicated(keep="last")]
+                added_1h = len(new_1h)
+                added_4h = len(new_4h)
+                added_5m = len(new_5m)
 
-                # append all 5m candles within this 1h window
-                if i == 0:
-                    prev_ts = increment_start
+                if added_1h > 0:
+                    base_1h = pd.concat([base_1h, new_1h])
+                    base_1h = base_1h[~base_1h.index.duplicated(keep="last")]
+                    base_1h.to_parquet(f"data/cache/{symbol}_1h.parquet")
+
+                if added_4h > 0:
+                    base_4h = pd.concat([base_4h, new_4h])
+                    base_4h = base_4h[~base_4h.index.duplicated(keep="last")]
+                    base_4h.to_parquet(f"data/cache/{symbol}_4h.parquet")
+
+                if added_5m > 0:
+                    base_5m = pd.concat([base_5m, new_5m])
+                    base_5m = base_5m[~base_5m.index.duplicated(keep="last")]
+                    base_5m.to_parquet(f"data/cache/{symbol}_5m.parquet")
+
+                candle_arrived = added_1h > 0
+
+                if candle_arrived:
+                    notifier.send_text(
+                        f"🕐 *SIM TICK {tick}/200* ✅ new candle\n"
+                        f"fake_now=`{fake_now}`\n"
+                        f"+1h=`{added_1h}` +4h=`{added_4h}` +5m=`{added_5m}`\n"
+                        f"total 1h=`{len(base_1h)}` 5m=`{len(base_5m)}`"
+                    )
                 else:
-                    prev_ts = df_increment_1h.index[i - 1]
-                new_5m = df_increment_5m[
-                    (df_increment_5m.index > prev_ts) &
-                    (df_increment_5m.index <= ts)
-                ]
-                base_5m = pd.concat([base_5m, new_5m])
-                base_5m = base_5m[~base_5m.index.duplicated(keep="last")]
-
-                # save parquets
-                base_1h.to_parquet("data/cache/LDOUSDT_1h.parquet")
-                base_4h.to_parquet("data/cache/LDOUSDT_4h.parquet")
-                base_5m.to_parquet("data/cache/LDOUSDT_5m.parquet")
-
-                notifier.send_text(
-                    f"📊 *CANDLE {i+1}/~200*\n"
-                    f"1h ts=`{ts}`\n"
-                    f"base_1h=`{len(base_1h)}` base_4h=`{len(base_4h)}` base_5m=`{len(base_5m)}`\n"
-                    f"new_5m bars this hour=`{len(new_5m)}`"
-                )
+                    notifier.send_text(
+                        f"🕐 *SIM TICK {tick}/200* ⚠️ no new 1h candle\n"
+                        f"fake_now=`{fake_now}` cursor_1h=`{cursor_1h}`\n"
+                        f"+1h=`{added_1h}` +4h=`{added_4h}` +5m=`{added_5m}`"
+                    )
 
             notifier.send_text(
                 f"✅ *PIPELINE TEST COMPLETE*\n"
-                f"Symbol: `{symbol}`\n"
-                f"Final 1h=`{len(base_1h)}` 4h=`{len(base_4h)}` 5m=`{len(base_5m)}`\n"
-                f"Parquets saved and ready"
+                f"200 ticks simulated\n"
+                f"Final 1h=`{len(base_1h)}` 4h=`{len(base_4h)}` 5m=`{len(base_5m)}`"
             )
 
         except Exception as e:
