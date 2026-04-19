@@ -57,9 +57,14 @@ def fetch_ohlcv(
             all_data = []
             end_time = params.get("endTime", None)
 
+            start_ms = _to_ms(start) if start else None
+
             while True:
-                page_params = params.copy()
-                page_params["limit"] = 1000
+                page_params = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "limit": 1000
+                }
 
                 if end_time:
                     page_params["endTime"] = end_time
@@ -71,18 +76,21 @@ def fetch_ohlcv(
                 if not data:
                     break
 
+                # Binance returns newest → oldest within page
                 all_data = data + all_data
-                oldest_open_time = data[0][0]
-                end_time = oldest_open_time - 1  # step backwards
 
-                # 🚨 STOP CONDITION — prevent infinite history download
-                if start and oldest_open_time <= _to_ms(start):
+                oldest_open_time = data[0][0]
+                end_time = oldest_open_time - 1  # move backward
+
+                # STOP ONLY IF WE HAVE A REAL LOWER BOUND
+                if start_ms is not None and oldest_open_time <= start_ms:
+                    break
+
+                # safety: if Binance returns less than full page, stop
+                if len(data) < 1000:
                     break
 
                 time.sleep(0.25)
-
-                if len(data) < 1000:
-                    break
 
             if not all_data:
                 return pd.DataFrame()
