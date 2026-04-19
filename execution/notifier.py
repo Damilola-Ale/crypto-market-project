@@ -95,7 +95,7 @@ class TelegramNotifier:
         self._send(msg)
 
     def send_text(self, message: str) -> None:
-        self._send(message, parse_mode="Markdown")
+        self._send(message, parse_mode="MarkdownV2")
 
     # ------------------------------------------------------------------
     # HELPERS
