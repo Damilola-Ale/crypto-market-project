@@ -42,11 +42,7 @@ def fetch_ohlcv(
     params = {
         "symbol": symbol,
         "interval": interval,
-        "limit": limit
     }
-
-    if start:
-        params["startTime"] = _to_ms(start)
 
     if end:
         params["endTime"] = _to_ms(end)
@@ -100,6 +96,12 @@ def fetch_ohlcv(
                     f"[FETCH] returned {len(df)} candles | "
                     f"{df.index.min()} → {df.index.max()}"
                 )
+            
+            # Trim to requested window AFTER pagination
+            if start:
+                df = df[df.index >= pd.Timestamp(start, tz="UTC")]
+            if end:
+                df = df[df.index <= pd.Timestamp(end, tz="UTC")]
 
             return df
 
