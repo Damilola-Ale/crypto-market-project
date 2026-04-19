@@ -206,7 +206,15 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
             ltf_row = df.iloc[int(row_5m["ltf_index"])]
 
-            result = pm.update(
+            if row_5m.get("final_signal", 0) != 0:
+                notifier.send_text(
+                    f"🚨 *SIGNAL REACHED LIFECYCLE*\n"
+                    f"{symbol}\n"
+                    f"ts: `{_}`\n"
+                    f"signal: `{row_5m['final_signal']}`"
+                )
+
+            pm.update(
                 df=df,
                 symbol=symbol,
                 lltf_df=lltf_frozen,
