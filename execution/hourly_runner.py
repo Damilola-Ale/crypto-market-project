@@ -54,17 +54,18 @@ def run_hourly():
 # ==========================================================
 # SINGLE SYMBOL ENGINE (UNIFIED LIVE + REPLAY)
 # ==========================================================
-def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None):
+def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None, verbose=True):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
     pm = PositionManager(persist=True, notify=notify)
     notifier = TelegramNotifier()
 
-    notifier.send_text(
-        f"📍 *RUNNER ENTERED*\n"
-        f"`{symbol}` forced_time=`{forced_time}`\n"
-        f"is_live=`{is_live}` replay=`{replay}`"
-    )
+    if verbose:
+        notifier.send_text(
+            f"📍 *RUNNER ENTERED*\n"
+            f"`{symbol}` forced_time=`{forced_time}`\n"
+            f"is_live=`{is_live}` replay=`{replay}`"
+        )
 
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
@@ -111,26 +112,28 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             )
             return None
 
-        notifier.send_text(
-            f"✅ *UPDATE_SYMBOL OK*\n"
-            f"`{symbol}` ltf=`{len(df)}` htf=`{len(htf_df)}` lltf=`{len(lltf_df)}`\n"
-            f"forced_time=`{forced_time}`"
-        )
+        if verbose:
+            notifier.send_text(
+                f"✅ *UPDATE_SYMBOL OK*\n"
+                f"`{symbol}` ltf=`{len(df)}` htf=`{len(htf_df)}` lltf=`{len(lltf_df)}`\n"
+                f"forced_time=`{forced_time}`"
+            )
 
         # -------------------
         # GENERATE & MAP SIGNALS (The Unified Way)
         # -------------------
         df = generate_signal(df.copy(), htf_df.copy())
 
-        notifier.send_text(
-            f"🧠 *SIGNAL GEN CHECK*\n"
-            f"{symbol}\n"
-            f"1H candles: `{len(df)}`\n"
-            f"Non-null signals: `{df['final_signal'].notna().sum()}`\n"
-            f"Non-zero signals: `{(df['final_signal'] != 0).sum()}`\n"
-            f"Last signal value: `{df['final_signal'].iloc[-1]}`\n"
-            f"Last signal ts: `{df.index[-1]}`"
-        )
+        if verbose:
+            notifier.send_text(
+                f"🧠 *SIGNAL GEN CHECK*\n"
+                f"{symbol}\n"
+                f"1H candles: `{len(df)}`\n"
+                f"Non-null signals: `{df['final_signal'].notna().sum()}`\n"
+                f"Non-zero signals: `{(df['final_signal'] != 0).sum()}`\n"
+                f"Last signal value: `{df['final_signal'].iloc[-1]}`\n"
+                f"Last signal ts: `{df.index[-1]}`"
+            )
 
         lltf_df = map_ltf_to_htf(lltf_df, df)
 
@@ -139,15 +142,16 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             method="ffill"
         )
 
-        notifier.send_text(
-            f"🧬 *MAPPING CHECK*\n"
-            f"{symbol}\n"
-            f"5m candles: `{len(lltf_df)}`\n"
-            f"5m non-null signals: `{lltf_df['final_signal'].notna().sum()}`\n"
-            f"5m non-zero signals: `{(lltf_df['final_signal'] != 0).sum()}`\n"
-            f"First 5m ts: `{lltf_df.index[0]}`\n"
-            f"Last 5m ts: `{lltf_df.index[-1]}`"
-        )
+        if verbose:
+            notifier.send_text(
+                f"🧬 *MAPPING CHECK*\n"
+                f"{symbol}\n"
+                f"5m candles: `{len(lltf_df)}`\n"
+                f"5m non-null signals: `{lltf_df['final_signal'].notna().sum()}`\n"
+                f"5m non-zero signals: `{(lltf_df['final_signal'] != 0).sum()}`\n"
+                f"First 5m ts: `{lltf_df.index[0]}`\n"
+                f"Last 5m ts: `{lltf_df.index[-1]}`"
+            )
 
         if 'final_signal' not in df.columns or len(df) < 2:
             return
@@ -225,6 +229,8 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if new_bars.empty:
             return None
 
+        bar_results = []
+
         for _, row_5m in new_bars.iterrows():
 
             if pd.isna(row_5m["final_signal"]):
@@ -242,7 +248,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                     f"signal: `{row_5m['final_signal']}`"
                 )
 
-            pm.update(
+            result = pm.update(
                 df=df,
                 symbol=symbol,
                 lltf_df=lltf_frozen,
@@ -250,6 +256,8 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                 external_row=ltf_row,
                 current_5m_row=row_5m
             )
+            if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
+                bar_results.append(result)
 
         # REPLAY: force-close any position still open at end of data
         if replay and symbol in pm.positions:
@@ -287,7 +295,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         
         pm.flush()
 
-        return None
+        return bar_results if bar_results else None
 
     except Exception as e:
         import traceback

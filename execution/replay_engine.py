@@ -44,6 +44,8 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         )
 
     total = len(hourly_timestamps)
+    trade_opens = 0
+    trade_closes = 0
 
     notifier.send_text(
         f"🔁 *REPLAY STARTED*\n"
@@ -59,10 +61,20 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         if forced_time is None:
             break
 
-        notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
+        is_progress_bar = (i + 1) % 20 == 0
+
+        if is_progress_bar:
+            notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
 
         try:
-            run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades)
+            results = run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades, verbose=is_progress_bar)
+            if isinstance(results, list):
+                for r in results:
+                    if isinstance(r, dict):
+                        if r.get("state") == "OPEN":
+                            trade_opens += 1
+                        elif r.get("state") == "CLOSED":
+                            trade_closes += 1
         except Exception as e:
             import traceback
             notifier.send_text(
@@ -85,7 +97,9 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
     notifier.send_text(
         f"✅ *REPLAY COMPLETE*\n"
         f"Symbol: `{symbol}`\n"
-        f"Bars processed: `{total}`"
+        f"Bars processed: `{total}`\n"
+        f"Trades opened: `{trade_opens}`\n"
+        f"Trades closed: `{trade_closes}`"
     )
 
 def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True):
