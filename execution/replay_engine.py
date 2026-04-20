@@ -17,6 +17,8 @@ STATE_FILES = [
     "data/positions/last_entry_ts.json",
 ]
 
+REPLAY_CURSOR_FILE = "data/replay_last_5m_seen.json"
+
 def reset_replay_state():
     for f in STATE_FILES:
         if os.path.exists(f):
@@ -104,8 +106,15 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
 
 def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True):
     reset_replay_state()
-    for symbol in SYMBOLS:
-        fast_replay_symbol(symbol, from_ts=from_ts, to_ts=to_ts, notify_trades=notify_trades)
+    # Write a replay lock so the live scheduler skips execution during replay
+    with open("data/replay_lock.json", "w") as f:
+        json.dump({"locked": True, "started": pd.Timestamp.now(tz="UTC").isoformat()}, f)
+    try:
+        for symbol in SYMBOLS:
+            fast_replay_symbol(symbol, from_ts=from_ts, to_ts=to_ts, notify_trades=notify_trades)
+    finally:
+        if os.path.exists("data/replay_lock.json"):
+            os.remove("data/replay_lock.json")
 
 if __name__ == "__main__":
     fast_replay_all()

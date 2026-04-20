@@ -35,6 +35,11 @@ def run_hourly():
 
     os.makedirs("data", exist_ok=True)
 
+    if os.path.exists("data/replay_lock.json"):
+        notifier = TelegramNotifier()
+        notifier.send_text("🔒 *LIVE SKIPPED*\nReplay lock active — skipping live execution")
+        return
+
     with open("data/last_run.json", "w") as f:
         json.dump(
             {
