@@ -21,8 +21,13 @@ def run():
     if request.args.get("key") != os.getenv("RUN_KEY", "local"):
         abort(403)
 
-    run_hourly()
-    return {"status": "executed"}, 200
+    import threading
+
+    thread = threading.Thread(target=run_hourly)
+    thread.daemon = True
+    thread.start()
+
+    return {"status": "started"}, 200
 
 
 @app.route("/test-telegram")
