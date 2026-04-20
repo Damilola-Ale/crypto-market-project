@@ -36,8 +36,9 @@ def run_hourly():
 
     os.makedirs("data", exist_ok=True)
 
+    notifier = TelegramNotifier()
+
     if os.path.exists("data/replay_lock.json"):
-        notifier = TelegramNotifier()
         notifier.send_text("🔒 *LIVE SKIPPED*\nReplay lock active — skipping live execution")
         return
 
@@ -51,11 +52,36 @@ def run_hourly():
             indent=2
         )
 
+    symbol_summaries = []
     for symbol in SYMBOLS:
-        run_hourly_for_symbol(symbol)
+        result = run_hourly_for_symbol(symbol)
+        if isinstance(result, tuple):
+            summary, _ = result
+        else:
+            summary = result
+        symbol_summaries.append((symbol, summary))
+
+    ran_at = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    active_lines = []
+    for symbol, summary in symbol_summaries:
+        if isinstance(summary, list):
+            opens  = sum(1 for r in summary if r.get("state") == "OPEN")
+            closes = sum(1 for r in summary if r.get("state") == "CLOSED")
+            parts = []
+            if opens:
+                parts.append(f"{opens} opened")
+            if closes:
+                parts.append(f"{closes} closed")
+            if parts:
+                active_lines.append(f"`{symbol}` — " + ", ".join(parts))
+
+    msg = f"🕐 *LIVE RUN* `{ran_at}`"
+    if active_lines:
+        msg += "\n" + "\n".join(active_lines)
+
+    notifier.send_text(msg)
 
     print("\n=== EXECUTION COMPLETE ===\n")
-
 
 # ==========================================================
 # SINGLE SYMBOL ENGINE (UNIFIED LIVE + REPLAY)
@@ -65,13 +91,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
     notify = notify_override if notify_override is not None else is_live
     pm = PositionManager(persist=True, notify=notify)
     notifier = TelegramNotifier()
-
-    if verbose:
-        notifier.send_text(
-            f"📍 *RUNNER ENTERED*\n"
-            f"`{symbol}` forced_time=`{forced_time}`\n"
-            f"is_live=`{is_live}` replay=`{replay}`"
-        )
 
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
@@ -120,28 +139,10 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             )
             return None
 
-        if verbose:
-            notifier.send_text(
-                f"✅ *UPDATE_SYMBOL OK*\n"
-                f"`{symbol}` ltf=`{len(df)}` htf=`{len(htf_df)}` lltf=`{len(lltf_df)}`\n"
-                f"forced_time=`{forced_time}`"
-            )
-
         # -------------------
         # GENERATE & MAP SIGNALS (The Unified Way)
         # -------------------
         df = generate_signal(df.copy(), htf_df.copy())
-
-        if verbose:
-            notifier.send_text(
-                f"🧠 *SIGNAL GEN CHECK*\n"
-                f"{symbol}\n"
-                f"1H candles: `{len(df)}`\n"
-                f"Non-null signals: `{df['final_signal'].notna().sum()}`\n"
-                f"Non-zero signals: `{(df['final_signal'] != 0).sum()}`\n"
-                f"Last signal value: `{df['final_signal'].iloc[-1]}`\n"
-                f"Last signal ts: `{df.index[-1]}`"
-            )
 
         lltf_df = lltf_df[lltf_df.index >= df.index[0]].copy()
         lltf_df = map_ltf_to_htf(lltf_df, df)
@@ -150,17 +151,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             lltf_df.index,
             method="ffill"
         )
-
-        if verbose:
-            notifier.send_text(
-                f"🧬 *MAPPING CHECK*\n"
-                f"{symbol}\n"
-                f"5m candles: `{len(lltf_df)}`\n"
-                f"5m non-null signals: `{lltf_df['final_signal'].notna().sum()}`\n"
-                f"5m non-zero signals: `{(lltf_df['final_signal'] != 0).sum()}`\n"
-                f"First 5m ts: `{lltf_df.index[0]}`\n"
-                f"Last 5m ts: `{lltf_df.index[-1]}`"
-            )
 
         if 'final_signal' not in df.columns or len(df) < 2:
             return

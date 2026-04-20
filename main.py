@@ -72,8 +72,8 @@ def fetch_binance(symbol, interval, limit):
 
 
 # ==========================================================
-# CONFIG ETH, FIL, TRX, VET, UNI, DOGE, EOS, ETC, AAVE, BCH, HNT, BAND, TIA, XLM, SUI, 
-# BTC, ZEN, AVAX, MKR, AXS, ORDI, LDO, LINK
+# CONFIG ETH, FIL, TRX, VET, UNI, DOGE, ETC, AAVE, BCH, BAND, TIA, XLM, SUI, 
+# BTC, ZEN, AVAX, AXS, ORDI, LDO, LINK
 # ==========================================================
 
 SYMBOL = "LDOUSDT"
