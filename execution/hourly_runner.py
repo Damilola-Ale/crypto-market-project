@@ -59,7 +59,7 @@ def run_hourly():
 # ==========================================================
 # SINGLE SYMBOL ENGINE (UNIFIED LIVE + REPLAY)
 # ==========================================================
-def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None, verbose=True):
+def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None, verbose=True, replay_cursor=None):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
     pm = PositionManager(persist=True, notify=notify)
@@ -140,6 +140,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                 f"Last signal ts: `{df.index[-1]}`"
             )
 
+        lltf_df = lltf_df[lltf_df.index >= df.index[0]].copy()
         lltf_df = map_ltf_to_htf(lltf_df, df)
 
         lltf_df["final_signal"] = df["final_signal"].reindex(
@@ -193,7 +194,10 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         # =========================
 
         latest_ts = lltf_frozen.index[-1]
-        last_seen = pd.Timestamp(last_5m_seen.get(symbol)) if last_5m_seen.get(symbol) else None
+        if replay_cursor is not None:
+            last_seen = replay_cursor
+        else:
+            last_seen = pd.Timestamp(last_5m_seen.get(symbol)) if last_5m_seen.get(symbol) else None
 
         if is_live and last_seen == latest_ts:
             return None
@@ -282,7 +286,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             )
 
         # update cursor AFTER processing
-        if not replay:
+        if not replay and replay_cursor is None:
             last_5m_seen[symbol] = new_bars.index[-1].isoformat()
             write_file = last_5m_file
             with open(write_file + ".tmp", "w") as f:
@@ -300,7 +304,8 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         
         pm.flush()
 
-        return bar_results if bar_results else None
+        new_cursor = new_bars.index[-1] if not new_bars.empty else replay_cursor
+        return (bar_results if bar_results else None), new_cursor
 
     except Exception as e:
         import traceback
