@@ -61,7 +61,7 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         if forced_time is None:
             break
 
-        is_progress_bar = (i + 1) % 20 == 0
+        is_progress_bar = (i == 0) or ((i + 1) % 20 == 0)
 
         if is_progress_bar:
             notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
