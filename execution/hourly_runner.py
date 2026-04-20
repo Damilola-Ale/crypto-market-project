@@ -25,7 +25,9 @@ LLTF_INTERVAL = "5m"
 LTF_INTERVAL  = "1h"
 HTF_INTERVAL  = "4h"
 
-LAST_5M_FILE = "data/last_5m_seen.json"
+def _last_5m_file(symbol: str, live: bool) -> str:
+    prefix = "live" if live else "replay"
+    return f"data/cursors/{prefix}_{symbol}.json"
 
 def run_hourly():
     print("\n==============================")
@@ -74,11 +76,13 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
     # =========================
-    last_5m_file = LAST_5M_FILE if is_live else "data/replay_last_5m_seen.json"
+    os.makedirs("data/cursors", exist_ok=True)
+    last_5m_file = _last_5m_file(symbol, is_live)
     try:
         if os.path.exists(last_5m_file):
             with open(last_5m_file, "r") as f:
-                last_5m_seen = json.load(f)
+                last_seen_raw = json.load(f)
+                last_5m_seen = {symbol: last_seen_raw} if isinstance(last_seen_raw, str) else last_seen_raw
         else:
             last_5m_seen = {}
     except Exception as state_err:
@@ -196,17 +200,17 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if replay_cursor is not None:
             last_seen = replay_cursor
         else:
-            last_seen = pd.Timestamp(last_5m_seen.get(symbol)) if last_5m_seen.get(symbol) else None
+            raw = last_5m_seen.get(symbol) or (last_5m_seen if isinstance(last_5m_seen, str) else None)
+            last_seen = pd.Timestamp(raw) if raw else None
 
         if is_live and last_seen == latest_ts:
             return None
 
         # First live run: seed cursor and exit — never replay full history into live orders
         if last_seen is None and not replay and not forced_time:
-            last_5m_seen[symbol] = latest_ts.isoformat()
-            with open(LAST_5M_FILE + ".tmp", "w") as f:
-                json.dump(last_5m_seen, f, indent=2)
-            os.replace(LAST_5M_FILE + ".tmp", LAST_5M_FILE)
+            with open(last_5m_file + ".tmp", "w") as f:
+                json.dump(latest_ts.isoformat(), f)
+            os.replace(last_5m_file + ".tmp", last_5m_file)
             print(f"[FIRST RUN] {symbol} cursor seeded at {latest_ts}, skipping history")
 
             # Derive open trade state directly from signal data — no disk state needed
@@ -286,11 +290,9 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
         # update cursor AFTER processing
         if not replay and replay_cursor is None:
-            last_5m_seen[symbol] = new_bars.index[-1].isoformat()
-            write_file = last_5m_file
-            with open(write_file + ".tmp", "w") as f:
-                json.dump(last_5m_seen, f, indent=2)
-            os.replace(write_file + ".tmp", write_file)
+            with open(last_5m_file + ".tmp", "w") as f:
+                json.dump(new_bars.index[-1].isoformat(), f)
+            os.replace(last_5m_file + ".tmp", last_5m_file)
 
         # ==========================================================
         # SAVE LAST PROCESSED HOUR

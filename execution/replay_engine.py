@@ -6,21 +6,25 @@ import pandas as pd
 from execution.hourly_runner import run_hourly_for_symbol, SYMBOLS
 from execution.notifier import TelegramNotifier
 
-STATE_FILES = [
-    "data/last_5m_seen.json",
-    "data/last_hour_seen.json",
-    "data/replay_last_5m_seen.json",
-    "data/positions/open_positions.json",
-    "data/positions/bar_history.json",
-    "data/positions/executed_signals.json",
-    "data/positions/reentry_lock.json",
-    "data/positions/last_entry_ts.json",
-]
+def _get_state_files():
+    files = [
+        "data/last_hour_seen.json",
+        "data/positions/open_positions.json",
+        "data/positions/bar_history.json",
+        "data/positions/executed_signals.json",
+        "data/positions/reentry_lock.json",
+        "data/positions/last_entry_ts.json",
+    ]
+    # add all per-symbol cursor files
+    if os.path.exists("data/cursors"):
+        for f in os.listdir("data/cursors"):
+            files.append(os.path.join("data/cursors", f))
+    return files
 
 REPLAY_CURSOR_FILE = "data/replay_last_5m_seen.json"
 
 def reset_replay_state():
-    for f in STATE_FILES:
+    for f in _get_state_files():
         if os.path.exists(f):
             os.remove(f)
 
