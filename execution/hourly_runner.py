@@ -61,7 +61,9 @@ def run_hourly():
             summary = result
         symbol_summaries.append((symbol, summary))
 
-    ran_at = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    now = datetime.now(timezone.utc)
+    candle_time = now.replace(minute=0, second=0, microsecond=0)
+    ran_at = candle_time.strftime("%H:%M UTC")
     active_lines = []
     for symbol, summary in symbol_summaries:
         if isinstance(summary, list):
