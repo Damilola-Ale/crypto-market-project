@@ -86,16 +86,16 @@ def update_symbol(symbol: str):
     # --------------------------------------------------
 
     if os.path.exists(path_ltf):
-
-        print("[CACHE] Loading LTF cache")
-
-        df = pd.read_parquet(path_ltf)
-
-        df.index = pd.to_datetime(df.index, utc=True)
-        df = df.sort_index()
-
-        if not df.empty:
-            last_ts = df.index[-1]
+        if os.path.getsize(path_ltf) == 0:
+            print(f"[WARN] LTF cache is 0 bytes, discarding: {path_ltf}")
+            os.remove(path_ltf)
+        else:
+            print("[CACHE] Loading LTF cache")
+            df = pd.read_parquet(path_ltf)
+            df.index = pd.to_datetime(df.index, utc=True)
+            df = df.sort_index()
+            if not df.empty:
+                last_ts = df.index[-1]
 
     # --------------------------------------------------
     # DETERMINE FETCH WINDOW
@@ -169,12 +169,16 @@ def update_symbol(symbol: str):
 
     # Load HTF cache if exists
     if os.path.exists(path_htf):
-        print("[CACHE] Loading HTF cache")
-        df_htf = pd.read_parquet(path_htf)
-        df_htf.index = pd.to_datetime(df_htf.index, utc=True)
-        df_htf = df_htf.sort_index()
-        if not df_htf.empty:
-            last_htf_ts = df_htf.index[-1]
+        if os.path.getsize(path_htf) == 0:
+            print(f"[WARN] HTF cache is 0 bytes, discarding: {path_htf}")
+            os.remove(path_htf)
+        else:
+            print("[CACHE] Loading HTF cache")
+            df_htf = pd.read_parquet(path_htf)
+            df_htf.index = pd.to_datetime(df_htf.index, utc=True)
+            df_htf = df_htf.sort_index()
+            if not df_htf.empty:
+                last_htf_ts = df_htf.index[-1]
 
     # Determine fetch window
     htf_fetch_start = start_required if df_htf is None else last_htf_ts + timedelta(hours=4)
@@ -213,6 +217,7 @@ def update_symbol(symbol: str):
     # --------------------------------------------------
     # SAVE ATOMIC
     # --------------------------------------------------
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
     tmp_ltf = path_ltf + ".tmp"
     tmp_htf = path_htf + ".tmp"
@@ -233,12 +238,16 @@ def update_symbol(symbol: str):
     last_lltf_ts = None
 
     if os.path.exists(path_lltf):
-        print("[CACHE] Loading LLTF cache")
-        df_lltf = pd.read_parquet(path_lltf)
-        df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
-        df_lltf = df_lltf.sort_index()
-        if not df_lltf.empty:
-            last_lltf_ts = df_lltf.index[-1]
+        if os.path.getsize(path_lltf) == 0:
+            print(f"[WARN] LLTF cache is 0 bytes, discarding: {path_lltf}")
+            os.remove(path_lltf)
+        else:
+            print("[CACHE] Loading LLTF cache")
+            df_lltf = pd.read_parquet(path_lltf)
+            df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
+            df_lltf = df_lltf.sort_index()
+            if not df_lltf.empty:
+                last_lltf_ts = df_lltf.index[-1]
 
     lltf_fetch_start = start_required if df_lltf is None else last_lltf_ts + timedelta(minutes=5)
     lltf_fetch_end   = now
@@ -265,6 +274,8 @@ def update_symbol(symbol: str):
         validate_ohlcv(df_lltf, symbol, freq=LLTF_INTERVAL)
     except RuntimeError as e:
         print(f"[WARN] LLTF validation failed for {symbol} (non-fatal): {e}")
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
     tmp_lltf = path_lltf + ".tmp"
     df_lltf.to_parquet(tmp_lltf)

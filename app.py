@@ -1,11 +1,13 @@
 from flask import Flask, request, abort
 import os
 import json
+import threading
 
 from execution.notifier import TelegramNotifier
 from execution.hourly_runner import run_hourly, SYMBOLS
 
 app = Flask(__name__)
+_run_lock = threading.Lock()
 
 # ==================================================
 # CORE ENDPOINTS
@@ -21,9 +23,17 @@ def run():
     if request.args.get("key") != os.getenv("RUN_KEY", "local"):
         abort(403)
 
-    import threading
+    if not _run_lock.acquire(blocking=False):
+        print("[RUN] Already running — skipping duplicate trigger")
+        return {"status": "already_running"}, 200
 
-    thread = threading.Thread(target=run_hourly)
+    def run_and_release():
+        try:
+            run_hourly()
+        finally:
+            _run_lock.release()
+
+    thread = threading.Thread(target=run_and_release)
     thread.daemon = True
     thread.start()
 
