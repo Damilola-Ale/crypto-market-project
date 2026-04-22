@@ -18,11 +18,8 @@ def health():
     return {"status": "alive"}, 200
 
 
-@app.route("/run")
+@app.route("/")
 def run():
-    if request.args.get("key") != os.getenv("RUN_KEY", "local"):
-        abort(403)
-
     if not _run_lock.acquire(blocking=False):
         print("[RUN] Already running — skipping duplicate trigger")
         return {"status": "already_running"}, 200
