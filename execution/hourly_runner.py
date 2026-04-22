@@ -121,16 +121,20 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         # FAST GATE — skip entire symbol if no new 5m bar
         # -------------------
         if is_live:
-            raw = last_5m_seen.get(symbol) or (last_5m_seen if isinstance(last_5m_seen, str) else None)
-            last_seen_ts = pd.Timestamp(raw) if raw else None
-
-            if last_seen_ts is not None:
-                now_check = datetime.now(timezone.utc)
-                minutes_floored = (now_check.minute // 5) * 5
-                current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
-                if last_seen_ts >= current_5m_boundary:
-                    print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
-                    return None
+            cursor_file = _last_5m_file(symbol, True)
+            if os.path.exists(cursor_file):
+                try:
+                    with open(cursor_file, "r") as f:
+                        raw = json.load(f)
+                    last_seen_ts = pd.Timestamp(raw if isinstance(raw, str) else list(raw.values())[0])
+                    now_check = datetime.now(timezone.utc)
+                    minutes_floored = (now_check.minute // 5) * 5
+                    current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
+                    if last_seen_ts >= current_5m_boundary:
+                        print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
+                        return None
+                except Exception as e:
+                    print(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
 
         # -------------------
         # FETCH DATA
