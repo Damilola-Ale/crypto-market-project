@@ -92,8 +92,29 @@ def run_hourly():
 def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None, verbose=True, replay_cursor=None):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
-    pm = PositionManager(persist=True, notify=notify)
     notifier = TelegramNotifier()
+
+    # -------------------
+    # FAST GATE — skip entire symbol if no new 5m bar
+    # Must run BEFORE PositionManager instantiation to avoid 100 file reads
+    # -------------------
+    if is_live:
+        cursor_file = _last_5m_file(symbol, True)
+        if os.path.exists(cursor_file):
+            try:
+                with open(cursor_file, "r") as f:
+                    raw = json.load(f)
+                last_seen_ts = pd.Timestamp(raw if isinstance(raw, str) else list(raw.values())[0])
+                now_check = datetime.now(timezone.utc)
+                minutes_floored = (now_check.minute // 5) * 5
+                current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
+                if last_seen_ts >= current_5m_boundary:
+                    print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
+                    return None
+            except Exception as e:
+                print(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
+
+    pm = PositionManager(persist=True, notify=notify)
 
     # =========================
     # 5M STREAM MEMORY (CRITICAL FIX)
@@ -117,25 +138,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         last_5m_seen = {}
 
     try:
-        # -------------------
-        # FAST GATE — skip entire symbol if no new 5m bar
-        # -------------------
-        if is_live:
-            cursor_file = _last_5m_file(symbol, True)
-            if os.path.exists(cursor_file):
-                try:
-                    with open(cursor_file, "r") as f:
-                        raw = json.load(f)
-                    last_seen_ts = pd.Timestamp(raw if isinstance(raw, str) else list(raw.values())[0])
-                    now_check = datetime.now(timezone.utc)
-                    minutes_floored = (now_check.minute // 5) * 5
-                    current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
-                    if last_seen_ts >= current_5m_boundary:
-                        print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
-                        return None
-                except Exception as e:
-                    print(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
-
         # -------------------
         # FETCH DATA
         # -------------------
