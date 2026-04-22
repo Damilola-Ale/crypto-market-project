@@ -77,7 +77,8 @@ def run_hourly():
             if parts:
                 active_lines.append(f"`{symbol}` — " + ", ".join(parts))
 
-    msg = f"🕐 *LIVE RUN* `{ran_at}`"
+    actual_ran_at = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    msg = f"🕐 *LIVE RUN* `{ran_at}` | triggered `{actual_ran_at}`"
     if active_lines:
         msg += "\n" + "\n".join(active_lines)
 
