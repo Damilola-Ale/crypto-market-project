@@ -76,24 +76,24 @@ def update_symbol(symbol: str):
     path_htf  = _cache_path(symbol, HTF_INTERVAL)
     path_lltf = _cache_path(symbol, LLTF_INTERVAL)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)  # full timestamp for boundary check
     now_hour = now.replace(minute=0, second=0, microsecond=0)
     start_required = now_hour - timedelta(hours=HOURS_LOOKBACK)
 
     # --------------------------------------------------
     # FAST EARLY-EXIT — nothing new to fetch
-    # Checks if the latest cached 5m bar is less than
-    # 5 minutes old. If so, skip all Binance calls.
     # --------------------------------------------------
     if os.path.exists(path_lltf) and os.path.getsize(path_lltf) > 0:
         try:
             df_check = pd.read_parquet(path_lltf, columns=["close"])
             df_check.index = pd.to_datetime(df_check.index, utc=True)
             last_5m_ts = df_check.index[-1]
-            next_5m_ts = last_5m_ts + timedelta(minutes=5)
-            if now < next_5m_ts:
-                print(f"[SKIP] {symbol} — next 5m candle not due until {next_5m_ts}, skipping fetch")
-                # still need to return the cached data for the lifecycle engine
+
+            minutes_floored = (now.minute // 5) * 5
+            current_5m_boundary = now.replace(minute=minutes_floored, second=0, microsecond=0)
+
+            if last_5m_ts >= current_5m_boundary:
+                print(f"[SKIP] {symbol} — cache is current (last={last_5m_ts}, boundary={current_5m_boundary})")
                 df      = pd.read_parquet(path_ltf)
                 df_htf  = pd.read_parquet(path_htf)
                 df_lltf = pd.read_parquet(path_lltf)
