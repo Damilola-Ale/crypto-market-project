@@ -714,34 +714,30 @@ def dynamic_state_engine(df, window=10):
 # ==========================================================
 
 def rolling_slope(series, window=50):
-    """
-    Vectorized linear regression slope using the OLS closed-form solution.
-    ~100x faster than rolling().apply(np.polyfit).
-    """
     x = np.arange(window, dtype=float)
     x_mean = x.mean()
     x_var = ((x - x_mean) ** 2).sum()
 
     def _slope(y):
+        if np.any(np.isnan(y)):
+            return np.nan
         return ((x - x_mean) * (y - y.mean())).sum() / x_var
 
     return series.rolling(window).apply(_slope, raw=True)
 
 
 def rolling_r2(series, window=50):
-    """
-    Vectorized R² using closed-form OLS.
-    ~100x faster than rolling().apply(np.polyfit).
-    """
     x = np.arange(window, dtype=float)
     x_mean = x.mean()
     x_var = ((x - x_mean) ** 2).sum()
 
     def _r2(y):
+        if np.any(np.isnan(y)):
+            return np.nan
         y_mean = y.mean()
         ss_tot = ((y - y_mean) ** 2).sum()
         if ss_tot < 1e-12:
-            return 1.0
+            return 0.0
         slope = ((x - x_mean) * (y - y_mean)).sum() / x_var
         intercept = y_mean - slope * x_mean
         y_hat = slope * x + intercept
