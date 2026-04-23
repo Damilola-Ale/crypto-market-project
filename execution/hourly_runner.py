@@ -62,8 +62,22 @@ def run_hourly():
         symbol_summaries.append((symbol, summary))
 
     now = datetime.now(timezone.utc)
-    candle_time = now.replace(minute=0, second=0, microsecond=0)
-    ran_at = candle_time.strftime("%H:%M UTC")
+    local_now = now + pd.Timedelta(hours=1)  # WAT = UTC+1
+
+    # Only send hourly summary — check if we just crossed a new hour
+    current_hour = local_now.replace(minute=0, second=0, microsecond=0)
+    last_summary_file = "data/last_summary_hour.json"
+    last_summary_hour = None
+    if os.path.exists(last_summary_file):
+        try:
+            with open(last_summary_file, "r") as f:
+                last_summary_hour = json.load(f).get("hour")
+        except Exception:
+            pass
+
+    current_hour_str = current_hour.isoformat()
+    is_new_hour = last_summary_hour != current_hour_str
+
     active_lines = []
     for symbol, summary in symbol_summaries:
         if isinstance(summary, list):
@@ -77,12 +91,22 @@ def run_hourly():
             if parts:
                 active_lines.append(f"`{symbol}` — " + ", ".join(parts))
 
-    actual_ran_at = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    msg = f"🕐 *LIVE RUN* `{ran_at}` | triggered `{actual_ran_at}`"
-    if active_lines:
-        msg += "\n" + "\n".join(active_lines)
+    # Always notify if there are trades
+    has_trades = bool(active_lines)
 
-    notifier.send_text(msg)
+    if is_new_hour or has_trades:
+        ran_at = local_now.strftime("%H:%M WAT")
+        actual_ran_at = local_now.strftime("%H:%M:%S WAT")
+        msg = f"🕐 *LIVE RUN* `{ran_at}` | triggered `{actual_ran_at}`"
+        if active_lines:
+            msg += "\n" + "\n".join(active_lines)
+
+        notifier.send_text(msg)
+
+        if is_new_hour:
+            with open(last_summary_file + ".tmp", "w") as f:
+                json.dump({"hour": current_hour_str}, f)
+            os.replace(last_summary_file + ".tmp", last_summary_file)
 
     print("\n=== EXECUTION COMPLETE ===\n")
 
