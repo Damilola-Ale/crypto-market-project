@@ -114,13 +114,14 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         f"Trades closed: `{trade_closes}`"
     )
 
-def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True):
+def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True, symbols=None):
     reset_replay_state()
-    # Write a replay lock so the live scheduler skips execution during replay
+    target_symbols = symbols if symbols else SYMBOLS
+
     with open("data/replay_lock.json", "w") as f:
         json.dump({"locked": True, "started": pd.Timestamp.now(tz="UTC").isoformat()}, f)
     try:
-        for symbol in SYMBOLS:
+        for symbol in target_symbols:
             fast_replay_symbol(symbol, from_ts=from_ts, to_ts=to_ts, notify_trades=notify_trades)
     finally:
         if os.path.exists("data/replay_lock.json"):

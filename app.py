@@ -265,8 +265,10 @@ def replay():
     if request.args.get("key") != os.getenv("RUN_KEY", "local"):
         abort(403)
 
-    from_ts = request.args.get("from")
-    to_ts   = request.args.get("to")
+    from_ts  = request.args.get("from")
+    to_ts    = request.args.get("to")
+    symbols_raw = request.args.get("symbols")  # e.g. "ETHUSDT,BTCUSDT"
+    symbols  = [s.strip().upper() for s in symbols_raw.split(",")] if symbols_raw else None
 
     import threading
     from execution.replay_engine import fast_replay_all
@@ -274,12 +276,13 @@ def replay():
     thread = threading.Thread(target=fast_replay_all, kwargs={
         "from_ts": from_ts,
         "to_ts": to_ts,
-        "notify_trades": True
+        "notify_trades": True,
+        "symbols": symbols
     })
     thread.daemon = True
     thread.start()
 
-    return {"status": "replay_started"}, 200
+    return {"status": "replay_started", "symbols": symbols or "all"}, 200
 
 @app.route("/debug/candles")
 def debug_candle_state():
