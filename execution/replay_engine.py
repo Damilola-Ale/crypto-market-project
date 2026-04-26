@@ -37,13 +37,22 @@ def reset_replay_state(symbols=None):
             os.remove(f)
 
     # Only wipe cursor files for targeted symbols
+        # Wipe cursor files for targeted symbols
     if os.path.exists("data/cursors"):
         for fname in os.listdir("data/cursors"):
             if symbols and not any(sym in fname for sym in symbols):
-                continue  # leave other symbols' live cursors alone
+                continue
             full_path = os.path.join("data/cursors", fname)
             if os.path.exists(full_path):
                 os.remove(full_path)
+
+    # Bust parquet cache for targeted symbols so update_symbol fetches fresh
+    if symbols and os.path.exists("data/cache"):
+        for fname in os.listdir("data/cache"):
+            if any(sym in fname for sym in symbols):
+                full_path = os.path.join("data/cache", fname)
+                if os.path.exists(full_path):
+                    os.remove(full_path)
 
 def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True):
     notifier = TelegramNotifier()
