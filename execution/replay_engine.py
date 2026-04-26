@@ -23,10 +23,27 @@ def _get_state_files():
 
 REPLAY_CURSOR_FILE = "data/replay_last_5m_seen.json"
 
-def reset_replay_state():
-    for f in _get_state_files():
+def reset_replay_state(symbols=None):
+    files = [
+        "data/last_hour_seen.json",
+        "data/positions/open_positions.json",
+        "data/positions/bar_history.json",
+        "data/positions/executed_signals.json",
+        "data/positions/reentry_lock.json",
+        "data/positions/last_entry_ts.json",
+    ]
+    for f in files:
         if os.path.exists(f):
             os.remove(f)
+
+    # Only wipe cursor files for targeted symbols
+    if os.path.exists("data/cursors"):
+        for fname in os.listdir("data/cursors"):
+            if symbols and not any(sym in fname for sym in symbols):
+                continue  # leave other symbols' live cursors alone
+            full_path = os.path.join("data/cursors", fname)
+            if os.path.exists(full_path):
+                os.remove(full_path)
 
 def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True):
     notifier = TelegramNotifier()
@@ -75,7 +92,7 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
             notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
 
         try:
-            outcome = run_hourly_for_symbol(symbol, forced_time=forced_time, notify_override=notify_trades, verbose=is_progress_bar, replay_cursor=replay_cursor)
+            outcome = run_hourly_for_symbol(symbol, forced_time=forced_time, replay=True, notify_override=notify_trades, verbose=is_progress_bar, replay_cursor=replay_cursor)
             if isinstance(outcome, tuple):
                 results, replay_cursor = outcome
             else:
@@ -115,7 +132,7 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
     )
 
 def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True, symbols=None):
-    reset_replay_state()
+    reset_replay_state(symbols=symbols)
     target_symbols = symbols if symbols else SYMBOLS
 
     with open("data/replay_lock.json", "w") as f:
