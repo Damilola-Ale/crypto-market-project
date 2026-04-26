@@ -48,7 +48,8 @@ def reset_replay_state(symbols=None):
 def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True):
     notifier = TelegramNotifier()
 
-    df_1h = pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
+    from data_pipeline.updater import update_symbol
+    df_1h, _, _ = update_symbol(symbol)
     hourly_timestamps = df_1h.index.tolist()
 
     # apply to_ts filter if given
