@@ -59,50 +59,60 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
 
     from data_pipeline.updater import update_symbol
     df_1h, _, _ = update_symbol(symbol)
-    hourly_timestamps = df_1h.index.tolist()
+    
+    # Build 5m timestamp list instead of 1H
+    df_5m = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
+    df_5m.index = pd.to_datetime(df_5m.index, utc=True)
+    five_min_timestamps = df_5m.index.tolist()
 
-    # apply to_ts filter if given
+    # apply to_ts filter
     if to_ts:
-        hourly_timestamps = [t for t in hourly_timestamps if t <= pd.Timestamp(to_ts, tz="UTC")]
+        five_min_timestamps = [t for t in five_min_timestamps if t <= pd.Timestamp(to_ts, tz="UTC")]
 
-    # from_ts controls where trade entries are expected, but we always
-    # start processing from bar 0 so indicators have 800+ bars of warmup.
-    # We just skip progress pings and trade notifications before from_ts.
+    # warmup: find index where from_ts starts
     warmup_done_idx = 0
     if from_ts:
         from_ts_parsed = pd.Timestamp(from_ts, tz="UTC")
         warmup_done_idx = next(
-            (i for i, t in enumerate(hourly_timestamps) if t >= from_ts_parsed),
-            len(hourly_timestamps)
+            (i for i, t in enumerate(five_min_timestamps) if t >= from_ts_parsed),
+            len(five_min_timestamps)
         )
 
-    total = len(hourly_timestamps)
+    total = len(five_min_timestamps)
     trade_opens = 0
     trade_closes = 0
 
     notifier.send_text(
         f"🔁 *REPLAY STARTED*\n"
         f"Symbol: `{symbol}`\n"
-        f"Total bars: `{total}` (incl. warmup)\n"
-        f"Warmup until: `{hourly_timestamps[warmup_done_idx]}`\n"
+        f"Total 5m bars: `{total}` (incl. warmup)\n"
+        f"Warmup until: `{five_min_timestamps[warmup_done_idx]}`\n"
         f"Signal window from: `{from_ts or 'start'}`\n"
         f"To: `{to_ts or 'end'}`"
     )
 
-    replay_cursor = None  # in-memory cursor, never touches disk
+    replay_cursor = None
 
-    for i, hour_ts in enumerate(hourly_timestamps):
-        forced_time = hourly_timestamps[i + 1] if i + 1 < len(hourly_timestamps) else None
+    for i, bar_ts in enumerate(five_min_timestamps):
+        # forced_time is the NEXT 5m bar — "what was known just before this bar closed"
+        forced_time = five_min_timestamps[i + 1] if i + 1 < len(five_min_timestamps) else None
         if forced_time is None:
             break
 
-        is_progress_bar = (i == 0) or ((i + 1) % 20 == 0)
+        is_progress_bar = (i == 0) or ((i + 1) % 240 == 0)  # every 240 5m bars = 20 hours
 
         if is_progress_bar:
-            notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* forced=`{forced_time}`")
+            notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* ts=`{bar_ts}`")
 
         try:
-            outcome = run_hourly_for_symbol(symbol, forced_time=forced_time, replay=True, notify_override=notify_trades, verbose=is_progress_bar, replay_cursor=replay_cursor)
+            outcome = run_hourly_for_symbol(
+                symbol,
+                forced_time=forced_time,
+                replay=True,
+                notify_override=notify_trades,
+                verbose=is_progress_bar,
+                replay_cursor=replay_cursor
+            )
             if isinstance(outcome, tuple):
                 results, replay_cursor = outcome
             else:
@@ -119,24 +129,23 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
             notifier.send_text(
                 f"💥 *REPLAY ITERATION CRASHED*\n"
                 f"`{symbol}` bar `{i+1}/{total}`\n"
-                f"forced_time=`{forced_time}`\n"
+                f"ts=`{bar_ts}`\n"
                 f"Error: `{str(e)[:300]}`"
             )
             traceback.print_exc()
             continue
 
-        # progress ping every 20 bars after warmup
-        if i >= warmup_done_idx and (i - warmup_done_idx + 1) % 20 == 0:
+        if i >= warmup_done_idx and (i - warmup_done_idx + 1) % 240 == 0:
             notifier.send_text(
                 f"⏳ *REPLAY PROGRESS*\n"
                 f"`{symbol}` — bar {i + 1}/{total}\n"
-                f"Hour: `{hour_ts}`"
+                f"5m ts: `{bar_ts}`"
             )
 
     notifier.send_text(
         f"✅ *REPLAY COMPLETE*\n"
         f"Symbol: `{symbol}`\n"
-        f"Bars processed: `{total}`\n"
+        f"5m bars processed: `{total}`\n"
         f"Trades opened: `{trade_opens}`\n"
         f"Trades closed: `{trade_closes}`"
     )

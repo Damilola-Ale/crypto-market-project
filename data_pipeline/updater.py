@@ -91,9 +91,18 @@ def update_symbol(symbol: str):
 
             minutes_floored = (now.minute // 5) * 5
             current_5m_boundary = now.replace(minute=minutes_floored, second=0, microsecond=0)
+            candle_age_seconds = (now - current_5m_boundary).total_seconds()
 
+            # wait at least 10 seconds after candle close before processing
+            # prevents acting on unclosed or not-yet-propagated candles
             if last_5m_ts >= current_5m_boundary:
-                print(f"[SKIP] {symbol} — cache is current (last={last_5m_ts}, boundary={current_5m_boundary})")
+                if candle_age_seconds >= 10:
+                    print(f"[SKIP] {symbol} — cache is current (last={last_5m_ts}, boundary={current_5m_boundary})")
+                else:
+                    print(f"[CANDLE FRESH] {symbol} — {candle_age_seconds:.0f}s since close, waiting for propagation")
+
+                # return cached data in both cases — fresh candle path was
+                # silently falling through to full fetch and rewriting parquets
                 df      = pd.read_parquet(path_ltf)
                 df_htf  = pd.read_parquet(path_htf)
                 df_lltf = pd.read_parquet(path_lltf)

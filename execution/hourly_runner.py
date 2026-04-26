@@ -168,7 +168,8 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         try:
             if forced_time is None and not replay:
                 df, htf_df, lltf_df = update_symbol(symbol)
-                df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
+                # candle closure is now guaranteed by the 10-second buffer
+                # in update_symbol — iloc[:-1] removed to prevent signal expiry
             else:
                 df, htf_df, lltf_df = update_symbol(symbol)
 
@@ -244,32 +245,20 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if is_live and last_seen == latest_ts:
             return None
 
-        # First live run: seed cursor and exit — never replay full history into live orders
+        # Cursor lost (restart, replay wipe, etc) — recover last 12 bars instead of seeding
+        # This catches any signal that fired since the last known state
+        # SIGNAL_EXPIRY_BARS=6 will reject anything too stale automatically
         if last_seen is None and not replay and not forced_time:
-            with open(last_5m_file + ".tmp", "w") as f:
-                json.dump(latest_ts.isoformat(), f)
-            os.replace(last_5m_file + ".tmp", last_5m_file)
-            print(f"[FIRST RUN] {symbol} cursor seeded at {latest_ts}, skipping history")
-
-            # Derive open trade state directly from signal data — no disk state needed
-            last_signal = int(df["final_signal"].iloc[-1])
-            if last_signal != 0:
-                dir_text = "LONG" if last_signal == 1 else "SHORT"
-                notifier.send_text(
-                    f"⚠️ *SYSTEM RESTARTED*\n"
-                    f"Symbol: `{symbol}`\n"
-                    f"Active signal detected: `{dir_text}`\n"
-                    f"Signal bar: `{df.index[-1]}`\n"
-                    f"⚠️ A trade may still be running — verify on exchange before acting on next signal"
-                )
+            notifier.send_text(
+                f"⚠️ *CURSOR RESET DETECTED*\n"
+                f"Symbol: `{symbol}`\n"
+                f"Processing last 12 bars to recover signal state"
+            )
+            recovery_bars = 12
+            if len(lltf_frozen) > recovery_bars:
+                last_seen = lltf_frozen.index[-(recovery_bars + 1)]
             else:
-                notifier.send_text(
-                    f"🔄 *SYSTEM RESTARTED*\n"
-                    f"Symbol: `{symbol}`\n"
-                    f"No active signal — system is flat"
-                )
-
-            return None
+                last_seen = lltf_frozen.index[0]
 
         new_bars = (
             lltf_frozen if last_seen is None
