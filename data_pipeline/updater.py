@@ -253,7 +253,9 @@ def update_symbol(symbol: str):
     df.to_parquet(tmp_ltf)
     df_htf.to_parquet(tmp_htf)
 
+    os.makedirs(os.path.dirname(path_ltf), exist_ok=True)
     os.replace(tmp_ltf, path_ltf)
+    os.makedirs(os.path.dirname(path_htf), exist_ok=True)
     os.replace(tmp_htf, path_htf)
 
     print("[SAVE] LTF + HTF cache updated")
@@ -307,6 +309,7 @@ def update_symbol(symbol: str):
 
     tmp_lltf = path_lltf + ".tmp"
     df_lltf.to_parquet(tmp_lltf)
+    os.makedirs(os.path.dirname(path_lltf), exist_ok=True)
     os.replace(tmp_lltf, path_lltf)
 
     print("[SAVE] LLTF cache updated | candles:", len(df_lltf))
