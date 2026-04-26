@@ -177,6 +177,11 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                     df      = df[df.index < forced_time].copy()
                     htf_df  = htf_df[htf_df.index < forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
+
+                    # not enough data yet — too early in warmup period
+                    if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
+                        print(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
+                        return None, replay_cursor
                 else:
                     df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
 
