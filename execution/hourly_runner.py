@@ -113,14 +113,21 @@ def run_hourly():
 # ==========================================================
 # SINGLE SYMBOL ENGINE (UNIFIED LIVE + REPLAY)
 # ==========================================================
-def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_override=None, verbose=True, replay_cursor=None):
+def run_hourly_for_symbol(
+    symbol: str,
+    forced_time=None,
+    replay=False,
+    notify_override=None,
+    verbose=True,
+    replay_cursor=None,
+    external_pm=None,          # FIX 2: accept shared PM from replay caller
+):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
     notifier = TelegramNotifier()
 
     # -------------------
-    # FAST GATE — skip entire symbol if no new 5m bar
-    # Must run BEFORE PositionManager instantiation to avoid 100 file reads
+    # FAST GATE — skip entire symbol if no new 5m bar (LIVE ONLY)
     # -------------------
     if is_live:
         cursor_file = _last_5m_file(symbol, True)
@@ -129,19 +136,41 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                 with open(cursor_file, "r") as f:
                     raw = json.load(f)
                 last_seen_ts = pd.Timestamp(raw if isinstance(raw, str) else list(raw.values())[0])
+                if last_seen_ts.tzinfo is None:
+                    last_seen_ts = last_seen_ts.tz_localize("UTC")
                 now_check = datetime.now(timezone.utc)
                 minutes_floored = (now_check.minute // 5) * 5
                 current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
-                if last_seen_ts >= current_5m_boundary:
+
+                # FIX: detect poisoned cursor — timestamp more than 1 hour in the future
+                # This would permanently block all processing for this symbol
+                if last_seen_ts > pd.Timestamp(now_check, tz="UTC") + pd.Timedelta(hours=1):
+                    print(f"[FAST GATE POISONED] {symbol} — cursor {last_seen_ts} is in the future, deleting and proceeding")
+                    notifier.send_text(
+                        f"⚠️ *CURSOR POISONED*\n"
+                        f"Symbol: `{symbol}`\n"
+                        f"Cursor: `{last_seen_ts}`\n"
+                        f"Now: `{now_check}`\n"
+                        f"Deleting and reprocessing last 12 bars"
+                    )
+                    os.remove(cursor_file)
+                elif last_seen_ts >= pd.Timestamp(current_5m_boundary, tz="UTC"):
                     print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
                     return None
+                else:
+                    print(f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < boundary {current_5m_boundary}, proceeding")
+
             except Exception as e:
                 print(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
 
-    pm = PositionManager(persist=True, notify=notify)
+    # FIX 2: use external PM if provided (replay), else instantiate normally
+    if external_pm is not None:
+        pm = external_pm
+    else:
+        pm = PositionManager(persist=True, notify=notify)
 
     # =========================
-    # 5M STREAM MEMORY (CRITICAL FIX)
+    # 5M STREAM MEMORY
     # =========================
     os.makedirs("data/cursors", exist_ok=True)
     last_5m_file = _last_5m_file(symbol, is_live)
@@ -168,8 +197,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         try:
             if forced_time is None and not replay:
                 df, htf_df, lltf_df = update_symbol(symbol)
-                # candle closure is now guaranteed by the 10-second buffer
-                # in update_symbol — iloc[:-1] removed to prevent signal expiry
             else:
                 df, htf_df, lltf_df = update_symbol(symbol)
 
@@ -178,7 +205,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                     htf_df  = htf_df[htf_df.index < forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
 
-                    # not enough data yet — too early in warmup period
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
                         print(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
                         return None, replay_cursor
@@ -194,7 +220,7 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             return None
 
         # -------------------
-        # GENERATE & MAP SIGNALS (The Unified Way)
+        # GENERATE & MAP SIGNALS
         # -------------------
         df = generate_signal(df.copy(), htf_df.copy())
 
@@ -209,7 +235,12 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if 'final_signal' not in df.columns or len(df) < 2:
             return
 
-        # Precompute rolling ATR on 5m dataframe once (backtest parity)
+        # FIX 5: diagnostic — log signal state so we can see if signals are reaching this point
+        non_null_signals = lltf_df["final_signal"].notna().sum()
+        non_zero_signals = (lltf_df["final_signal"] != 0).sum()
+        print(f"[SIGNAL DIAG] {symbol} — non-null={non_null_signals} non-zero={non_zero_signals} total_5m_bars={len(lltf_df)}")
+
+        # Precompute rolling ATR on 5m dataframe
         tr_5m = pd.concat([
             lltf_df['high'] - lltf_df['low'],
             (lltf_df['high'] - lltf_df['close'].shift()).abs(),
@@ -220,10 +251,12 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         lltf_frozen = lltf_df.copy()
         lltf_frozen = lltf_frozen.dropna(subset=['ltf_index'])
         lltf_frozen['ltf_index'] = lltf_frozen['ltf_index'].astype(int)
-        print("FINAL SIGNAL NON-NULL:", lltf_df["final_signal"].notna().sum())
+
+        # FIX 5: diagnostic — log how many bars survive dropna
+        print(f"[FROZEN DIAG] {symbol} — bars after dropna={len(lltf_frozen)}")
 
         # ==========================================================
-        # NEW 1H CANDLE DETECTION (LIVE ONLY)
+        # NEW 1H CANDLE DETECTION
         # ==========================================================
         if os.path.exists(HOUR_MEMORY_FILE):
             with open(HOUR_MEMORY_FILE, "r") as f:
@@ -233,13 +266,11 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
 
         latest_hour_ts = df.index[-1].isoformat()
         previous_hour  = last_hour_seen.get(symbol)
-
         new_hour = latest_hour_ts != previous_hour
 
         # =========================
-        # TRUE STREAMING ENGINE FIX (IMMEDIATE DISPATCH)
+        # STREAMING ENGINE
         # =========================
-
         latest_ts = lltf_frozen.index[-1]
         if replay_cursor is not None:
             last_seen = replay_cursor
@@ -250,9 +281,6 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         if is_live and last_seen == latest_ts:
             return None
 
-        # Cursor lost (restart, replay wipe, etc) — recover last 12 bars instead of seeding
-        # This catches any signal that fired since the last known state
-        # SIGNAL_EXPIRY_BARS=6 will reject anything too stale automatically
         if last_seen is None and not replay and not forced_time:
             notifier.send_text(
                 f"⚠️ *CURSOR RESET DETECTED*\n"
@@ -269,6 +297,9 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             lltf_frozen if last_seen is None
             else lltf_frozen[lltf_frozen.index > last_seen]
         )
+
+        # FIX 5: diagnostic — log new_bars count so we know if streaming engine sees anything
+        print(f"[NEW BARS DIAG] {symbol} — new_bars={len(new_bars)} last_seen={last_seen} latest_ts={latest_ts}")
 
         if new_bars.empty:
             return None
@@ -292,6 +323,9 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
                     f"signal: `{row_5m['final_signal']}`"
                 )
 
+            # FIX 5: diagnostic — log what bar_signal is actually passed to pm.update
+            print(f"[PM UPDATE DIAG] {symbol} ts={_} bar_signal={bar_signal} has_position={symbol in pm.positions}")
+
             result = pm.update(
                 df=df,
                 symbol=symbol,
@@ -303,24 +337,10 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
             if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
                 bar_results.append(result)
 
-        # REPLAY: force-close any position still open at end of data
-        if replay and symbol in pm.positions:
-            pos = pm.positions[symbol]
-            last_row = new_bars.iloc[-1]
-            closed = pm._close(
-                symbol,
-                float(last_row["close"]),
-                last_row.name,
-                "replay_end"
-            )
-            print(
-                f"[REPLAY END CLOSE] {symbol} "
-                f"entry={closed['entry_price']} "
-                f"bars={closed['bars_in_trade']} "
-                f"pnl_r={closed['exit']['pnl_r']:.2f}"
-            )
+        # FIX 1: replay-end close REMOVED from here — caller (fast_replay_symbol) owns it
+        # This was the bug causing open+close on every single bar
 
-        # update cursor AFTER processing
+        # update cursor AFTER processing (live only)
         if not replay and replay_cursor is None:
             with open(last_5m_file + ".tmp", "w") as f:
                 json.dump(new_bars.index[-1].isoformat(), f)
@@ -329,12 +349,25 @@ def run_hourly_for_symbol(symbol: str, forced_time=None, replay=False, notify_ov
         # ==========================================================
         # SAVE LAST PROCESSED HOUR
         # ==========================================================
-        if not replay and not forced_time and new_hour:
-            last_hour_seen[symbol] = latest_hour_ts
-            with open(HOUR_MEMORY_FILE + ".tmp", "w") as f:
-                json.dump(last_hour_seen, f, indent=2)
-            os.replace(HOUR_MEMORY_FILE + ".tmp", HOUR_MEMORY_FILE)
-        
+        if not replay and not forced_time:
+            cursor_file = _last_5m_file(symbol, True)
+            cursor_exists = os.path.exists(cursor_file)
+
+            # FIX: if cursor was just reset (file didn't exist before this run),
+            # force hour memory to reset too so the two clocks stay in sync
+            if not cursor_exists and not new_hour:
+                print(f"[CLOCK SYNC] {symbol} — cursor was absent but hour memory has entry, forcing hour reset")
+                new_hour = True
+
+            if new_hour:
+                last_hour_seen[symbol] = latest_hour_ts
+                with open(HOUR_MEMORY_FILE + ".tmp", "w") as f:
+                    json.dump(last_hour_seen, f, indent=2)
+                os.replace(HOUR_MEMORY_FILE + ".tmp", HOUR_MEMORY_FILE)
+                print(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
+            else:
+                print(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
+
         pm.flush()
 
         new_cursor = new_bars.index[-1] if not new_bars.empty else replay_cursor

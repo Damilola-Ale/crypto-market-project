@@ -51,11 +51,14 @@ class PositionManager:
     SLIPPAGE_BPS = 5      # 0.05% market order slippage
     SPREAD_BPS   = 3      # 0.03% half-spread (taker crosses spread)
     TOTAL_COST_BPS = SLIPPAGE_BPS + SPREAD_BPS   # 8bps per side
-    SIGNAL_EXPIRY_BARS = 6   # signal dies after 6×5m = 30 minutes
+    SIGNAL_EXPIRY_BARS      = 6    # replay: signal dies after 6×5m = 30 minutes
+    SIGNAL_EXPIRY_BARS_LIVE = 11   # live: allow up to 55 minutes for scheduler jitter
 
     def __init__(self, persist=True, notify=True):
-        self.persist = persist
-        self.notify  = notify
+        self.persist  = persist
+        self.notify   = notify
+        # proxy for live vs replay: replay uses persist=False, live uses persist=True
+        self._is_live = persist
         self.positions = {}
         os.makedirs(POSITIONS_DIR, exist_ok=True)
 
@@ -265,8 +268,13 @@ class PositionManager:
             signal_age_bars = len(
                 lltf_df[(lltf_df.index > external_row.name) & (lltf_df.index <= current_ts)]
             )
-            if signal_age_bars > self.SIGNAL_EXPIRY_BARS:
-                print(f"[SIGNAL EXPIRED] {symbol} age={signal_age_bars} bars > {self.SIGNAL_EXPIRY_BARS}")
+            # Use wider expiry window — replay uses strict 6-bar window,
+            # but live needs buffer for scheduler jitter and late cron fires
+            # self._is_live is set in __init__ based on persist flag as a proxy
+            expiry_limit = self.SIGNAL_EXPIRY_BARS_LIVE if self._is_live else self.SIGNAL_EXPIRY_BARS
+            print(f"[EXPIRY CHECK] {symbol} ts={current_ts} signal_age={signal_age_bars} limit={expiry_limit} signal={signal}")
+            if signal_age_bars > expiry_limit:
+                print(f"[SIGNAL EXPIRED] {symbol} age={signal_age_bars} bars > {expiry_limit} — SIGNAL KILLED")
                 signal = 0
             
         # =====================================================
@@ -706,7 +714,9 @@ class PositionManager:
                 with open(EXECUTED_SIGNALS_FILE, "r") as f:
                     content = f.read().strip()
                 loaded = set(json.loads(content)) if content else set()
-                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=48)
+                # FIX: 2-hour window is enough to prevent duplicates within a session
+                # 48 hours was creating phantom blocks that persisted across restarts
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=2)
                 kept = set()
                 for s in loaded:
                     try:

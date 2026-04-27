@@ -54,22 +54,29 @@ def reset_replay_state(symbols=None):
                 if os.path.exists(full_path):
                     os.remove(full_path)
 
+    # FIX: also wipe live cursor files for targeted symbols so hour memory
+    # and 5m cursor stay in sync after a reset
+    if os.path.exists("data/cursors"):
+        for fname in os.listdir("data/cursors"):
+            if fname.startswith("live_"):
+                if symbols and not any(sym in fname for sym in symbols):
+                    continue
+                full_path = os.path.join("data/cursors", fname)
+                if os.path.exists(full_path):
+                    print(f"[RESET] Wiping live cursor: {fname}")
+                    os.remove(full_path)
+
 def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True):
     notifier = TelegramNotifier()
 
     from data_pipeline.updater import update_symbol
-    df_1h, _, _ = update_symbol(symbol)
-    
-    # Build 5m timestamp list instead of 1H
     df_5m = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
     df_5m.index = pd.to_datetime(df_5m.index, utc=True)
     five_min_timestamps = df_5m.index.tolist()
 
-    # apply to_ts filter
     if to_ts:
         five_min_timestamps = [t for t in five_min_timestamps if t <= pd.Timestamp(to_ts, tz="UTC")]
 
-    # warmup: find index where from_ts starts
     warmup_done_idx = 0
     if from_ts:
         from_ts_parsed = pd.Timestamp(from_ts, tz="UTC")
@@ -79,8 +86,10 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         )
 
     total = len(five_min_timestamps)
-    trade_opens = 0
-    trade_closes = 0
+
+    # FIX 1: ONE PositionManager for the entire replay — no disk reload per bar
+    # persist=False keeps all state in memory; no JSON round-trips between bars
+    pm = PositionManager(persist=False, notify=notify_trades)
 
     notifier.send_text(
         f"🔁 *REPLAY STARTED*\n"
@@ -92,14 +101,15 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
     )
 
     replay_cursor = None
+    trade_opens = 0
+    trade_closes = 0
 
     for i, bar_ts in enumerate(five_min_timestamps):
-        # forced_time is the NEXT 5m bar — "what was known just before this bar closed"
         forced_time = five_min_timestamps[i + 1] if i + 1 < len(five_min_timestamps) else None
         if forced_time is None:
             break
 
-        is_progress_bar = (i == 0) or ((i + 1) % 240 == 0)  # every 240 5m bars = 20 hours
+        is_progress_bar = (i == 0) or ((i + 1) % 240 == 0)
 
         if is_progress_bar:
             notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* ts=`{bar_ts}`")
@@ -111,12 +121,14 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
                 replay=True,
                 notify_override=notify_trades,
                 verbose=is_progress_bar,
-                replay_cursor=replay_cursor
+                replay_cursor=replay_cursor,
+                external_pm=pm,           # FIX 1: pass shared PM
             )
             if isinstance(outcome, tuple):
                 results, replay_cursor = outcome
             else:
                 results = None
+
             if isinstance(results, list):
                 for r in results:
                     if isinstance(r, dict):
@@ -124,6 +136,7 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
                             trade_opens += 1
                         elif r.get("state") == "CLOSED":
                             trade_closes += 1
+
         except Exception as e:
             import traceback
             notifier.send_text(
@@ -141,6 +154,18 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
                 f"`{symbol}` — bar {i + 1}/{total}\n"
                 f"5m ts: `{bar_ts}`"
             )
+
+    # FIX 1: Force-close ONCE at the true end of replay — not inside the loop
+    if symbol in pm.positions:
+        last_bar = df_5m.iloc[-1]
+        closed = pm._close(symbol, float(last_bar["close"]), last_bar.name, "replay_end")
+        print(
+            f"[REPLAY END CLOSE] {symbol} "
+            f"entry={closed['entry_price']} "
+            f"bars={closed['bars_in_trade']} "
+            f"pnl_r={closed['exit']['pnl_r']:.2f}"
+        )
+        trade_closes += 1
 
     notifier.send_text(
         f"✅ *REPLAY COMPLETE*\n"
