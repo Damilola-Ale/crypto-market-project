@@ -97,6 +97,10 @@ class TelegramNotifier:
     def send_text(self, message: str) -> None:
         self._send(message, parse_mode="MarkdownV2")
 
+    def debug(self, message: str) -> None:
+        """Send a plain-text diagnostic message — no MarkdownV2 escaping."""
+        self._send(message, parse_mode=None)
+
     # ------------------------------------------------------------------
     # HELPERS
     # ------------------------------------------------------------------
@@ -132,8 +136,15 @@ class TelegramNotifier:
         payload: dict = {
             "chat_id": self.chat_id,
             "text": message,
-            "parse_mode": parse_mode
         }
 
-        response = requests.post(self.api_url, json=payload, timeout=10)
-        response.raise_for_status()
+        # only include parse_mode if set — omitting it means Telegram renders plain text
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        try:
+            response = requests.post(self.api_url, json=payload, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            # never let a failed notification crash the engine
+            print(f"[TELEGRAM SEND FAILED] {e} | message={message[:100]}")

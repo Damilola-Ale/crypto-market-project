@@ -11,6 +11,13 @@ from strategy.lifecycle import PositionManager
 from execution.notifier import TelegramNotifier
 import pandas as pd
 
+def _tg_debug(msg: str) -> None:
+    """Fire-and-forget debug message to Telegram. Never raises."""
+    try:
+        TelegramNotifier().debug(f"[RUNNER] {msg}")
+    except Exception:
+        print(f"[TG DEBUG FALLBACK] {msg}")
+
 SYMBOLS = [
     "ETHUSDT", "FILUSDT", "TRXUSDT", "VETUSDT", "UNIUSDT", "DOGEUSDT", "ETCUSDT",
     "AAVEUSDT", "BCHUSDT", "BANDUSDT", "TIAUSDT", "XLMUSDT", "SUIUSDT", "BTCUSDT",
@@ -145,7 +152,7 @@ def run_hourly_for_symbol(
                 # FIX: detect poisoned cursor — timestamp more than 1 hour in the future
                 # This would permanently block all processing for this symbol
                 if last_seen_ts > pd.Timestamp(now_check, tz="UTC") + pd.Timedelta(hours=1):
-                    print(f"[FAST GATE POISONED] {symbol} — cursor {last_seen_ts} is in the future, deleting and proceeding")
+                    _tg_debug(f"[FAST GATE POISONED] {symbol} — cursor {last_seen_ts} is in the future, deleting and proceeding")
                     notifier.send_text(
                         f"⚠️ *CURSOR POISONED*\n"
                         f"Symbol: `{symbol}`\n"
@@ -155,13 +162,13 @@ def run_hourly_for_symbol(
                     )
                     os.remove(cursor_file)
                 elif last_seen_ts >= pd.Timestamp(current_5m_boundary, tz="UTC"):
-                    print(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
+                    _tg_debug(f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= boundary {current_5m_boundary}, skipping")
                     return None
                 else:
-                    print(f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < boundary {current_5m_boundary}, proceeding")
+                    _tg_debug(f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < boundary {current_5m_boundary}, proceeding")
 
             except Exception as e:
-                print(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
+                _tg_debug(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
 
     # FIX 2: use external PM if provided (replay), else instantiate normally
     if external_pm is not None:
@@ -206,7 +213,7 @@ def run_hourly_for_symbol(
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
 
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
-                        print(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
+                        _tg_debug(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
                         return None, replay_cursor
                 else:
                     df, htf_df, lltf_df = df.iloc[:-1], htf_df.iloc[:-1], lltf_df.iloc[:-1]
@@ -238,7 +245,7 @@ def run_hourly_for_symbol(
         # FIX 5: diagnostic — log signal state so we can see if signals are reaching this point
         non_null_signals = lltf_df["final_signal"].notna().sum()
         non_zero_signals = (lltf_df["final_signal"] != 0).sum()
-        print(f"[SIGNAL DIAG] {symbol} — non-null={non_null_signals} non-zero={non_zero_signals} total_5m_bars={len(lltf_df)}")
+        # _tg_debug(f"[SIGNAL DIAG] {symbol} — non-null={non_null_signals} non-zero={non_zero_signals} total_5m_bars={len(lltf_df)}")
 
         # Precompute rolling ATR on 5m dataframe
         tr_5m = pd.concat([
@@ -253,7 +260,7 @@ def run_hourly_for_symbol(
         lltf_frozen['ltf_index'] = lltf_frozen['ltf_index'].astype(int)
 
         # FIX 5: diagnostic — log how many bars survive dropna
-        print(f"[FROZEN DIAG] {symbol} — bars after dropna={len(lltf_frozen)}")
+        _tg_debug(f"[FROZEN DIAG] {symbol} — bars after dropna={len(lltf_frozen)}")
 
         # ==========================================================
         # NEW 1H CANDLE DETECTION
@@ -299,7 +306,7 @@ def run_hourly_for_symbol(
         )
 
         # FIX 5: diagnostic — log new_bars count so we know if streaming engine sees anything
-        print(f"[NEW BARS DIAG] {symbol} — new_bars={len(new_bars)} last_seen={last_seen} latest_ts={latest_ts}")
+        _tg_debug(f"[NEW BARS DIAG] {symbol} — new_bars={len(new_bars)} last_seen={last_seen} latest_ts={latest_ts}")
 
         if new_bars.empty:
             return None
@@ -324,7 +331,7 @@ def run_hourly_for_symbol(
                 )
 
             # FIX 5: diagnostic — log what bar_signal is actually passed to pm.update
-            print(f"[PM UPDATE DIAG] {symbol} ts={_} bar_signal={bar_signal} has_position={symbol in pm.positions}")
+            # _tg_debug(f"[PM UPDATE DIAG] {symbol} ts={_} bar_signal={bar_signal} has_position={symbol in pm.positions}")
 
             result = pm.update(
                 df=df,
@@ -356,7 +363,7 @@ def run_hourly_for_symbol(
             # FIX: if cursor was just reset (file didn't exist before this run),
             # force hour memory to reset too so the two clocks stay in sync
             if not cursor_exists and not new_hour:
-                print(f"[CLOCK SYNC] {symbol} — cursor was absent but hour memory has entry, forcing hour reset")
+                _tg_debug(f"[CLOCK SYNC] {symbol} — cursor was absent but hour memory has entry, forcing hour reset")
                 new_hour = True
 
             if new_hour:
@@ -364,9 +371,9 @@ def run_hourly_for_symbol(
                 with open(HOUR_MEMORY_FILE + ".tmp", "w") as f:
                     json.dump(last_hour_seen, f, indent=2)
                 os.replace(HOUR_MEMORY_FILE + ".tmp", HOUR_MEMORY_FILE)
-                print(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
+                _tg_debug(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
             else:
-                print(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
+                _tg_debug(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
 
         pm.flush()
 

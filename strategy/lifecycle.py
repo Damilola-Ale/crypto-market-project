@@ -10,6 +10,13 @@ from typing import Optional
 from execution.notifier import TelegramNotifier
 from strategy.account_state import account_state
 
+def _tg_debug(msg: str) -> None:
+    """Fire-and-forget debug message to Telegram. Never raises."""
+    try:
+        TelegramNotifier().debug(f"[LIFECYCLE] {msg}")
+    except Exception:
+        print(f"[TG DEBUG FALLBACK] {msg}")
+
 def _update_atr(prev_atr, prev_close, high, low, close, period=14):
     tr = max(
         high - low,
@@ -257,7 +264,7 @@ class PositionManager:
 
             # unlock when signal resets or flips
             if signal == 0 or signal == -locked_dir:
-                print(f"[REENTRY UNLOCK] {symbol} signal={signal}")
+                _tg_debug(f"[REENTRY UNLOCK] {symbol} signal={signal}")
                 self._reentry_lock.pop(symbol, None)
                 self._dirty = True
 
@@ -272,9 +279,9 @@ class PositionManager:
             # but live needs buffer for scheduler jitter and late cron fires
             # self._is_live is set in __init__ based on persist flag as a proxy
             expiry_limit = self.SIGNAL_EXPIRY_BARS_LIVE if self._is_live else self.SIGNAL_EXPIRY_BARS
-            print(f"[EXPIRY CHECK] {symbol} ts={current_ts} signal_age={signal_age_bars} limit={expiry_limit} signal={signal}")
+            _tg_debug(f"[EXPIRY CHECK] {symbol} ts={current_ts} signal_age={signal_age_bars} limit={expiry_limit} signal={signal}")
             if signal_age_bars > expiry_limit:
-                print(f"[SIGNAL EXPIRED] {symbol} age={signal_age_bars} bars > {expiry_limit} — SIGNAL KILLED")
+                _tg_debug(f"[SIGNAL EXPIRED] {symbol} age={signal_age_bars} bars > {expiry_limit} — SIGNAL KILLED")
                 signal = 0
             
         # =====================================================
@@ -288,8 +295,8 @@ class PositionManager:
             if symbol in self._reentry_lock:
                 locked_dir = self._reentry_lock[symbol]
                 if signal == locked_dir:
-                    print(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol} dir={signal}")
-                    return {"state": "FLAT"}
+                    locked_at = self._reentry_lock_ts.get(symbol, "unknown")
+                    _tg_debug(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol} dir={signal} locked_at={locked_at}")
 
             signal_ts = current_5m_row.name
 
@@ -306,24 +313,26 @@ class PositionManager:
             )
 
             if signal_id in self._executed_signals:
+                _tg_debug(f"[EXECUTED SIGNAL BLOCK] {symbol} signal_id={signal_id} — already executed, skipping")
                 return {"state": "FLAT"}
 
             self._executed_signals.add(signal_id)
+            _tg_debug(f"[EXECUTED SIGNAL REGISTERED] {symbol} signal_id={signal_id}")
 
             raw_entry   = float(external_row["open"])
             cost_mult   = self.TOTAL_COST_BPS / 10_000
             entry_price = raw_entry * (1 + cost_mult) if signal == 1 else raw_entry * (1 - cost_mult)
 
             if atr is None or atr <= 0 or np.isnan(atr):
-                print(f"[WARN ATR INVALID] {symbol} ts={current_ts} atr={atr}")
+                _tg_debug(f"[WARN ATR INVALID] {symbol} ts={current_ts} atr={atr}")
                 atr = 0.000001
 
             atr = float(atr)
 
-            print(f"[DEBUG ENTRY] {symbol} signal={signal} atr={atr} ts={current_ts}")
+            _tg_debug(f"[DEBUG ENTRY] {symbol} signal={signal} atr={atr} ts={current_ts}")
 
             if atr <= 0:
-                print(f"[ENTRY BLOCKED] {symbol} @ {current_ts} — atr={atr}, skipping")
+                _tg_debug(f"[ENTRY BLOCKED] {symbol} @ {current_ts} — atr={atr}, skipping")
                 return {"state": "FLAT"}
 
             new_pos = self._open(symbol, signal, entry_price, current_ts, atr)
