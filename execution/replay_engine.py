@@ -4,6 +4,7 @@ import os
 import json
 import pandas as pd
 from execution.hourly_runner import run_hourly_for_symbol, SYMBOLS
+from strategy.lifecycle import PositionManager
 from execution.notifier import TelegramNotifier
 
 def _get_state_files():
