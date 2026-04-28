@@ -142,9 +142,12 @@ def run_hourly_for_symbol(
             try:
                 with open(cursor_file, "r") as f:
                     raw = json.load(f)
-                last_seen_ts = pd.Timestamp(raw if isinstance(raw, str) else list(raw.values())[0])
+                raw_val = raw if isinstance(raw, str) else list(raw.values())[0]
+                last_seen_ts = pd.Timestamp(raw_val)
                 if last_seen_ts.tzinfo is None:
                     last_seen_ts = last_seen_ts.tz_localize("UTC")
+                else:
+                    last_seen_ts = last_seen_ts.tz_convert("UTC")
                 now_check = datetime.now(timezone.utc)
                 minutes_floored = (now_check.minute // 5) * 5
                 current_5m_boundary = now_check.replace(minute=minutes_floored, second=0, microsecond=0)
