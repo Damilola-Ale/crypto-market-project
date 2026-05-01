@@ -70,132 +70,205 @@ def reset_replay_state(symbols=None):
 def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True):
     notifier = TelegramNotifier()
 
-    from data_pipeline.updater import update_symbol
-    df_5m = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
-    df_5m.index = pd.to_datetime(df_5m.index, utc=True)
-    five_min_timestamps = df_5m.index.tolist()
+    # ==================================================
+    # LOAD FULL CACHED DATA (already fetched by fast_replay_all)
+    # ==================================================
+    df_1h_full   = pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
+    df_4h_full   = pd.read_parquet(f"data/cache/{symbol}_4h.parquet")
+    df_5m_full   = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
 
+    df_1h_full.index = pd.to_datetime(df_1h_full.index, utc=True)
+    df_4h_full.index = pd.to_datetime(df_4h_full.index, utc=True)
+    df_5m_full.index = pd.to_datetime(df_5m_full.index, utc=True)
+
+    # ==================================================
+    # APPLY TIME BOUNDS
+    # ==================================================
     if to_ts:
-        five_min_timestamps = [t for t in five_min_timestamps if t <= pd.Timestamp(to_ts, tz="UTC")]
+        to_ts_parsed = pd.Timestamp(to_ts, tz="UTC")
+        df_1h_full = df_1h_full[df_1h_full.index <= to_ts_parsed]
+        df_4h_full = df_4h_full[df_4h_full.index <= to_ts_parsed]
+        df_5m_full = df_5m_full[df_5m_full.index <= to_ts_parsed]
 
-    warmup_done_idx = 0
     if from_ts:
         from_ts_parsed = pd.Timestamp(from_ts, tz="UTC")
-        warmup_done_idx = next(
-            (i for i, t in enumerate(five_min_timestamps) if t >= from_ts_parsed),
-            len(five_min_timestamps)
+    else:
+        from_ts_parsed = None
+
+    total_1h = len(df_1h_full)
+
+    # ==================================================
+    # SPLIT: WARMUP (first 800) vs ACTIVE (last 200)
+    # ==================================================
+    WARMUP_BARS = 800
+
+    if total_1h <= WARMUP_BARS:
+        notifier.send_text(
+            f"⚠️ *REPLAY SKIPPED*\n`{symbol}` — only `{total_1h}` 1H bars, need >{WARMUP_BARS}"
         )
+        return
 
-    total = len(five_min_timestamps)
+    df_1h_warmup = df_1h_full.iloc[:WARMUP_BARS]
+    df_1h_active = df_1h_full.iloc[WARMUP_BARS:]   # last 200
 
-    # FIX 1: ONE PositionManager for the entire replay — no disk reload per bar
-    # persist=False keeps all state in memory; no JSON round-trips between bars
-    pm = PositionManager(persist=False, notify=notify_trades)
+    warmup_end_ts   = df_1h_warmup.index[-1]
+    active_start_ts = df_1h_active.index[0]
 
     notifier.send_text(
         f"🔁 *REPLAY STARTED*\n"
         f"Symbol: `{symbol}`\n"
-        f"Total 5m bars: `{total}` (incl. warmup)\n"
-        f"Warmup until: `{five_min_timestamps[warmup_done_idx]}`\n"
-        f"Signal window from: `{from_ts or 'start'}`\n"
-        f"To: `{to_ts or 'end'}`"
+        f"Total 1H bars: `{total_1h}`\n"
+        f"Warmup: `{WARMUP_BARS}` bars → ends `{warmup_end_ts}`\n"
+        f"Active: `{len(df_1h_active)}` bars → from `{active_start_ts}`\n"
+        f"5m bars total: `{len(df_5m_full)}`"
     )
 
-    replay_cursor = None
-    trade_opens = 0
+    # ==================================================
+    # PRE-GENERATE SIGNALS ON WARMUP (once, frozen)
+    # ==================================================
+    from indicators.indicators import generate_signal
+
+    df_warmup_with_signals = generate_signal(df_1h_warmup.copy(), df_4h_full.copy())
+
+    # ==================================================
+    # POSITION MANAGER — single instance, in-memory
+    # ==================================================
+    pm = PositionManager(persist=False, notify=notify_trades)
+
+    trade_opens  = 0
     trade_closes = 0
 
-    for i, bar_ts in enumerate(five_min_timestamps):
-        forced_time = five_min_timestamps[i + 1] if i + 1 < len(five_min_timestamps) else None
-        if forced_time is None:
-            break
+    # ==================================================
+    # INCREMENTAL LOOP OVER ACTIVE 200 1H BARS
+    # ==================================================
+    for i, (ts_1h, _) in enumerate(df_1h_active.iterrows()):
 
-        is_progress_bar = (i == 0) or ((i + 1) % 240 == 0)
+        # Build growing 1H slice: warmup + active bars seen so far
+        # (i=0 → warmup only, i=1 → warmup + first active bar, etc.)
+        df_1h_slice  = pd.concat([df_1h_warmup, df_1h_active.iloc[:i]])
+        df_4h_slice  = df_4h_full[df_4h_full.index <= df_1h_slice.index[-1]]
 
-        if is_progress_bar:
-            notifier.send_text(f"🔄 *LOOP BAR {i+1}/{total}* ts=`{bar_ts}`")
-
-        try:
-            outcome = run_hourly_for_symbol(
-                symbol,
-                forced_time=forced_time,
-                replay=True,
-                notify_override=notify_trades,
-                verbose=is_progress_bar,
-                replay_cursor=replay_cursor,
-                external_pm=pm,           # FIX 1: pass shared PM
-            )
-            if isinstance(outcome, tuple):
-                results, replay_cursor = outcome
-            else:
-                results = None
-
-            if isinstance(results, list):
-                for r in results:
-                    if isinstance(r, dict):
-                        if r.get("state") == "OPEN":
-                            trade_opens += 1
-                        elif r.get("state") == "CLOSED":
-                            trade_closes += 1
-
-        except Exception as e:
-            import traceback
-            notifier.send_text(
-                f"💥 *REPLAY ITERATION CRASHED*\n"
-                f"`{symbol}` bar `{i+1}/{total}`\n"
-                f"ts=`{bar_ts}`\n"
-                f"Error: `{str(e)[:300]}`"
-            )
-            traceback.print_exc()
+        if len(df_1h_slice) < 2:
             continue
 
-        if i >= warmup_done_idx and (i - warmup_done_idx + 1) % 240 == 0:
-            notifier.send_text(
-                f"⏳ *REPLAY PROGRESS*\n"
-                f"`{symbol}` — bar {i + 1}/{total}\n"
-                f"5m ts: `{bar_ts}`"
+        # Generate signals on the growing slice
+        df_signals = generate_signal(df_1h_slice.copy(), df_4h_slice.copy())
+
+        # 5m bars that belong to the current 1H candle
+        next_1h_ts = df_1h_active.index[i + 1] if i + 1 < len(df_1h_active) else None
+        if next_1h_ts is None:
+            break  # no next bar to execute on
+
+        # slice: 5m bars from current 1H open up to (but not including) next 1H open
+        mask_5m = (df_5m_full.index >= ts_1h) & (df_5m_full.index < next_1h_ts)
+        df_5m_slice = df_5m_full[mask_5m]
+
+        if df_5m_slice.empty:
+            continue
+
+        # ── map 5m bars to their parent 1H index ──────────────────
+        from execution.hourly_runner import map_ltf_to_htf
+
+        lltf = df_5m_slice.copy()
+        lltf = map_ltf_to_htf(lltf, df_signals)
+
+        # forward-fill final_signal from 1H onto 5m
+        lltf["final_signal"] = df_signals["final_signal"].reindex(
+            lltf.index, method="ffill"
+        )
+
+        # precompute 5m ATR
+        tr_5m = pd.concat([
+            df_5m_full["high"] - df_5m_full["low"],
+            (df_5m_full["high"] - df_5m_full["close"].shift()).abs(),
+            (df_5m_full["low"]  - df_5m_full["close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr_5m = tr_5m.rolling(14).mean()
+        lltf["ATR"] = atr_5m.reindex(lltf.index)
+
+        # forward-fill 1H ATR onto 5m
+        tr_1h = pd.concat([
+            df_signals["high"] - df_signals["low"],
+            (df_signals["high"] - df_signals["close"].shift()).abs(),
+            (df_signals["low"]  - df_signals["close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        atr_1h = tr_1h.rolling(14).mean()
+        lltf["ATR_1H"] = atr_1h.reindex(lltf.index, method="ffill")
+
+        lltf = lltf.dropna(subset=["ltf_index"])
+        lltf["ltf_index"] = lltf["ltf_index"].astype(int)
+
+        if lltf.empty:
+            continue
+
+        # skip if before from_ts
+        if from_ts_parsed and ts_1h < from_ts_parsed:
+            continue
+
+        # ── feed each 5m bar to the position manager ──────────────
+        for _, row_5m in lltf.iterrows():
+            bar_signal = 0 if pd.isna(row_5m.get("final_signal")) else int(row_5m["final_signal"])
+            ltf_row    = df_signals.iloc[int(row_5m["ltf_index"])]
+
+            result = pm.update(
+                df=df_signals,
+                symbol=symbol,
+                lltf_df=lltf,
+                external_signal=bar_signal,
+                external_row=ltf_row,
+                current_5m_row=row_5m,
             )
 
-    # FIX 1: Force-close ONCE at the true end of replay — not inside the loop
+            if isinstance(result, dict):
+                if result.get("state") == "OPEN":
+                    trade_opens += 1
+                elif result.get("state") == "CLOSED":
+                    trade_closes += 1
+
+        if (i + 1) % 24 == 0:
+            notifier.send_text(
+                f"⏳ *REPLAY PROGRESS*\n"
+                f"`{symbol}` — 1H bar {i+1}/{len(df_1h_active)}\n"
+                f"ts: `{ts_1h}`\n"
+                f"Opens: `{trade_opens}` | Closes: `{trade_closes}`"
+            )
+
+    # ==================================================
+    # FORCE-CLOSE ANY OPEN POSITION AT END
+    # ==================================================
     if symbol in pm.positions:
-        last_bar = df_5m.iloc[-1]
+        last_bar = df_5m_full.iloc[-1]
         closed = pm._close(symbol, float(last_bar["close"]), last_bar.name, "replay_end")
         print(
             f"[REPLAY END CLOSE] {symbol} "
-            f"entry={closed['entry_price']} "
-            f"bars={closed['bars_in_trade']} "
-            f"pnl_r={closed['exit']['pnl_r']:.2f}"
+            f"pnl_r={closed['exit']['pnl_r']:.2f} "
+            f"bars={closed['bars_in_trade']}"
         )
         trade_closes += 1
 
     notifier.send_text(
         f"✅ *REPLAY COMPLETE*\n"
         f"Symbol: `{symbol}`\n"
-        f"5m bars processed: `{total}`\n"
         f"Trades opened: `{trade_opens}`\n"
         f"Trades closed: `{trade_closes}`"
     )
 
 def fast_replay_all(from_ts=None, to_ts=None, notify_trades=True, symbols=None):
     notifier = TelegramNotifier()
-    
-    # 1. Write lock FIRST before touching any state
+
     with open("data/replay_lock.json", "w") as f:
         json.dump({"locked": True, "started": pd.Timestamp.now(tz="UTC").isoformat()}, f)
-    
+
     try:
-        # 2. Reset state AFTER lock is in place
         reset_replay_state(symbols=symbols)
-        
         target_symbols = symbols if symbols else SYMBOLS
 
         for symbol in target_symbols:
-            # 3. Fetch fresh data since cache was wiped
             try:
                 from data_pipeline.updater import update_symbol
-                update_symbol(symbol)  # repopulate cache before replay reads it
+                update_symbol(symbol)
             except Exception as e:
-                notifier.send_text(f"💥 *REPLAY FETCH FAILED*\n`{symbol}`\n`{str(e)[:200]}`")
+                notifier.send_text(f"💥 *FETCH FAILED*\n`{symbol}`\n`{str(e)[:200]}`")
                 continue
 
             fast_replay_symbol(
