@@ -101,19 +101,22 @@ def update_symbol(symbol: str):
                 else:
                     print(f"[CANDLE FRESH] {symbol} — {candle_age_seconds:.0f}s since close, waiting for propagation")
 
-                # return cached data in both cases — fresh candle path was
-                # silently falling through to full fetch and rewriting parquets
-                df_lltf = pd.read_parquet(path_lltf)
-                df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
-
-                # check if 1H cache also has the latest closed candle
-                # if not, fall through to full fetch so it gets updated
+                # check if 1H cache has the latest closed candle
                 ltf_check = pd.read_parquet(path_ltf)
                 ltf_check.index = pd.to_datetime(ltf_check.index, utc=True)
                 if ltf_check.index[-1] < now_hour:
-                    print(f"[SKIP BYPASSED] {symbol} — 5m current but 1H cache behind ({ltf_check.index[-1]} < {now_hour}), fetching")
+                    print(f"[SKIP BYPASSED] {symbol} — 1H cache behind ({ltf_check.index[-1]} < {now_hour}), fetching")
                     raise Exception("1H cache stale — force full fetch")
 
+                # also check 5m cache isn't stale by more than 2 bars
+                expected_5m = current_5m_boundary
+                actual_5m = last_5m_ts
+                if (expected_5m - actual_5m).total_seconds() > 600:  # more than 2 bars behind
+                    print(f"[SKIP BYPASSED] {symbol} — 5m cache stale by {(expected_5m - actual_5m).total_seconds()/60:.0f}m, fetching")
+                    raise Exception("5m cache stale — force full fetch")
+
+                df_lltf = pd.read_parquet(path_lltf)
+                df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
                 df      = ltf_check
                 df_htf  = pd.read_parquet(path_htf)
                 df_htf.index  = pd.to_datetime(df_htf.index,  utc=True)
