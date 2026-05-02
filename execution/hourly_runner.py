@@ -209,8 +209,8 @@ def run_hourly_for_symbol(
                 df, htf_df, lltf_df = update_symbol(symbol)
 
                 if forced_time:
-                    df      = df[df.index < forced_time].copy()
-                    htf_df  = htf_df[htf_df.index < forced_time].copy()
+                    df      = df[df.index <= forced_time].copy()
+                    htf_df  = htf_df[htf_df.index <= forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
 
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:

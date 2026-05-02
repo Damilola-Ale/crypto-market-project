@@ -110,8 +110,8 @@ def update_symbol(symbol: str):
                 df_htf.index  = pd.to_datetime(df_htf.index,  utc=True)
                 df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
                 # strip any forming candle so generate_signal never sees partial data
-                df     = df[df.index < now_hour]
-                df_htf = df_htf[df_htf.index < now_hour]
+                df     = df[df.index <= now_hour]
+                df_htf = df_htf[df_htf.index <= now_hour]
                 return df, df_htf, df_lltf
         except Exception as e:
             print(f"[SKIP CHECK FAILED] {symbol} — {e}, proceeding with full fetch")
@@ -328,7 +328,7 @@ def update_symbol(symbol: str):
     print("[SAVE] LLTF cache updated | candles:", len(df_lltf))
 
     # strip forming candle before returning so generate_signal never sees partial 1H/4H data
-    df     = df[df.index < now_hour]
-    df_htf = df_htf[df_htf.index < now_hour]
+    df     = df[df.index <= now_hour]
+    df_htf = df_htf[df_htf.index <= now_hour]
 
     return df, df_htf, df_lltf
