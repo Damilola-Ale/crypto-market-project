@@ -275,7 +275,7 @@ def run_hourly_for_symbol(
         )
 
         if 'final_signal' not in df.columns or len(df) < 2:
-            return
+            return None, replay_cursor
 
         # FIX 5: diagnostic — log signal state so we can see if signals are reaching this point
         non_null_signals = lltf_df["final_signal"].notna().sum()
@@ -369,23 +369,9 @@ def run_hourly_for_symbol(
             # is measured from signal birth, not the current 1H candle.
             # We find the earliest 1H bar that has this signal value.
             if bar_signal != 0:
-                signal_birth_idx = int(row_5m["ltf_index"])
-                # walk backwards to find where this signal run started
-                while signal_birth_idx > 0 and df["final_signal"].iloc[signal_birth_idx - 1] == bar_signal:
-                    signal_birth_idx -= 1
-                signal_birth_row = df.iloc[signal_birth_idx]
+                signal_birth_row = ltf_row
             else:
                 signal_birth_row = ltf_row
-
-            if not pd.isna(row_5m.get("final_signal", float("nan"))) and row_5m["final_signal"] != 0 and symbol not in pm.positions:
-                notifier.debug(
-                    f"🚨 SIGNAL | {symbol} | ts={_} | "
-                    f"signal={row_5m['final_signal']} | "
-                    f"1H_ts={ltf_row.name} | "
-                    f"1H_open={ltf_row['open']:.6f} | "
-                    f"df_last={df.index[-1]} | "
-                    f"ltf_index={int(row_5m['ltf_index'])}"
-                )
 
             result = pm.update(
                 df=df,
@@ -397,6 +383,15 @@ def run_hourly_for_symbol(
             )
             if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
                 bar_results.append(result)
+                if result.get("state") == "OPEN" and bar_signal != 0:
+                    notifier.debug(
+                        f"🚨 SIGNAL ENTERED | {symbol} | ts={_} | "
+                        f"signal={bar_signal} | "
+                        f"1H_ts={ltf_row.name} | "
+                        f"1H_open={ltf_row['open']:.6f} | "
+                        f"df_last={df.index[-1]} | "
+                        f"ltf_index={int(row_5m['ltf_index'])}"
+                    )
 
             has_position = symbol in pm.positions
             if has_position:
