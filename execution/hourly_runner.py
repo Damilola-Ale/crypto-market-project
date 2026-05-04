@@ -321,7 +321,7 @@ def run_hourly_for_symbol(
             last_seen = pd.Timestamp(raw) if raw else None
 
         if is_live and last_seen == latest_ts:
-            notifier.debug(f"[CURSOR AT TIP] {symbol} — last_seen={last_seen} == latest_ts={latest_ts}, nothing to do")
+            # notifier.debug(f"[CURSOR AT TIP] {symbol} — last_seen={last_seen} == latest_ts={latest_ts}, nothing to do")
             return None
 
         if last_seen is None and not replay and not forced_time:
@@ -397,7 +397,7 @@ def run_hourly_for_symbol(
             if has_position:
                 pos = pm.positions[symbol]
                 notifier.debug(
-                    f"📊 TRADE ACTIVE | {symbol} | ts={_} | "
+                    f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(_)} | "
                     f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
                     f"entry={pos['entry_price']:.6f} | "
                     f"stop={pos['stop_loss']:.6f} | "
@@ -452,13 +452,13 @@ def run_hourly_for_symbol(
             _reentry = {k: {"direction": v, "locked_at": str(pm._reentry_lock_ts.get(k))} for k, v in pm._reentry_lock.items()}
             _executed = [s for s in pm._executed_signals if symbol in s]
             _positions = {k: {"direction": v.get("direction"), "bars": v.get("bars_in_trade"), "entry": v.get("entry_time")} for k, v in pm.positions.items()}
-            notifier.debug(
-                f"[STATE DUMP] {symbol}\n"
-                f"cursor_saved={new_bars.index[-1].isoformat() if not new_bars.empty else 'unchanged'}\n"
-                f"positions={_positions}\n"
-                f"reentry_lock={_reentry}\n"
-                f"executed_signals_for_symbol={_executed}"
-            )
+            # notifier.debug(
+            #     f"[STATE DUMP] {symbol}\n"
+            #     f"cursor_saved={new_bars.index[-1].isoformat() if not new_bars.empty else 'unchanged'}\n"
+            #     f"positions={_positions}\n"
+            #     f"reentry_lock={_reentry}\n"
+            #     f"executed_signals_for_symbol={_executed}"
+            # )
         except Exception as _e:
             notifier.debug(f"[STATE DUMP FAILED] {symbol} — {_e}")
         # ============================================================

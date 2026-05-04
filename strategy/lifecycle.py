@@ -52,12 +52,6 @@ class PositionManager:
 
     USE_ACCOUNT_GATES = False
 
-    # ==========================================================
-    # EXECUTION COST MODEL
-    # ==========================================================
-    SLIPPAGE_BPS = 5      # 0.05% market order slippage
-    SPREAD_BPS   = 3      # 0.03% half-spread (taker crosses spread)
-    TOTAL_COST_BPS = SLIPPAGE_BPS + SPREAD_BPS   # 8bps per side
     SIGNAL_EXPIRY_BARS      = 6    # replay: signal dies after 6×5m = 30 minutes
     SIGNAL_EXPIRY_BARS_LIVE = 2   # live: allow up to 55 minutes for scheduler jitter
 
@@ -341,9 +335,7 @@ class PositionManager:
                 f"total_executed={len(self._executed_signals)}"
             )
 
-            raw_entry   = float(external_row["open"])
-            cost_mult   = self.TOTAL_COST_BPS / 10_000
-            entry_price = raw_entry * (1 + cost_mult) if signal == 1 else raw_entry * (1 - cost_mult)
+            entry_price = float(external_row["open"])
 
             if atr is None or atr <= 0 or np.isnan(atr):
                 _tg_debug(
