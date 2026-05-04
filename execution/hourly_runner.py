@@ -361,10 +361,25 @@ def run_hourly_for_symbol(
         # This was the bug causing open+close on every single bar
 
         # update cursor AFTER processing (live only)
+        # only advance cursor to last bar where no signal was left unhandled
         if not replay and replay_cursor is None:
-            with open(last_5m_file + ".tmp", "w") as f:
-                json.dump(new_bars.index[-1].isoformat(), f)
-            os.replace(last_5m_file + ".tmp", last_5m_file)
+            last_clean_ts = None
+            for bar_ts, row in new_bars.iterrows():
+                sig = row.get("final_signal", 0)
+                if pd.isna(sig):
+                    sig = 0
+                sig = int(sig)
+                # if this bar had a signal and no position opened, stop cursor here
+                if sig != 0 and symbol not in pm.positions:
+                    break
+                last_clean_ts = bar_ts
+
+            if last_clean_ts is not None:
+                with open(last_5m_file + ".tmp", "w") as f:
+                    json.dump(last_clean_ts.isoformat(), f)
+                os.replace(last_5m_file + ".tmp", last_5m_file)
+            # if last_clean_ts is None, cursor doesn't advance at all
+            # meaning the next run retries from the same point
 
         # ==========================================================
         # SAVE LAST PROCESSED HOUR

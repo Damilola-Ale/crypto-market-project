@@ -227,27 +227,34 @@ class SignalBacktester:
         self.balance -= abs(units * price) * self.fee
         
         # Liquidation price tracking
-        margin = (units * price) / self.leverage
+        margin_per_unit = price / self.leverage
         if side == 1:
-            self.liquidation_price = price * (1 - 1 / self.leverage * 0.9)
+            self.liquidation_price = price - margin_per_unit * 0.9
         else:
-            self.liquidation_price = price * (1 + 1 / self.leverage * 0.9)
+            self.liquidation_price = price + margin_per_unit * 0.9
 
     # ------------------------
     # Exit
     # ------------------------
     def _exit(self, price, idx, reason):
-        pnl = (
+        raw_pnl = (
             (price - self.entry_price) * self.units
             if self.position == 1 else
             (self.entry_price - price) * self.units
-        ) * self.leverage
+        )
+
+        # Stop loss and liquidation are capped at -1R by definition
+        # All other exits (winners, early exits) are amplified by leverage
+        if reason in ("stop_loss", "break_even", "liquidated"):
+            pnl = raw_pnl
+        else:
+            pnl = raw_pnl * self.leverage
 
         if reason == "stop_loss" and self.be_activated:
             reason = "break_even"
 
         self.balance += pnl
-        self.balance -= abs(self.units * price) * self.fee
+        self.balance -= abs(self.units * price) * self.fee * self.leverage
         self.liquidation_price = None
 
         entry_i = self.current_trade["entry_idx"]
