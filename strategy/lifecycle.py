@@ -255,10 +255,16 @@ class PositionManager:
         # =====================================================
         if symbol in self._reentry_lock:
             locked_dir = self._reentry_lock[symbol]
+            locked_at = self._reentry_lock_ts.get(symbol)
 
-            # unlock when signal resets or flips
-            if signal == 0 or signal == -locked_dir:
-                _tg_debug(f"[REENTRY UNLOCK] {symbol} signal={signal}")
+            # unlock only when a new 1H candle has formed since the stop
+            current_1h = current_ts.floor("h") if hasattr(current_ts, "floor") else pd.Timestamp(current_ts).floor("h")
+            locked_1h = locked_at.floor("h") if locked_at is not None else None
+
+            new_candle_formed = locked_1h is not None and current_1h > locked_1h
+
+            if new_candle_formed and (signal == 0 or signal == -locked_dir):
+                # _tg_debug(f"[REENTRY UNLOCK] {symbol} — new 1H candle formed, signal={signal}")
                 self._reentry_lock.pop(symbol, None)
                 self._dirty = True
 
@@ -273,15 +279,15 @@ class PositionManager:
             # but live needs buffer for scheduler jitter and late cron fires
             # self._is_live is set in __init__ based on persist flag as a proxy
             expiry_limit = self.SIGNAL_EXPIRY_BARS_LIVE if self._is_live else self.SIGNAL_EXPIRY_BARS
-            _tg_debug(f"[EXPIRY CHECK] {symbol} ts={current_ts} signal_age={signal_age_bars} limit={expiry_limit} signal={signal}")
+            # _tg_debug(f"[EXPIRY CHECK] {symbol} ts={current_ts} signal_age={signal_age_bars} limit={expiry_limit} signal={signal}")
             if signal_age_bars > expiry_limit:
-                _tg_debug(
-                    f"[SIGNAL EXPIRED] {symbol}\n"
-                    f"age={signal_age_bars} bars > limit={expiry_limit}\n"
-                    f"external_row.name={external_row.name}\n"
-                    f"current_ts={current_ts}\n"
-                    f"signal KILLED"
-                )
+                # _tg_debug(
+                #     f"[SIGNAL EXPIRED] {symbol}\n"
+                #     f"age={signal_age_bars} bars > limit={expiry_limit}\n"
+                #     f"external_row.name={external_row.name}\n"
+                #     f"current_ts={current_ts}\n"
+                #     f"signal KILLED"
+                # )
                 signal = 0
             
         # =====================================================
