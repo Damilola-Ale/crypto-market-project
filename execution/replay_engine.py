@@ -177,14 +177,8 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
             lltf.index, method="ffill"
         )
 
-        # precompute 5m ATR
-        tr_5m = pd.concat([
-            df_5m_full["high"] - df_5m_full["low"],
-            (df_5m_full["high"] - df_5m_full["close"].shift()).abs(),
-            (df_5m_full["low"]  - df_5m_full["close"].shift()).abs(),
-        ], axis=1).max(axis=1)
-        atr_5m = tr_5m.rolling(14).mean()
-        lltf["ATR"] = atr_5m.reindex(lltf.index)
+        # Use 1H ATR to match backtest — forward fill onto 5m bars
+        lltf["ATR"] = df_signals["ATR"].reindex(lltf.index, method='ffill')
 
         # forward-fill 1H ATR onto 5m
         tr_1h = pd.concat([

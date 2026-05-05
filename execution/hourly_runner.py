@@ -282,13 +282,8 @@ def run_hourly_for_symbol(
         non_zero_signals = (lltf_df["final_signal"] != 0).sum()
         # _tg_debug(f"[SIGNAL DIAG] {symbol} — non-null={non_null_signals} non-zero={non_zero_signals} total_5m_bars={len(lltf_df)}")
 
-        # Precompute rolling ATR on 5m dataframe
-        tr_5m = pd.concat([
-            lltf_df['high'] - lltf_df['low'],
-            (lltf_df['high'] - lltf_df['close'].shift()).abs(),
-            (lltf_df['low']  - lltf_df['close'].shift()).abs()
-        ], axis=1).max(axis=1)
-        lltf_df['ATR'] = tr_5m.rolling(14).mean()
+        # Use 1H ATR to match backtest — forward fill onto 5m bars
+        lltf_df['ATR'] = df['ATR'].reindex(lltf_df.index, method='ffill')
 
         lltf_frozen = lltf_df.copy()
         lltf_frozen = lltf_frozen.dropna(subset=['ltf_index'])
