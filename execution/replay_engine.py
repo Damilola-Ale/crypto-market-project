@@ -226,10 +226,13 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         _has_nonzero_5m  = (lltf["final_signal"] != 0).any()
         _in_last_12      = i >= len(df_1h_active) - 12
 
-        if _has_nonzero_tip or _has_nonzero_5m or _in_last_12:
+                if _has_nonzero_tip or _has_nonzero_5m or _in_last_12:
             tip_row = df_signals.iloc[-1]
             _htf_direction = tip_row.get("HTF_DIRECTION", None)
             _htf_quality   = tip_row.get("HTF_QUALITY",   None)
+            _early_exp     = bool(tip_row.get("EARLY_EXPANSION", False))
+            _exp_mat       = tip_row.get("EXPANSION_MATURITY", None)
+            _comp_bars     = tip_row.get("COMPRESSION_BARS", None)
 
             notifier.send_text(
                 f"🔎 *REPLAY SLICE DIAG* `{symbol}` i=`{i}`\n"
@@ -239,6 +242,9 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
                 f"VBL=`{bool(tip_row.get('VALID_BREAK_LONG',False))}` "
                 f"COK=`{bool(tip_row.get('COMPRESSION_OK',False))}` "
                 f"EL=`{bool(tip_row.get('ENTRY_LONG',False))}`\n"
+                f"EARLY\_EXP=`{_early_exp}` "
+                f"EXP\_MAT=`{round(float(_exp_mat),3) if _exp_mat is not None else None}`\n"
+                f"COMP\_BARS=`{int(_comp_bars) if _comp_bars is not None else None}`\n"
                 f"HTF\_DIR=`{_htf_direction}` "
                 f"HTF\_Q=`{round(float(_htf_quality),3) if _htf_quality is not None else None}`\n"
                 f"lock=`{pm._reentry_lock.get(symbol)}` "
