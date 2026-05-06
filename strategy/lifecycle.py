@@ -266,10 +266,10 @@ class PositionManager:
 
             new_candle_formed = locked_1h is not None and current_1h > locked_1h
 
-            if new_candle_formed and (signal == 0 or signal == -locked_dir):
-                # _tg_debug(f"[REENTRY UNLOCK] {symbol} — new 1H candle formed, signal={signal}")
+            if new_candle_formed:
                 self._reentry_lock.pop(symbol, None)
                 self._dirty = True
+
 
         # ===================================================
         # SIGNAL EXPIRY CHECK

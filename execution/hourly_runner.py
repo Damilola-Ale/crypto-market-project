@@ -196,6 +196,22 @@ def run_hourly_for_symbol(
                             f"[FAST GATE BYPASS] {symbol} — cursor current but "
                             f"position open, proceeding for exit checks"
                         )
+                        # Rewind cursor to entry so all bars since open are re-evaluated
+                        try:
+                            pm_rewind = PositionManager(persist=True, notify=False)
+                            if symbol in pm_rewind.positions:
+                                entry_ts = pd.Timestamp(pm_rewind.positions[symbol]["entry_5m_ts"])
+                                if entry_ts.tzinfo is None:
+                                    entry_ts = entry_ts.tz_localize("UTC")
+                                last_seen_ts = entry_ts - pd.Timedelta(minutes=5)
+                                # overwrite cursor file so streaming engine picks up rewind
+                                cursor_file_rewind = _last_5m_file(symbol, True)
+                                with open(cursor_file_rewind + ".tmp", "w") as _f:
+                                    json.dump(last_seen_ts.isoformat(), _f)
+                                os.replace(cursor_file_rewind + ".tmp", cursor_file_rewind)
+                                print(f"[CURSOR REWIND] {symbol} — rewound to {last_seen_ts}")
+                        except Exception as _rewind_err:
+                            print(f"[CURSOR REWIND FAILED] {symbol} — {_rewind_err}")
                 else:
                     print(
                         f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < "
