@@ -157,6 +157,12 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         # 5m bars that belong to the current 1H candle
         next_1h_ts = df_1h_active.index[i + 1] if i + 1 < len(df_1h_active) else None
         if next_1h_ts is None:
+            notifier.send_text(
+                f"🔍 *REPLAY BREAK*\n"
+                f"`{symbol}` — loop broke at i=`{i}` / `{len(df_1h_active)}`\n"
+                f"ts_1h=`{ts_1h}`\n"
+                f"This is the last active bar — its 5m bars will NOT be processed"
+            )
             break  # no next bar to execute on
 
         # slice: 5m bars from current 1H open up to (but not including) next 1H open
@@ -164,6 +170,12 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         df_5m_slice = df_5m_full[mask_5m]
 
         if df_5m_slice.empty:
+            notifier.send_text(
+                f"⚠️ *REPLAY EMPTY 5M SLICE*\n"
+                f"`{symbol}` i=`{i}` ts_1h=`{ts_1h}`\n"
+                f"next_1h_ts=`{next_1h_ts}`\n"
+                f"5m range in full data: `{df_5m_full.index[0]}` → `{df_5m_full.index[-1]}`"
+            )
             continue
 
         # ── map 5m bars to their parent 1H index ──────────────────
@@ -197,7 +209,25 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
 
         # skip if before from_ts
         if from_ts_parsed and ts_1h < from_ts_parsed:
+            notifier.send_text(
+                f"⏩ *REPLAY SKIP (before from_ts)*\n"
+                f"`{symbol}` i=`{i}` ts_1h=`{ts_1h}`\n"
+                f"from_ts_parsed=`{from_ts_parsed}`"
+            ) if i % 24 == 0 else None  # throttle — only log every 24 bars
             continue
+
+        # ── signal tip diagnostic ──────────────────────────────────
+        tip_signals = df_signals["final_signal"].iloc[-8:]
+        non_zero_tip = (tip_signals != 0).sum()
+        notifier.send_text(
+            f"🔎 *REPLAY SLICE DIAG* `{symbol}` i=`{i}`\n"
+            f"1H slice tip ts=`{df_signals.index[-1]}`\n"
+            f"final_signal last 8 bars: `{tip_signals.tolist()}`\n"
+            f"non-zero in tip: `{non_zero_tip}`\n"
+            f"5m bars in slice: `{len(lltf)}`\n"
+            f"5m signal values: `{lltf['final_signal'].value_counts().to_dict()}`\n"
+            f"lltf dropna survivors: `{lltf['ltf_index'].notna().sum()}`"
+        ) if i >= len(df_1h_active) - 12 else None  # only log last 12 1H bars
 
         # ── feed each 5m bar to the position manager ──────────────
         for _, row_5m in lltf.iterrows():

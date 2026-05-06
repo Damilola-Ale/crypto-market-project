@@ -685,7 +685,10 @@ class PositionManager:
         duration_bars = pos.get("bars_in_trade", 0)
         
         self._reentry_lock[symbol] = pos["direction"]
-        self._reentry_lock_ts[symbol] = pd.Timestamp.now(tz="UTC")
+        # Use the bar's timestamp, not wall clock — critical for replay correctness
+        self._reentry_lock_ts[symbol] = pd.Timestamp(ts) if not isinstance(ts, pd.Timestamp) else ts
+        if self._reentry_lock_ts[symbol].tzinfo is None:
+            self._reentry_lock_ts[symbol] = self._reentry_lock_ts[symbol].tz_localize("UTC")
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
         
