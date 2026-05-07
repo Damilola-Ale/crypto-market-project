@@ -146,7 +146,8 @@ def fast_replay_symbol(symbol: str, from_ts=None, to_ts=None, notify_trades=True
         # Build growing 1H slice: warmup + active bars seen so far
         # (i=0 → warmup only, i=1 → warmup + first active bar, etc.)
         df_1h_slice = pd.concat([df_1h_warmup, df_1h_active.iloc[:i+1]])
-        df_4h_slice  = df_4h_full[df_4h_full.index <= df_1h_slice.index[-1]]
+        df_1h_slice.index = pd.to_datetime(df_1h_slice.index, utc=True)
+        df_4h_slice = df_4h_full[df_4h_full.index <= df_1h_slice.index[-1]]
 
         if len(df_1h_slice) < 2:
             continue

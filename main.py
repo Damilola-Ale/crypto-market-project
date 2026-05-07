@@ -76,7 +76,7 @@ def fetch_binance(symbol, interval, limit):
 # BTC, ZEN, AVAX, AXS, ORDI, LDO, LINK
 # ==========================================================
 
-SYMBOL = "ZENUSDT"
+SYMBOL = "TRXUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -97,9 +97,9 @@ LEVERAGE = 1
 # LTF_LIMIT = 26280   # ~30 days of 1h candles
 # HTF_LIMIT = 6570   # ~120 days of 4h candles
 
-LLTF_LIMIT = 210240
-LTF_LIMIT = 17520   # ~30 days of 1h candles
-HTF_LIMIT = 4380   # ~120 days of 4h candles
+# LLTF_LIMIT = 210240
+# LTF_LIMIT = 17520   # ~30 days of 1h candles
+# HTF_LIMIT = 4380   # ~120 days of 4h candles
 
 # LTF_LIMIT = 8760   # ~30 days of 1h candles
 # HTF_LIMIT = 2190   # ~120 days of 4h candles
@@ -112,9 +112,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 12000
-# LTF_LIMIT = 1000   # ~30 days of 1h candles
-# HTF_LIMIT = 250   # ~120 days of 4h candles
+LLTF_LIMIT = 12000
+LTF_LIMIT = 1000   # ~30 days of 1h candles
+HTF_LIMIT = 250   # ~120 days of 4h candles
 
 # LLTF_LIMIT = 6000
 # LTF_LIMIT = 500   # ~30 days of 1h candles
@@ -132,6 +132,15 @@ ltf_df = fetch_binance(SYMBOL, LTF_INTERVAL, LTF_LIMIT)
 
 print("Downloading HTF data (4h)...")
 htf_df = fetch_binance(SYMBOL, HTF_INTERVAL, HTF_LIMIT)
+
+lltf_df.index = pd.to_datetime(lltf_df.index, utc=True)
+ltf_df.index = pd.to_datetime(ltf_df.index, utc=True)
+htf_df.index = pd.to_datetime(htf_df.index, utc=True)
+
+# ltf_df.index = pd.to_datetime(ltf_df.index, utc=True)
+# target = pd.Timestamp("2026-05-06 06:00:00", tz="UTC")
+# print(f"Target in index: {target in ltf_df.index}")
+# print(ltf_df.loc["2026-05-06 04:00":"2026-05-06 09:00"])
 
 # ==========================================================
 # SIGNAL GENERATION

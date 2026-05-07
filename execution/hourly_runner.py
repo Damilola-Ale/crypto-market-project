@@ -422,20 +422,16 @@ def run_hourly_for_symbol(
                     f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
                 )
 
-        # FIX 1: replay-end close REMOVED from here — caller (fast_replay_symbol) owns it
-        # This was the bug causing open+close on every single bar
-
-        # update cursor AFTER processing (live only)
-        # always advance to the last bar processed — the executed_signals set
-        # is the dedup guard, not the cursor. Leaving the cursor behind causes
-        # entire bar windows to be reprocessed on the next cron fire.
         if not replay and replay_cursor is None:
-            last_clean_ts = new_bars.index[-1] if not new_bars.empty else None
+            if not new_bars.empty:
+                current_1h_open = pd.Timestamp(datetime.now(timezone.utc)).floor("h")
+                safe_bars = new_bars[new_bars.index < current_1h_open]
+                last_clean_ts = safe_bars.index[-1] if not safe_bars.empty else None
 
-            if last_clean_ts is not None:
-                with open(last_5m_file + ".tmp", "w") as f:
-                    json.dump(last_clean_ts.isoformat(), f)
-                os.replace(last_5m_file + ".tmp", last_5m_file)
+                if last_clean_ts is not None:
+                    with open(last_5m_file + ".tmp", "w") as f:
+                        json.dump(last_clean_ts.isoformat(), f)
+                    os.replace(last_5m_file + ".tmp", last_5m_file)
 
         # ==========================================================
         # SAVE LAST PROCESSED HOUR
