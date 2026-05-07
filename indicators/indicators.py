@@ -1137,12 +1137,16 @@ def compression_context(df, lookback=7, memory=6):
     )
 
     # 2️⃣ How long since last compression?
-    bars_since_compression = (
-        (~df['VOL_COMPRESS'])
-        .astype(int)
-        .groupby(df['VOL_COMPRESS'].cumsum())
-        .cumcount()
-    )
+    # Causal forward counter — same fix as bars_since_event
+    bars_since_compression = pd.Series(999, index=df.index, dtype=int)
+    counter = 999
+    for idx in range(len(df)):
+        if df['VOL_COMPRESS'].iloc[idx]:
+            counter = 0
+        else:
+            if counter < 999:
+                counter += 1
+        bars_since_compression.iloc[idx] = counter
 
     # Normalize time since compression
     freshness = 1 - (bars_since_compression / memory).clip(0,1)
@@ -1231,14 +1235,16 @@ def sanitize_features_for_signals(df: pd.DataFrame) -> pd.DataFrame:
 # EVENT AGE TRACKER (NEW)
 # ==========================================================
 def bars_since_event(event_series: pd.Series) -> pd.Series:
-    """
-    Counts number of bars since last True event.
-    Returns large number if event never happened.
-    """
-    grp = (~event_series).cumsum()
-    age = event_series.groupby(grp).cumcount()
-    age[event_series] = 0
-    return age.fillna(999)
+    age = pd.Series(999, index=event_series.index, dtype=int)
+    counter = 999
+    for idx in range(len(event_series)):
+        if event_series.iloc[idx]:
+            counter = 0
+        else:
+            if counter < 999:
+                counter += 1
+        age.iloc[idx] = counter
+    return age
 
 # ==========================================================
 # ENTRY FRESHNESS ENGINE (NEW)
@@ -1348,18 +1354,14 @@ def expansion_maturity(df, lookback=20):
     )
 
     # Normalized maturity score 0 → 1
+    exp_min = df['EXPANSION_PERSISTENCE'].expanding(min_periods=lookback).min()
+    exp_max = df['EXPANSION_PERSISTENCE'].expanding(min_periods=lookback).max()
+
     maturity = (
-        df['EXPANSION_PERSISTENCE'] -
-        df['EXPANSION_PERSISTENCE'].rolling(lookback).min()
-    )
+        df['EXPANSION_PERSISTENCE'] - exp_min
+    ) / (exp_max - exp_min + 1e-9)
 
-    maturity /= (
-        df['EXPANSION_PERSISTENCE'].rolling(lookback).max()
-        - df['EXPANSION_PERSISTENCE'].rolling(lookback).min()
-        + 1e-9
-    )
-
-    df['EXPANSION_MATURITY'] = maturity.clip(0,1)
+    df['EXPANSION_MATURITY'] = maturity.clip(0, 1)
 
     # Entry window = early-to-mid expansion only
     df['EARLY_EXPANSION'] = df['EXPANSION_MATURITY'] < 0.6
@@ -1431,7 +1433,6 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     df = composite_pressure(df)  # 🔹 generate COMPOSITE_PRESSURE metric
     df = pressure_elasticity_divergence(df)
     df = vol_compression_slope(df, lookback=50, rv_period=20)
-    df = sanitize_features_for_signals(df)
     df = validated_breakouts(df)
     df = entry_freshness(df)
     df = compression_context(df)
@@ -1596,10 +1597,10 @@ def generate_signal(df, htf_df, atr_mult=1.5):
     LONG_CONDITION &= HTF_LONG_OK
     SHORT_CONDITION &= HTF_SHORT_OK
 
-    # df['signal'] = 0
-    # df.loc[LONG_CONDITION, 'signal'] = 1
-    # df.loc[SHORT_CONDITION, 'signal'] = -1
-    df['signal'] = -1
+    df['signal'] = 0
+    df.loc[LONG_CONDITION, 'signal'] = 1
+    df.loc[SHORT_CONDITION, 'signal'] = -1
+    # df['signal'] = -1
 
     df['final_signal'] = df['signal']
 
