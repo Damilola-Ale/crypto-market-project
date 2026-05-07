@@ -47,7 +47,7 @@ class PositionManager:
     STOP_PROXIMITY = 0.2       # within 0.2R of stop = danger
 
     ATR_MULT         = 1.5
-    ATR_AFTER_HALF_R = 3.0   # wide early trail — gives trade room
+    ATR_AFTER_HALF_R = 2.0   # middle ground — protects without choking pullbacks
     ATR_AFTER_ONE_R  = 1.5   # tighter once 1R+ secured
 
     USE_ACCOUNT_GATES = False
@@ -569,12 +569,12 @@ class PositionManager:
     def _update_dynamic_stop(self, position, current_price, atr, side):
         mfe_r = position["mfe_r"]
 
-        if mfe_r <= 0.75:
+        if mfe_r <= 0.5:
             return
 
         bars = position.get("bars_in_trade", 0)
         last_trail_bar = position.get("last_trail_bar", 0)
-        if bars - last_trail_bar < 12:
+        if bars - last_trail_bar < 3:
             return
         position["last_trail_bar"] = bars
 
