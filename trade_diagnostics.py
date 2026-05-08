@@ -27,10 +27,11 @@ def diagnose_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
     df["side"] = df["side"].astype(int)
     df["direction"] = df["side"].map({1: "LONG", -1: "SHORT"})
 
-    WAT = pd.Timedelta(hours=1)
+    import pytz
+    WAT = pytz.timezone("Africa/Lagos")  # WAT = UTC+1, no DST
     for col in ["entry_time", "exit_time"]:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], utc=True) + WAT
+            df[col] = pd.to_datetime(df[col], utc=True).dt.tz_convert(WAT).dt.strftime("%Y-%m-%d %H:%M WAT")
 
     # Fixed risk assumption
     FIXED_RISK = 10.0

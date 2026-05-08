@@ -162,13 +162,6 @@ results = backtest_output["summary"]
 
 print(results)
 
-# Convert timestamps to WAT (UTC+1) for display
-WAT = pd.Timedelta(hours=1)
-if not trade_log.empty:
-    for col in ["entry_time", "exit_time"]:
-        if col in trade_log.columns:
-            trade_log[col] = pd.to_datetime(trade_log[col], utc=True) + WAT
-
 print("=== TRADE LOG ===")
 print(trade_log.head(10))
 
