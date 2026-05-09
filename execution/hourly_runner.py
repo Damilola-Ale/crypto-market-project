@@ -305,8 +305,8 @@ def run_hourly_for_symbol(
         notifier.debug(
             f"[SIGNAL GEN] {symbol}\n"
             f"df_last={df.index[-1]}\n"
-            f"non_zero_signals={(df['final_signal'] != 0).sum()}\n"
-            f"last_11={df['final_signal'].iloc[-11:].tolist()}"
+            f"non_zero_signals={(lltf_frozen['final_signal'] != 0).sum()}\n"
+            f"last_11={lltf_frozen['final_signal'].iloc[-11:].tolist()}"
         )
 
         # notifier.debug(
