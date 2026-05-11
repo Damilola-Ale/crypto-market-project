@@ -290,6 +290,14 @@ def run_hourly_for_symbol(
         # -------------------
         df = generate_signal(df.copy(), htf_df.copy(), live=is_live)
 
+        print(
+            f"[HTF CHECK] {symbol} | "
+            f"HTF_QUALITY={df['HTF_QUALITY'].iloc[-1]:.4f} | "
+            f"HTF_DIRECTION={df['HTF_DIRECTION'].iloc[-1]} | "
+            f"final_signal_last={df['final_signal'].iloc[-1]} | "
+            f"signals_total={(df['final_signal'] != 0).sum()}"
+        )
+
         if 'final_signal' not in df.columns or len(df) < 2:
             notifier.debug(f"[SIGNAL GUARD] {symbol} — no final_signal or df too short")
             return None, replay_cursor
@@ -383,6 +391,12 @@ def run_hourly_for_symbol(
             else lltf_frozen[lltf_frozen.index > last_seen]
         )
 
+        print(
+            f"[NEW BARS] {symbol} | count={len(new_bars)} | "
+            f"non_zero={(new_bars['final_signal'] != 0).sum() if not new_bars.empty else 0} | "
+            f"last_seen={last_seen} | latest_ts={latest_ts}"
+        )
+
         # notifier.debug(
         #     f"[NEW BARS] {symbol}\n"
         #     f"new_bars={len(new_bars)}\n"
@@ -422,6 +436,15 @@ def run_hourly_for_symbol(
             else:
                 signal_birth_row = ltf_row
 
+            if bar_signal != 0:
+                print(
+                    f"[SIGNAL BAR] {symbol} | ts={_} | signal={bar_signal} | "
+                    f"ltf_index={int(row_5m['ltf_index'])} | "
+                    f"reentry_lock={pm._reentry_lock.get(symbol)} | "
+                    f"has_position={symbol in pm.positions} | "
+                    f"executed_count={len(pm._executed_signals)}"
+                )
+
             result = pm.update(
                 df=df,
                 symbol=symbol,
@@ -430,6 +453,13 @@ def run_hourly_for_symbol(
                 external_row=signal_birth_row,
                 current_5m_row=row_5m
             )
+
+            if bar_signal != 0:
+                print(
+                    f"[PM RESULT] {symbol} | ts={_} | "
+                    f"state={result.get('state') if isinstance(result, dict) else result}"
+                )
+                
             if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
                 bar_results.append(result)
                 if result.get("state") == "OPEN" and bar_signal != 0:

@@ -797,9 +797,10 @@ def htf_structural_stack(df, htf_df,
     # ======================================================
 
     htf['HTF_ATR'] = atr_ema(htf)
+    htf_vol_lookback = min(vol_lookback, max(20, len(htf) // 3))
     htf['HTF_VOL_PCTL'] = (
         htf['HTF_ATR']
-        .rolling(vol_lookback)
+        .rolling(htf_vol_lookback)
         .rank(pct=True)
     )
 
@@ -860,9 +861,13 @@ def htf_structural_stack(df, htf_df,
     )
 
     # normalize
+    htf_roll_window = min(50, max(20, len(htf) // 5))
+    htf_min_periods = min(20, max(10, len(htf) // 10))
     htf['HTF_TREND_MOMENTUM_NORM'] = hybrid_zscore(
-        htf['HTF_TREND_MOMENTUM']
-    ).clip(-2,2)
+        htf['HTF_TREND_MOMENTUM'],
+        roll_window=htf_roll_window,
+        min_periods=htf_min_periods
+    ).clip(-2, 2)
 
     # convert to 0-1 score
     htf['MOMENTUM_SCORE'] = (
@@ -1186,21 +1191,30 @@ def anchored_zscore(series, min_periods=200):
     return (series - mean) / (std + 1e-9)
 
 
-def hybrid_zscore(series, roll_window=200, anchor_weight=0.6):
+def hybrid_zscore(series, roll_window=200, anchor_weight=0.6, min_periods=200):
     """
     Combines short-term regime awareness (rolling)
     with long-term memory (expanding).
 
-    This is the institutional normalization pattern.
+    min_periods controls the warmup for both the rolling and
+    anchored components. Pass a smaller value when operating on
+    short datasets (e.g. HTF ~250 bars) to prevent NaN→0
+    zeroing at the warmup boundary.
+
+    min_periods is always clamped to <= roll_window to prevent
+    pandas ValueError regardless of caller.
     """
 
+    # clamp min_periods so it never exceeds roll_window
+    min_periods = min(min_periods, roll_window)
+
     # short-term regime normalization
-    roll_mean = series.rolling(roll_window).mean()
-    roll_std  = series.rolling(roll_window).std()
+    roll_mean = series.rolling(roll_window, min_periods=min_periods).mean()
+    roll_std  = series.rolling(roll_window, min_periods=min_periods).std()
     rolling_z = (series - roll_mean) / (roll_std + 1e-9)
 
     # long-term anchored normalization
-    anchor_z = anchored_zscore(series)
+    anchor_z = anchored_zscore(series, min_periods=min_periods)
 
     # blend them (prevents restrictiveness)
     return anchor_weight * anchor_z + (1 - anchor_weight) * rolling_z
