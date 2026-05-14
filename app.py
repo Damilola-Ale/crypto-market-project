@@ -391,6 +391,145 @@ def debug_full_state():
 
     return result, 200
 
+@app.route("/debug/signal-test")
+def debug_signal_test():
+    """
+    Runs the real signal pipeline on live candles for a symbol
+    and sends a full diagnostic to Telegram.
+ 
+    Usage:
+        /debug/signal-test?key=YOUR_KEY&symbol=VETUSDT
+        /debug/signal-test?key=YOUR_KEY&symbol=VETUSDT&bars=50
+    """
+    if request.args.get("key") != os.getenv("RUN_KEY", "local"):
+        abort(403)
+ 
+    symbol = request.args.get("symbol", "VETUSDT").upper()
+    bars   = int(request.args.get("bars", 20))   # how many recent 1H bars to show signal for
+ 
+    import threading
+ 
+    def run_test():
+        from data_pipeline.updater import update_symbol
+        from indicators.indicators import generate_signal
+        from execution.notifier import TelegramNotifier
+        import pandas as pd
+ 
+        notifier = TelegramNotifier()
+ 
+        notifier.send_text(
+            f"🧪 *SIGNAL TEST STARTED*\n"
+            f"Symbol: `{symbol}` | Last `{bars}` 1H bars"
+        )
+ 
+        try:
+            # --------------------------------------------------
+            # 1. Pull real cached data (same path as live runner)
+            # --------------------------------------------------
+            df_1h, df_4h, df_5m = update_symbol(symbol)
+ 
+            notifier.send_text(
+                f"📥 *DATA LOADED*\n"
+                f"`{symbol}`\n"
+                f"1H bars: `{len(df_1h)}` | last: `{df_1h.index[-1]}`\n"
+                f"4H bars: `{len(df_4h)}` | last: `{df_4h.index[-1]}`\n"
+                f"5M bars: `{len(df_5m)}` | last: `{df_5m.index[-1]}`"
+            )
+ 
+            # --------------------------------------------------
+            # 2. Run the REAL signal generator (live=True, same as prod)
+            # --------------------------------------------------
+            df_sig = generate_signal(df_1h.copy(), df_4h.copy(), live=True)
+ 
+            # --------------------------------------------------
+            # 3. Extract key diagnostics from the last N bars
+            # --------------------------------------------------
+            recent = df_sig.iloc[-bars:].copy()
+ 
+            htf_quality   = float(df_sig['HTF_QUALITY'].iloc[-1])
+            htf_direction = int(df_sig['HTF_DIRECTION'].iloc[-1])
+            htf_blocked   = htf_quality <= 0.45
+ 
+            signal_last   = int(df_sig['final_signal'].iloc[-1])
+            signal_count  = int((df_sig['final_signal'] != 0).sum())
+            recent_signals = (recent['final_signal'] != 0).sum()
+ 
+            # Key intermediate conditions on the last bar
+            last = df_sig.iloc[-1]
+            valid_break_long  = bool(last.get('VALID_BREAK_LONG', False))
+            valid_break_short = bool(last.get('VALID_BREAK_SHORT', False))
+            compression_ok    = bool(last.get('COMPRESSION_OK', False))
+            compression_bars  = int(last.get('COMPRESSION_BARS', 0))
+            early_expansion   = bool(last.get('EARLY_EXPANSION', False))
+            entry_long        = bool(last.get('ENTRY_LONG', False))
+            entry_short       = bool(last.get('ENTRY_SHORT', False))
+            exp_maturity      = float(last.get('EXPANSION_MATURITY', 0))
+            vol_state         = int(last.get('VOL_STATE', 0))
+            struct_state      = int(last.get('STRUCT_STATE', 0))
+            participation     = int(last.get('PARTICIPATION', 0))
+ 
+            # --------------------------------------------------
+            # 4. Build signal history string (last N bars)
+            # --------------------------------------------------
+            sig_history = []
+            for ts, row in recent.iterrows():
+                s = int(row['final_signal'])
+                if s != 0:
+                    wat = (ts + pd.Timedelta(hours=1)).strftime("%m-%d %H:%M")
+                    sig_history.append(f"`{wat}` → `{'LONG' if s == 1 else 'SHORT'}`")
+ 
+            sig_history_str = "\n".join(sig_history) if sig_history else "none in last window"
+ 
+            # --------------------------------------------------
+            # 5. Send full diagnostic
+            # --------------------------------------------------
+            htf_status = "🔴 BLOCKED" if htf_blocked else "🟢 PASSING"
+ 
+            notifier.send_text(
+                f"📊 *SIGNAL TEST RESULT* `{symbol}`\n"
+                f"\n"
+                f"*HTF Filter*\n"
+                f"Status: {htf_status}\n"
+                f"Quality: `{htf_quality:.4f}` (threshold=0.45)\n"
+                f"Direction: `{'LONG' if htf_direction == 1 else 'SHORT' if htf_direction == -1 else 'FLAT'}`\n"
+                f"\n"
+                f"*Signal State (last bar)*\n"
+                f"final_signal: `{signal_last}`\n"
+                f"VALID_BREAK_LONG: `{valid_break_long}`\n"
+                f"VALID_BREAK_SHORT: `{valid_break_short}`\n"
+                f"COMPRESSION_OK: `{compression_ok}`\n"
+                f"COMPRESSION_BARS: `{compression_bars}`\n"
+                f"EARLY_EXPANSION: `{early_expansion}`\n"
+                f"EXPANSION_MATURITY: `{exp_maturity:.3f}`\n"
+                f"ENTRY_LONG: `{entry_long}`\n"
+                f"ENTRY_SHORT: `{entry_short}`\n"
+                f"\n"
+                f"*Market State (last bar)*\n"
+                f"VOL_STATE: `{vol_state}` (-1=compress 0=neutral 1=expand)\n"
+                f"STRUCT_STATE: `{struct_state}`\n"
+                f"PARTICIPATION: `{participation}`\n"
+                f"\n"
+                f"*Signal History (last {bars} 1H bars)*\n"
+                f"Total signals in full history: `{signal_count}`\n"
+                f"Signals in last {bars} bars: `{recent_signals}`\n"
+                f"{sig_history_str}"
+            )
+ 
+        except Exception as e:
+            import traceback
+            notifier.send_text(
+                f"💥 *SIGNAL TEST FAILED*\n"
+                f"`{symbol}`\n"
+                f"error=`{str(e)[:300]}`\n"
+                f"```{traceback.format_exc()[:500]}```"
+            )
+ 
+    thread = threading.Thread(target=run_test)
+    thread.daemon = True
+    thread.start()
+ 
+    return {"status": "signal_test_started", "symbol": symbol}, 200
+
 # ==================================================
 # ENTRYPOINT
 # ==================================================
