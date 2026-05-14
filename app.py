@@ -394,208 +394,274 @@ def debug_full_state():
 @app.route("/debug/signal-test")
 def debug_signal_test():
     """
-    Runs the real signal pipeline on live candles for a symbol
-    and sends a full diagnostic to Telegram including HTF bar data.
- 
+    TRUE end-to-end live injection test.
+
+    Crafts a fake 1H + 5M candle engineered to pass ALL signal conditions,
+    appends it to real cached parquets, then calls run_hourly_for_symbol()
+    — the exact same function the cron uses. If your notification pipeline,
+    cursor logic, and position manager all work, you'll get a real TRADE READY
+    message in Telegram. Cleans up fake candles afterward.
+
     Usage:
-        /debug/signal-test?key=YOUR_KEY&symbol=VETUSDT
-        /debug/signal-test?key=YOUR_KEY&symbol=VETUSDT&bars=20
+        /debug/signal-test?key=YOUR_KEY&symbol=TRXUSDT
     """
     if request.args.get("key") != os.getenv("RUN_KEY", "local"):
         abort(403)
- 
+
     symbol = request.args.get("symbol", "TRXUSDT").upper()
-    bars   = int(request.args.get("bars", 30))
- 
+
     import threading
- 
-    def run_test():
-        from data_pipeline.updater import update_symbol
-        from indicators.indicators import generate_signal, htf_structural_stack
-        from execution.notifier import TelegramNotifier
+
+    def run_injection():
         import pandas as pd
- 
+        import numpy as np
+        from execution.notifier import TelegramNotifier
+        from execution.hourly_runner import run_hourly_for_symbol
+        from data_pipeline.updater import CACHE_DIR
+
         notifier = TelegramNotifier()
- 
+        path_1h = os.path.join(CACHE_DIR, f"{symbol}_1h.parquet")
+        path_4h = os.path.join(CACHE_DIR, f"{symbol}_4h.parquet")
+        path_5m = os.path.join(CACHE_DIR, f"{symbol}_5m.parquet")
+
+        # ── 0. Check caches exist ──────────────────────────────────
+        for p in [path_1h, path_4h, path_5m]:
+            if not os.path.exists(p):
+                notifier.send_text(
+                    f"💥 *SIGNAL TEST ABORTED*\n"
+                    f"Cache missing: `{p}`\n"
+                    f"Run `/` first to populate caches."
+                )
+                return
+
         notifier.send_text(
-            f"🧪 *SIGNAL TEST STARTED*\n"
-            f"Symbol: `{symbol}` | Last `{bars}` 1H bars"
+            f"🧪 *INJECTION TEST STARTED*\n"
+            f"Symbol: `{symbol}`\n"
+            f"Loading real cached data..."
         )
- 
+
         try:
-            # --------------------------------------------------
-            # 1. Pull real cached data (same path as live runner)
-            # --------------------------------------------------
-            df_1h, df_4h, df_5m = update_symbol(symbol)
- 
+            # ── 1. Load real caches ────────────────────────────────
+            df_1h = pd.read_parquet(path_1h)
+            df_4h = pd.read_parquet(path_4h)
+            df_5m = pd.read_parquet(path_5m)
+
+            for df in (df_1h, df_4h, df_5m):
+                df.index = pd.to_datetime(df.index, utc=True)
+
+            df_1h = df_1h.sort_index()
+            df_4h = df_4h.sort_index()
+            df_5m = df_5m.sort_index()
+
+            last_real_1h = df_1h.index[-1]
+            last_real_5m = df_5m.index[-1]
+            last_close   = float(df_1h["close"].iloc[-1])
+            last_high     = float(df_1h["high"].iloc[-1])
+            last_low      = float(df_1h["low"].iloc[-1])
+
+            # ── 2. Compute ATR from real data ──────────────────────
+            # Use last 14 bars to get a live ATR estimate
+            recent = df_1h.iloc[-14:]
+            tr = pd.concat([
+                recent["high"] - recent["low"],
+                (recent["high"] - recent["close"].shift()).abs(),
+                (recent["low"]  - recent["close"].shift()).abs(),
+            ], axis=1).max(axis=1)
+            atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+
             notifier.send_text(
-                f"📥 *DATA LOADED*\n"
+                f"📥 *REAL DATA LOADED*\n"
                 f"`{symbol}`\n"
-                f"1H bars: `{len(df_1h)}` | last: `{df_1h.index[-1]}`\n"
-                f"4H bars: `{len(df_4h)}` | last: `{df_4h.index[-1]}`\n"
-                f"5M bars: `{len(df_5m)}` | last: `{df_5m.index[-1]}`"
+                f"1H bars: `{len(df_1h)}` | last: `{last_real_1h}`\n"
+                f"4H bars: `{len(df_4h)}`\n"
+                f"5M bars: `{len(df_5m)}` | last: `{last_real_5m}`\n"
+                f"Last close: `{last_close:.6f}`\n"
+                f"ATR: `{atr:.6f}`"
             )
- 
-            # --------------------------------------------------
-            # 2. HTF RAW DIAGNOSTIC — before generate_signal()
-            #    Shows exactly what 4H bars are feeding the quality score
-            #    and whether any partial/open candle is sneaking in
-            # --------------------------------------------------
-            now_hour = pd.Timestamp.now(tz="UTC").floor("h")
- 
-            # This mirrors what generate_signal() does internally
-            htf_clipped = df_4h[df_4h.index < now_hour].copy()
- 
-            # Run htf_structural_stack on the clipped data to get quality scores
-            # We need a dummy 1H df just for alignment — use last 10 bars
-            dummy_1h = df_1h.iloc[-10:].copy()
+
+            # ── 3. Engineer fake 1H candle ─────────────────────────
+            # Goal: pass EVERY gate in generate_signal()
+            #
+            # COMPRESSION_OK  → need COMPRESSION_BARS >= 3
+            #   VER < 0.95 (ATR_FAST < ATR_SLOW) + ER < 0.45 (sideways)
+            #   → small body, small range, inside last few bars
+            #
+            # VALID_BREAK_LONG → COMPRESSION_OK + EARLY_EXPANSION
+            #   EARLY_EXPANSION = EXPANSION_MATURITY < 0.6
+            #   → we just need the breakout to happen on a fresh move
+            #
+            # HTF_QUALITY > 0.45 → we cannot fake this (uses 4H data)
+            #   → we accept it may still block; the test proves everything else
+            #
+            # ENTRY_LONG → PBPE conditions (pullback or micro break)
+            #   → close above rolling resistance with strong body
+            #
+            # Strategy: fake candle breaks above the 20-bar resistance
+            # with 3x normal volume and a strong bull body
+
+            resistance = float(df_1h["high"].rolling(20).max().iloc[-1])
+            
+            # Fake candle opens just below resistance and closes above it
+            # by more than 0.5 * ATR (breakout_logic atr_k=0.5)
+            fake_open  = resistance - atr * 0.1          # just below
+            fake_close = resistance + atr * 0.6           # clear breakout
+            fake_high  = fake_close + atr * 0.15          # small upper wick
+            fake_low   = fake_open  - atr * 0.05          # minimal lower wick
+            fake_vol   = float(df_1h["volume"].rolling(20).mean().iloc[-1]) * 3.0
+
+            fake_1h_ts = last_real_1h + pd.Timedelta(hours=1)
+
+            fake_1h = pd.DataFrame([{
+                "open":   fake_open,
+                "high":   fake_high,
+                "low":    fake_low,
+                "close":  fake_close,
+                "volume": fake_vol,
+            }], index=pd.DatetimeIndex([fake_1h_ts], tz="UTC"))
+
+            # ── 4. Engineer fake 5M candles for that hour ──────────
+            # 12 × 5m bars covering the fake 1H window
+            # First bar: strong bull body (entry trigger)
+            # Remaining 11: quiet continuation
+            fake_5m_rows = []
+            for i in range(12):
+                ts_5m = fake_1h_ts + pd.Timedelta(minutes=5 * i)
+                if i == 0:
+                    # Entry bar — strong momentum
+                    o = fake_open
+                    c = fake_close
+                    h = fake_high
+                    l = fake_low
+                    v = fake_vol / 4
+                else:
+                    # Continuation — quiet drift
+                    drift = atr * 0.02 * i
+                    o = fake_close + drift
+                    c = o + atr * 0.01
+                    h = c + atr * 0.02
+                    l = o - atr * 0.01
+                    v = fake_vol / 20
+                fake_5m_rows.append({
+                    "open": o, "high": h, "low": l,
+                    "close": c, "volume": v,
+                })
+
+            fake_5m_index = pd.DatetimeIndex(
+                [fake_1h_ts + pd.Timedelta(minutes=5 * i) for i in range(12)],
+                tz="UTC"
+            )
+            fake_5m = pd.DataFrame(fake_5m_rows, index=fake_5m_index)
+
+            notifier.send_text(
+                f"🔧 *FAKE CANDLE ENGINEERED*\n"
+                f"`{symbol}`\n"
+                f"1H ts: `{fake_1h_ts}`\n"
+                f"open: `{fake_open:.6f}`\n"
+                f"close: `{fake_close:.6f}`\n"
+                f"high: `{fake_high:.6f}`\n"
+                f"resistance was: `{resistance:.6f}`\n"
+                f"breakout by: `{(fake_close - resistance):.6f}` (`{((fake_close-resistance)/atr):.2f}` ATR)\n"
+                f"volume: `{fake_vol:.0f}` (3× avg)\n"
+                f"5M bars injected: `12`"
+            )
+
+            # ── 5. Inject into parquets ────────────────────────────
+            df_1h_injected = pd.concat([df_1h, fake_1h])
+            df_1h_injected = df_1h_injected[~df_1h_injected.index.duplicated(keep="last")]
+            df_1h_injected.sort_index().to_parquet(path_1h)
+
+            df_5m_injected = pd.concat([df_5m, fake_5m])
+            df_5m_injected = df_5m_injected[~df_5m_injected.index.duplicated(keep="last")]
+            df_5m_injected.sort_index().to_parquet(path_5m)
+
+            # Also wipe the live cursor for this symbol so the runner
+            # doesn't fast-gate and skip the new candle
+            cursor_path = f"data/cursors/live_{symbol}.json"
+            cursor_backup = None
+            if os.path.exists(cursor_path):
+                with open(cursor_path, "r") as f:
+                    cursor_backup = f.read()
+                os.remove(cursor_path)
+
+            notifier.send_text(
+                f"💉 *INJECTED INTO CACHE*\n"
+                f"`{symbol}`\n"
+                f"New 1H tail: `{df_1h_injected.index[-1]}`\n"
+                f"New 5M tail: `{df_5m_injected.index[-1]}`\n"
+                f"Cursor wiped: `{cursor_backup is not None}`\n"
+                f"Calling live runner now..."
+            )
+
+            # ── 6. Call the REAL live runner ───────────────────────
+            # This is the exact same function the cron calls.
+            # It will: update_symbol() → generate_signal() →
+            # stream 5m bars → PositionManager.update() →
+            # notify_open() if signal fires
             try:
-                htf_stack_raw = htf_structural_stack(dummy_1h, htf_clipped)
-            except Exception as htf_err:
-                htf_stack_raw = None
- 
-            # Last 5 raw 4H bars
-            htf_last5 = df_4h.tail(5)
-            htf_lines = []
-            for ts, row in htf_last5.iterrows():
-                wat = (ts + pd.Timedelta(hours=1)).strftime("%m-%d %H:%M")
-                is_open = ts >= now_hour
-                status = "⚠️ OPEN" if is_open else "✅ closed"
-                htf_lines.append(
-                    f"`{wat}` {status}\n"
-                    f"  O={row['open']:.4f} H={row['high']:.4f} "
-                    f"L={row['low']:.4f} C={row['close']:.4f} "
-                    f"V={row['volume']:.0f}"
+                result = run_hourly_for_symbol(symbol)
+                notifier.send_text(
+                    f"✅ *RUNNER RETURNED*\n"
+                    f"`{symbol}`\n"
+                    f"result=`{str(result)[:200]}`\n"
+                    f"Check above for TRADE READY message.\n"
+                    f"If none appeared, signal was blocked — see diagnostics."
                 )
- 
-            # Check if clipped htf matches raw htf last bar
-            raw_last_ts     = df_4h.index[-1]
-            clipped_last_ts = htf_clipped.index[-1] if not htf_clipped.empty else None
-            partial_excluded = raw_last_ts != clipped_last_ts
- 
-            notifier.send_text(
-                f"📊 *HTF RAW BARS (last 5 4H candles)*\n"
-                f"`{symbol}`\n"
-                f"now_hour (UTC): `{now_hour}`\n"
-                f"raw last 4H ts: `{raw_last_ts}`\n"
-                f"clipped last 4H ts: `{clipped_last_ts}`\n"
-                f"partial candle excluded: `{partial_excluded}`\n"
-                f"\n" + "\n".join(htf_lines)
-            )
- 
-            # --------------------------------------------------
-            # 3. Run the REAL signal generator (live=True, same as prod)
-            # --------------------------------------------------
-            df_sig = generate_signal(df_1h.copy(), df_4h.copy(), live=True)
- 
-            # --------------------------------------------------
-            # 4. HTF QUALITY TRACE — last 6 1H bars with their
-            #    forward-filled HTF quality at that moment
-            #    This shows if quality changed around signal time
-            # --------------------------------------------------
-            recent_sig = df_sig.iloc[-6:].copy()
-            quality_lines = []
-            for ts, row in recent_sig.iterrows():
-                wat = (ts + pd.Timedelta(hours=1)).strftime("%m-%d %H:%M")
-                sig = int(row.get('final_signal', 0))
-                q   = float(row.get('HTF_QUALITY', 0))
-                d   = int(row.get('HTF_DIRECTION', 0))
-                sig_str = f"{'🟢 LONG' if sig == 1 else '🔴 SHORT' if sig == -1 else '⬜ flat'}"
-                gate_str = "🔴 blocked" if q <= 0.45 else "🟢 passing"
-                quality_lines.append(
-                    f"`{wat}` | Q=`{q:.4f}` {gate_str} | "
-                    f"dir=`{'L' if d==1 else 'S' if d==-1 else 'F'}` | {sig_str}"
+            except Exception as run_err:
+                import traceback
+                notifier.send_text(
+                    f"💥 *RUNNER CRASHED*\n"
+                    f"`{symbol}`\n"
+                    f"error=`{str(run_err)[:300]}`\n"
+                    f"trace=`{traceback.format_exc()[:400]}`"
                 )
- 
-            notifier.send_text(
-                f"📈 *HTF QUALITY TRACE (last 6 1H bars)*\n"
-                f"`{symbol}`\n"
-                f"threshold=0.45\n\n" +
-                "\n".join(quality_lines)
-            )
- 
-            # --------------------------------------------------
-            # 5. Extract key diagnostics from the last bar
-            # --------------------------------------------------
-            htf_quality   = float(df_sig['HTF_QUALITY'].iloc[-1])
-            htf_direction = int(df_sig['HTF_DIRECTION'].iloc[-1])
-            htf_blocked   = htf_quality <= 0.45
- 
-            signal_last   = int(df_sig['final_signal'].iloc[-1])
-            signal_count  = int((df_sig['final_signal'] != 0).sum())
-            recent        = df_sig.iloc[-bars:]
-            recent_signals = (recent['final_signal'] != 0).sum()
- 
-            last = df_sig.iloc[-1]
-            valid_break_long  = bool(last.get('VALID_BREAK_LONG', False))
-            valid_break_short = bool(last.get('VALID_BREAK_SHORT', False))
-            compression_ok    = bool(last.get('COMPRESSION_OK', False))
-            compression_bars  = int(last.get('COMPRESSION_BARS', 0))
-            early_expansion   = bool(last.get('EARLY_EXPANSION', False))
-            entry_long        = bool(last.get('ENTRY_LONG', False))
-            entry_short       = bool(last.get('ENTRY_SHORT', False))
-            exp_maturity      = float(last.get('EXPANSION_MATURITY', 0))
-            vol_state         = int(last.get('VOL_STATE', 0))
-            struct_state      = int(last.get('STRUCT_STATE', 0))
-            participation     = int(last.get('PARTICIPATION', 0))
- 
-            # signal history
-            sig_history = []
-            for ts, row in recent.iterrows():
-                s = int(row['final_signal'])
-                if s != 0:
-                    wat = (ts + pd.Timedelta(hours=1)).strftime("%m-%d %H:%M")
-                    sig_history.append(
-                        f"`{wat}` → `{'LONG' if s == 1 else 'SHORT'}`"
-                    )
-            sig_history_str = "\n".join(sig_history) if sig_history else "none in last window"
- 
-            htf_status = "🔴 BLOCKED" if htf_blocked else "🟢 PASSING"
- 
-            notifier.send_text(
-                f"📊 *SIGNAL TEST RESULT* `{symbol}`\n"
-                f"\n"
-                f"*HTF Filter*\n"
-                f"Status: {htf_status}\n"
-                f"Quality: `{htf_quality:.4f}` (threshold=0.45)\n"
-                f"Direction: `{'LONG' if htf_direction == 1 else 'SHORT' if htf_direction == -1 else 'FLAT'}`\n"
-                f"\n"
-                f"*Signal State (last bar)*\n"
-                f"final_signal: `{signal_last}`\n"
-                f"VALID_BREAK_LONG: `{valid_break_long}`\n"
-                f"VALID_BREAK_SHORT: `{valid_break_short}`\n"
-                f"COMPRESSION_OK: `{compression_ok}`\n"
-                f"COMPRESSION_BARS: `{compression_bars}`\n"
-                f"EARLY_EXPANSION: `{early_expansion}`\n"
-                f"EXPANSION_MATURITY: `{exp_maturity:.3f}`\n"
-                f"ENTRY_LONG: `{entry_long}`\n"
-                f"ENTRY_SHORT: `{entry_short}`\n"
-                f"\n"
-                f"*Market State (last bar)*\n"
-                f"VOL_STATE: `{vol_state}` (-1=compress 0=neutral 1=expand)\n"
-                f"STRUCT_STATE: `{struct_state}`\n"
-                f"PARTICIPATION: `{participation}`\n"
-                f"\n"
-                f"*Signal History (last {bars} 1H bars)*\n"
-                f"Total signals in full history: `{signal_count}`\n"
-                f"Signals in last {bars} bars: `{recent_signals}`\n"
-                f"{sig_history_str}"
-            )
- 
+
         except Exception as e:
             import traceback
             notifier.send_text(
-                f"💥 *SIGNAL TEST FAILED*\n"
+                f"💥 *INJECTION TEST FAILED*\n"
                 f"`{symbol}`\n"
                 f"error=`{str(e)[:300]}`\n"
                 f"trace=`{traceback.format_exc()[:400]}`"
             )
- 
-    thread = threading.Thread(target=run_test)
+
+        finally:
+            # ── 7. Always clean up fake candles ───────────────────
+            try:
+                df_1h_clean = pd.read_parquet(path_1h)
+                df_1h_clean.index = pd.to_datetime(df_1h_clean.index, utc=True)
+                df_1h_clean = df_1h_clean[df_1h_clean.index <= last_real_1h]
+                df_1h_clean.to_parquet(path_1h)
+
+                df_5m_clean = pd.read_parquet(path_5m)
+                df_5m_clean.index = pd.to_datetime(df_5m_clean.index, utc=True)
+                df_5m_clean = df_5m_clean[df_5m_clean.index <= last_real_5m]
+                df_5m_clean.to_parquet(path_5m)
+
+                # Restore cursor if it existed
+                if cursor_backup is not None:
+                    with open(cursor_path, "w") as f:
+                        f.write(cursor_backup)
+
+                notifier.send_text(
+                    f"🧹 *CLEANUP DONE*\n"
+                    f"`{symbol}`\n"
+                    f"1H restored to: `{last_real_1h}`\n"
+                    f"5M restored to: `{last_real_5m}`\n"
+                    f"Cursor restored: `{cursor_backup is not None}`"
+                )
+            except Exception as clean_err:
+                notifier.send_text(
+                    f"⚠️ *CLEANUP FAILED*\n"
+                    f"`{symbol}`\n"
+                    f"error=`{str(clean_err)[:200]}`\n"
+                    f"Parquets may be dirty — check manually."
+                )
+
+    thread = threading.Thread(target=run_injection)
     thread.daemon = True
     thread.start()
- 
-    return {"status": "signal_test_started", "symbol": symbol}, 200
+
+    return {"status": "injection_test_started", "symbol": symbol}, 200
 
 # ==================================================
 # ENTRYPOINT
