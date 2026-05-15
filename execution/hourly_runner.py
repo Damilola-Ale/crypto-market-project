@@ -331,15 +331,54 @@ def run_hourly_for_symbol(
             method="ffill"
         )
 
-        # zero out signal on 5m bars that fall within the signal bar's own 1H window
-        # entry is only valid AFTER the signal 1H bar has fully closed.
-        # Use <= to include the boundary bar (XX:00) itself — when
-        # _early_entry_eligible fires, that bar is included in lltf_df but
-        # must not carry a signal. First valid entry bar is XX:05.
-        signal_bar_ts = df.index[-1]
-        signal_bar_end = signal_bar_ts + pd.Timedelta(hours=1)
-        within_signal_bar = (lltf_df.index >= signal_bar_ts) & (lltf_df.index <= signal_bar_end)
-        lltf_df.loc[within_signal_bar, "final_signal"] = 0
+        # Zero out 5m bars that are INSIDE the 1H bar that generated their signal.
+        # A signal on the 12:00 1H bar is only valid starting at 13:00 (when that bar closes).
+        # 5m bars at 12:05, 12:10, ..., 12:55 must be zeroed.
+        # The 13:00 bar maps to the NEW 1H bar (13:00), so it is NOT zeroed here.
+        #
+        # Rule: zero a 5m bar if its originating 1H bar open == its own timestamp floored to 1H.
+        # Equivalently: zero if ts < (origin + 1H) AND ts >= origin AND origin == floor(ts, 1H).
+        # Simplified: zero if the 5m bar's timestamp falls strictly BEFORE its 1H bar's close.
+        # A 5m bar AT the 1H boundary (e.g. 13:00) already maps to the NEW 1H bar via
+        # map_ltf_to_htf (searchsorted right - 1 gives the new bar), so it is safe.
+
+        if 'final_signal' in lltf_df.columns:
+            # Floor each 5m timestamp to its 1H bar open
+            ts_1h_floor = lltf_df.index.floor('h')
+            # Get the 1H bar open each 5m bar maps to via ltf_index
+            ltf_opens = df.index
+            mapped_1h_open = lltf_df['ltf_index'].apply(
+                lambda i: ltf_opens[int(i)] if 0 <= int(i) < len(ltf_opens) else pd.NaT
+            )
+            # A 5m bar is INSIDE its generating 1H bar when its timestamp floor equals
+            # its mapped 1H open — meaning the 1H bar hasn't closed yet at this 5m bar.
+            # (The 13:00 5m bar maps to the 13:00 1H bar, floor is 13:00, equals — so
+            #  it WOULD be blocked. But 13:00 is a valid entry. We want to allow it.)
+            # 
+            # Correct rule: block if ts is STRICTLY BETWEEN origin and origin+1H (exclusive both ends
+            # means we allow the boundary). Actually: block if origin <= ts < origin+1H
+            # but ts != origin (don't block the open of the new bar).
+            # Since the new 1H bar opens AT origin, and that IS a valid entry bar,
+            # we block: origin < ts < origin+1H  (strictly inside, not at boundary).
+            #
+            # But ts AT origin: that's the very first 5m bar of the new hour. That bar's
+            # ltf_index maps to the 1H bar that just closed (index N-1), not the new one,
+            # because map_ltf_to_htf uses searchsorted('right') - 1. So origin for that
+            # bar = the PREVIOUS 1H bar open. So it WILL be blocked correctly.
+            # The 5m bar at 13:00 maps to 1H bar at 12:00 (last closed bar). origin=12:00.
+            # 12:00 <= 13:00 < 13:00 → False (13:00 < 13:00 is False). NOT blocked. ✓
+            
+            block_mask = pd.Series(False, index=lltf_df.index)
+            for ts, ltf_idx in zip(lltf_df.index, lltf_df['ltf_index']):
+                idx = int(ltf_idx)
+                if idx < 0 or idx >= len(ltf_opens):
+                    continue
+                origin = ltf_opens[idx]
+                origin_end = origin + pd.Timedelta(hours=1)
+                if origin <= ts < origin_end:
+                    block_mask[ts] = True
+            
+            lltf_df.loc[block_mask, 'final_signal'] = 0
 
         # notifier.debug(
         #     f"[SIGNAL GEN] {symbol}\n"
