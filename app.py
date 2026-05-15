@@ -398,169 +398,69 @@ def debug_signal_test():
 
     symbol = request.args.get("symbol", "TRXUSDT").upper()
 
-    import threading
+    import pandas as pd
+    from data_pipeline.updater import CACHE_DIR
+    from indicators.indicators import generate_signal, atr_ema
 
-    def run_injection():
-        import pandas as pd
-        from execution.notifier import TelegramNotifier
-        from execution.hourly_runner import run_hourly_for_symbol
-        from data_pipeline.updater import CACHE_DIR
-        from indicators.indicators import atr_ema
+    path_1h = os.path.join(CACHE_DIR, f"{symbol}_1h.parquet")
+    path_4h = os.path.join(CACHE_DIR, f"{symbol}_4h.parquet")
+    path_5m = os.path.join(CACHE_DIR, f"{symbol}_5m.parquet")
 
-        notifier = TelegramNotifier()
+    for p in [path_1h, path_4h, path_5m]:
+        if not os.path.exists(p):
+            return {"error": f"cache missing: {p}"}, 500
 
-        path_1h = os.path.join(CACHE_DIR, f"{symbol}_1h.parquet")
-        path_4h = os.path.join(CACHE_DIR, f"{symbol}_4h.parquet")
-        path_5m = os.path.join(CACHE_DIR, f"{symbol}_5m.parquet")
+    df_1h = pd.read_parquet(path_1h)
+    df_4h = pd.read_parquet(path_4h)
+    df_5m = pd.read_parquet(path_5m)
 
-        for p in [path_1h, path_4h, path_5m]:
-            if not os.path.exists(p):
-                notifier.send_text(
-                    f"💥 *INJECTION TEST ABORTED*\n"
-                    f"Cache missing: `{p}`\n"
-                    f"Hit the hourly trigger first."
-                )
-                return
+    for df in (df_1h, df_4h, df_5m):
+        df.index = pd.to_datetime(df.index, utc=True)
 
-        notifier.send_text(
-            f"🧪 *INJECTION TEST STARTED*\n"
-            f"Symbol: `{symbol}`"
-        )
+    df_1h = df_1h.sort_index()
+    df_5m = df_5m.sort_index()
 
-        try:
-            # 1. Load real caches
-            df_1h = pd.read_parquet(path_1h)
-            df_4h = pd.read_parquet(path_4h)
-            df_5m = pd.read_parquet(path_5m)
+    # current cursor
+    cursor_path = f"data/cursors/live_{symbol}.json"
+    cursor_ts = None
+    if os.path.exists(cursor_path):
+        with open(cursor_path) as f:
+            import json
+            cursor_ts = pd.Timestamp(json.load(f))
+            if cursor_ts.tzinfo is None:
+                cursor_ts = cursor_ts.tz_localize("UTC")
 
-            for df in (df_1h, df_4h, df_5m):
-                df.index = pd.to_datetime(df.index, utc=True)
+    # current 5M boundary
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    minutes_floored = (now.minute // 5) * 5
+    current_5m_boundary = pd.Timestamp(
+        now.replace(minute=minutes_floored, second=0, microsecond=0)
+    ).tz_convert("UTC")
 
-            df_1h = df_1h.sort_index()
-            df_4h = df_4h.sort_index()
-            df_5m = df_5m.sort_index()
+    # how many new 5M bars exist since cursor
+    new_bars_count = 0
+    if cursor_ts is not None:
+        new_bars_count = int((df_5m.index > cursor_ts).sum())
 
-            last_real_1h = df_1h.index[-1]
-            last_real_5m = df_5m.index[-1]
+    # what is the signal on the last closed 1H bar
+    now_hour = pd.Timestamp.now(tz="UTC").floor("h")
+    htf_clipped = df_4h[df_4h.index < now_hour].copy()
+    df_signals = generate_signal(df_1h.copy(), htf_clipped, live=True)
+    last_signal = int(df_signals["final_signal"].iloc[-1])
+    htf_quality = float(df_signals["HTF_QUALITY"].iloc[-1])
 
-            # 2. Compute levels from real data
-            atr        = float(atr_ema(df_1h, period=14).iloc[-1])
-            resistance = float(df_1h["high"].rolling(20).max().iloc[-1])
-            avg_vol    = float(df_1h["volume"].rolling(20).mean().iloc[-1])
-
-            # 3. Fake 1H — replaces last real bar so timestamp is in the past
-            # is_injection sets last_seen=None so cursor does not block these bars
-            fake_1h_ts = last_real_1h
-            fake_open  = resistance - atr * 0.05
-            fake_close = resistance + atr * 0.6   # clears by 0.6 ATR, threshold is 0.5
-            fake_high  = fake_close + atr * 0.1
-            fake_low   = fake_open  - atr * 0.05
-            fake_vol   = avg_vol * 3.0
-
-            fake_1h_row = pd.DataFrame([{
-                "open":   fake_open,
-                "high":   fake_high,
-                "low":    fake_low,
-                "close":  fake_close,
-                "volume": fake_vol,
-            }], index=pd.DatetimeIndex([fake_1h_ts], tz="UTC"))
-
-            # 4. Fake 5M — 12 bars anchored inside the last real hour
-            # First bar is the entry trigger, rest are quiet drift
-            fake_5m_base = last_real_1h  # start of the last real 1H bar
-            fake_5m_rows = []
-            fake_5m_timestamps = []
-
-            for i in range(12):
-                ts_5m = fake_5m_base + pd.Timedelta(minutes=5 * i)
-                fake_5m_timestamps.append(ts_5m)
-                if i == 0:
-                    o, c, h, l = fake_open, fake_close, fake_high, fake_low
-                    v = fake_vol / 4
-                else:
-                    base = fake_close + atr * 0.01 * i
-                    o = base
-                    c = base + atr * 0.005
-                    h = c    + atr * 0.01
-                    l = o    - atr * 0.005
-                    v = avg_vol / 10
-                fake_5m_rows.append({
-                    "open": o, "high": h, "low": l, "close": c, "volume": v,
-                })
-
-            fake_5m = pd.DataFrame(
-                fake_5m_rows,
-                index=pd.DatetimeIndex(fake_5m_timestamps, tz="UTC")
-            )
-
-            # 5. Build injected dataframes
-            # Replace last real 1H bar with fake breakout bar
-            df_1h_injected = pd.concat([
-                df_1h[df_1h.index < fake_1h_ts],
-                fake_1h_row,
-            ]).sort_index()
-
-            # Replace 5M bars in the last real 1H window with fake bars
-            df_5m_injected = pd.concat([
-                df_5m[df_5m.index < fake_5m_base],
-                fake_5m,
-            ])
-            df_5m_injected = df_5m_injected[
-                ~df_5m_injected.index.duplicated(keep="last")
-            ].sort_index()
-
-            # 4H stays real — HTF quality depends on real 4H bars
-            df_4h_real = df_4h.copy()
-
-            notifier.send_text(
-                f"🔧 *FAKE CANDLE BUILT*\n"
-                f"`{symbol}`\n"
-                f"1H ts: `{fake_1h_ts}`\n"
-                f"open: `{fake_open:.6f}` close: `{fake_close:.6f}`\n"
-                f"resistance: `{resistance:.6f}`\n"
-                f"breakout: `{(fake_close - resistance) / atr:.2f}` ATR\n"
-                f"volume: `{fake_vol:.0f}` (3x avg)\n"
-                f"5M bars: `12` inside last real 1H window\n"
-                f"cursor: untouched\n"
-                f"HTF: real 4H — may still block if quality < 0.45"
-            )
-
-            # 6. Call the real live runner
-            # injected_df bypasses update_symbol(), candle guard,
-            # fast-gate, cursor write, and hour memory write.
-            # Everything else is real: generate_signal(), PositionManager,
-            # notify_open(), Telegram notification.
-            result = run_hourly_for_symbol(
-                symbol,
-                injected_df=df_1h_injected,
-                injected_htf=df_4h_real,
-                injected_lltf=df_5m_injected,
-                notify_override=True,
-            )
-
-            notifier.send_text(
-                f"✅ *RUNNER RETURNED*\n"
-                f"`{symbol}`\n"
-                f"result: `{str(result)[:300]}`\n"
-                f"TRADE READY above = pipeline works end to end.\n"
-                f"No TRADE READY = blocked by HTF quality, "
-                f"compression state, or reentry lock."
-            )
-
-        except Exception as e:
-            import traceback
-            notifier.send_text(
-                f"💥 *INJECTION TEST FAILED*\n"
-                f"`{symbol}`\n"
-                f"error: `{str(e)[:300]}`\n"
-                f"trace: `{traceback.format_exc()[:500]}`"
-            )
-
-    thread = threading.Thread(target=run_injection)
-    thread.daemon = True
-    thread.start()
-
-    return {"status": "injection_test_started", "symbol": symbol}, 200
+    return {
+        "symbol": symbol,
+        "cursor_ts": str(cursor_ts),
+        "current_5m_boundary": str(current_5m_boundary),
+        "new_5m_bars_since_cursor": new_bars_count,
+        "cursor_is_current": cursor_ts >= current_5m_boundary if cursor_ts else False,
+        "last_1h_bar": str(df_1h.index[-1]),
+        "last_signal": last_signal,
+        "htf_quality": round(htf_quality, 4),
+        "htf_blocked": htf_quality <= 0.45,
+    }, 200
 
 # ==================================================
 # ENTRYPOINT
