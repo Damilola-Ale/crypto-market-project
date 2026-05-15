@@ -793,31 +793,30 @@ def htf_structural_stack(df, htf_df,
     htf['HTF_DIRECTION'] = htf['SUPERTREND']  # 1 / -1
 
     # ======================================================
-    # 2️⃣ VOLATILITY STATE (Continuous)
+    # 2️⃣ VOLATILITY STATE (History-invariant)
+    # Replace rolling percentile rank with VER ratio
+    # Same economic meaning: is volatility expanding vs baseline?
     # ======================================================
 
     htf['HTF_ATR'] = atr_ema(htf)
-    htf_vol_lookback = min(vol_lookback, max(20, len(htf) // 3))
-    htf['HTF_VOL_PCTL'] = (
-        htf['HTF_ATR']
-        .rolling(htf_vol_lookback)
-        .rank(pct=True)
-    )
+    htf['HTF_ATR_FAST'] = htf['HTF_ATR'].ewm(span=20, adjust=False).mean()
+    htf['HTF_ATR_SLOW'] = htf['HTF_ATR'].ewm(span=50, adjust=False).mean()
 
-    # Normalize to 0–1 range around expansion bias
-    htf['VOL_SCORE'] = (htf['HTF_VOL_PCTL'] - 0.5).clip(0, 1)
+    # Ratio of fast to slow ATR — bounded naturally around 1.0
+    # Does not depend on how many bars are in the window
+    ver = htf['HTF_ATR_FAST'] / (htf['HTF_ATR_SLOW'] + 1e-9)
+    htf['VOL_SCORE'] = ((ver - 0.8) / 0.4).clip(0, 1)
 
     # ======================================================
-    # 3️⃣ PARTICIPATION (Continuous)
+    # 3️⃣ PARTICIPATION (Already stable — keep as is)
     # ======================================================
 
-    htf['HTF_VOL_MA'] = htf['volume'].rolling(part_lookback).mean()
+    htf['HTF_VOL_MA'] = htf['volume'].ewm(span=part_lookback, adjust=False).mean()
     htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_MA'] + 1e-9)
-
     htf['PART_SCORE'] = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
 
     # ======================================================
-    # 4️⃣ REGIME PERSISTENCE (Continuous)
+    # 4️⃣ REGIME PERSISTENCE (Already stable — keep as is)
     # ======================================================
 
     direction_series = htf['HTF_DIRECTION']
@@ -826,56 +825,35 @@ def htf_structural_stack(df, htf_df,
         .rolling(regime_window)
         .apply(lambda x: abs(x.mean()), raw=False)
     )
-
     htf['REGIME_SCORE'] = htf['HTF_REGIME_PERSIST'].clip(0, 1)
 
     # ======================================================
-    # 5️⃣ STRUCTURE QUALITY (Continuous)
+    # 5️⃣ STRUCTURE QUALITY (Already stable — keep as is)
     # ======================================================
 
     htf['HTF_ER'] = efficiency_ratio(htf['close'], er_window)
     htf['STRUCTURE_SCORE'] = htf['HTF_ER'].clip(0, 1)
 
     # ======================================================
-    # HTF MOMENTUM (Volatility Adjusted Price Slope)
+    # HTF MOMENTUM (History-invariant)
+    # Replace hybrid_zscore with tanh normalization
+    # tanh output is always in (-1, 1) regardless of history
     # ======================================================
 
     window = 12
-
-    # price slope
-    price_slope = (
-        htf['close']
-        .diff(window)
-    )
-
-    # normalize by volatility
+    price_slope = htf['close'].diff(window)
     htf['HTF_TREND_MOMENTUM'] = (
         price_slope / (htf['HTF_ATR'] * window + 1e-9)
-    )
+    ).ewm(span=3).mean()
 
-    # smooth slightly
-    htf['HTF_TREND_MOMENTUM'] = (
-        htf['HTF_TREND_MOMENTUM']
-        .ewm(span=3)
-        .mean()
-    )
-
-    # normalize
-    htf_roll_window = min(50, max(20, len(htf) // 5))
-    htf_min_periods = min(20, max(10, len(htf) // 10))
-    htf['HTF_TREND_MOMENTUM_NORM'] = hybrid_zscore(
-        htf['HTF_TREND_MOMENTUM'],
-        roll_window=htf_roll_window,
-        min_periods=htf_min_periods
-    ).clip(-2, 2)
-
-    # convert to 0-1 score
+    # tanh squashes to (-1,1) without needing historical context
+    htf['HTF_TREND_MOMENTUM_NORM'] = np.tanh(htf['HTF_TREND_MOMENTUM'] * 3.0)
     htf['MOMENTUM_SCORE'] = (
-        (htf['HTF_TREND_MOMENTUM_NORM'] + 2) / 4
-    ).clip(0,1)
+        (htf['HTF_TREND_MOMENTUM_NORM'] + 1) / 2
+    ).clip(0, 1)
 
     # ======================================================
-    # 6️⃣ COMPOSITE QUALITY SCORE
+    # 6️⃣ COMPOSITE QUALITY SCORE (unchanged)
     # ======================================================
 
     htf['HTF_QUALITY'] = (
@@ -1620,8 +1598,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None):
     # LONG_CONDITION &= df['ENTRY_LONG']
     # SHORT_CONDITION &= df['ENTRY_SHORT']
 
-    # LONG_CONDITION &= HTF_LONG_OK
-    # SHORT_CONDITION &= HTF_SHORT_OK
+    LONG_CONDITION &= HTF_LONG_OK
+    SHORT_CONDITION &= HTF_SHORT_OK
 
     df['signal'] = 0
     df.loc[LONG_CONDITION, 'signal'] = 1

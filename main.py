@@ -76,7 +76,7 @@ def fetch_binance(symbol, interval, limit):
 # BTC, ZEN, AVAX, AXS, ORDI, LDO, FIL, LINK, ATOM, OP, FXS, LTC, SNX, CRV, RUNE
 # ==========================================================
 
-SYMBOL = "BTCUSDT"
+SYMBOL = "ETHUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -112,20 +112,9 @@ LEVERAGE = 1
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-# Evaluation window (how much you want to actually backtest)
-HTF_EVAL  = 250    # 4h candles to trade on
-LTF_EVAL  = HTF_EVAL * 4    # = 1000 1h candles
-LLTF_EVAL = LTF_EVAL * 12   # = 12000 5m candles
-
-# Warmup window (extra history for indicator calibration — discarded after signal gen)
-HTF_WARMUP  = 500
-LTF_WARMUP  = HTF_WARMUP * 4
-LLTF_WARMUP = LTF_WARMUP * 12
-
-# Total fetch limits
-HTF_LIMIT  = HTF_EVAL  + HTF_WARMUP   # = 750
-LTF_LIMIT  = LTF_EVAL  + LTF_WARMUP   # = 3000
-LLTF_LIMIT = LLTF_EVAL + LLTF_WARMUP  # = 60000
+LLTF_LIMIT = 12000
+LTF_LIMIT = 1000   # ~30 days of 1h candles
+HTF_LIMIT = 250   # ~120 days of 4h candles
 
 # LLTF_LIMIT = 6000
 # LTF_LIMIT = 500   # ~30 days of 1h candles
@@ -144,8 +133,6 @@ ltf_df = fetch_binance(SYMBOL, LTF_INTERVAL, LTF_LIMIT)
 print("Downloading HTF data (4h)...")
 htf_df = fetch_binance(SYMBOL, HTF_INTERVAL, HTF_LIMIT)
 
-print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
-
 # lltf_df.index = pd.to_datetime(lltf_df.index, utc=True)
 ltf_df.index = pd.to_datetime(ltf_df.index, utc=True)
 htf_df.index = pd.to_datetime(htf_df.index, utc=True)
@@ -157,24 +144,42 @@ htf_df.index = pd.to_datetime(htf_df.index, utc=True)
 
 # ==========================================================
 # SIGNAL GENERATION
-# Run on FULL history so hybrid_zscore anchors are properly
-# calibrated — same depth of history that live has.
-# Then trim to eval window before backtesting.
 # ==========================================================
 
-ltf_df  = generate_signal(ltf_df, htf_df, as_of=ltf_df.index[-1])
+# Walk-forward signal generation — recompute at each 4H boundary
+# so HTF data is clipped to what was available at that moment.
+# This eliminates lookahead bias in HTF_QUALITY scores.
 
-# Trim to eval window AFTER signal generation
-eval_start_htf  = htf_df.index[-HTF_EVAL]
-eval_start_ltf  = ltf_df.index[-LTF_EVAL]
-# eval_start_lltf = lltf_df.index[-LLTF_EVAL]
+htf_boundaries = htf_df[htf_df.index >= ltf_df.index[0]].index
 
-htf_df   = htf_df[htf_df.index   >= eval_start_htf].copy()
-ltf_df   = ltf_df[ltf_df.index   >= eval_start_ltf].copy()
-# lltf_df  = lltf_df[lltf_df.index >= eval_start_lltf].copy()
+signal_chunks = []
 
-print(f"[WARMUP TRIMMED] HTF: {len(htf_df)} bars | LTF: {len(ltf_df)} bars ") #| LLTF: {len(lltf_df)} bars")
-print(f"[EVAL WINDOW] {ltf_df.index[0]} → {ltf_df.index[-1]}")
+for i, boundary in enumerate(htf_boundaries):
+    # HTF visible at this boundary = all bars strictly before it
+    htf_visible = htf_df[htf_df.index < boundary - pd.Timedelta(hours=4)].copy()
+    
+    if len(htf_visible) < 20:
+        continue
+
+    # LTF chunk = bars in this 4H window
+    next_boundary = htf_boundaries[i + 1] if i + 1 < len(htf_boundaries) else ltf_df.index[-1] + pd.Timedelta(hours=1)
+    ltf_chunk = ltf_df[(ltf_df.index >= boundary) & (ltf_df.index < next_boundary)].copy()
+
+    if ltf_chunk.empty:
+        continue
+
+    # Run signal gen on full LTF history up to this boundary
+    # so LTF indicators (hybrid_zscore etc) are properly calibrated
+    ltf_up_to = ltf_df[ltf_df.index < next_boundary].copy()
+    ltf_up_to = generate_signal(ltf_up_to, htf_visible, as_of=boundary)
+
+    # Take only the chunk rows from the result
+    chunk_result = ltf_up_to[ltf_up_to.index >= boundary].copy()
+    signal_chunks.append(chunk_result)
+
+if signal_chunks:
+    ltf_df = pd.concat(signal_chunks)
+    ltf_df = ltf_df[~ltf_df.index.duplicated(keep='last')].sort_index()
 
 # ==========================================================
 # BACKTEST
