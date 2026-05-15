@@ -465,21 +465,27 @@ def debug_signal_test():
             df_4h = df_4h.sort_index()
             df_5m = df_5m.sort_index()
 
+            # enforce UTC on 4H now so injected_htf is always tz-aware
+            df_4h.index = pd.to_datetime(df_4h.index, utc=True)
+
             # ── 2. Compute levels ──────────────────────────────────
-            atr     = float(atr_ema(df_1h, period=14).iloc[-1])
-            avg_vol = float(df_1h["volume"].rolling(20).mean().iloc[-1])
+            atr        = float(atr_ema(df_1h, period=14).iloc[-1])
+            avg_vol    = float(df_1h["volume"].rolling(20).mean().iloc[-1])
             resistance = float(df_1h["high"].rolling(20).max().iloc[-1])
 
-            # ── 3. Define two fake 1H bars ─────────────────────────
-            # bar A = signal bar (last closed 1H bar)
-            #   this is where the signal is generated
-            #   entry must NOT fire here — we are still inside this bar
-            # bar B = next 1H bar (the entry bar)
-            #   this is where entry should fire on the first 5M bar
-            bar_a_ts = df_1h.index[-2]  # second to last — fully closed
-            bar_b_ts = df_1h.index[-1]  # last bar — the new candle
+            # ── 3. Define fake 1H bars ─────────────────────────────
+            # bar A = signal bar (second to last real 1H bar)
+            #   signal is generated here, entry must NOT fire yet
+            # bar B = entry bar (last real 1H bar)
+            #   entry must fire on first 5M bar here
+            # bar C = open bar (one hour after bar B)
+            #   becomes df.index[-1] in tick 2
+            #   zeroing block targets bar C window — bar B survives
+            bar_a_ts = df_1h.index[-2]
+            bar_b_ts = df_1h.index[-1]
+            bar_c_ts = bar_b_ts + pd.Timedelta(hours=1)
 
-            # ── 4. Build fake signal bar A (compression breakout) ──
+            # ── 4. Build fake bar A (signal bar — breakout) ────────
             fake_open_a  = resistance - atr * 0.05
             fake_close_a = resistance + atr * 0.6
             fake_high_a  = fake_close_a + atr * 0.1
@@ -494,7 +500,7 @@ def debug_signal_test():
                 "volume": fake_vol_a,
             }], index=pd.DatetimeIndex([bar_a_ts], tz="UTC"))
 
-            # ── 5. Build fake entry bar B (quiet continuation) ─────
+            # ── 5. Build fake bar B (entry bar — continuation) ─────
             fake_open_b  = fake_close_a + atr * 0.01
             fake_close_b = fake_open_b  + atr * 0.02
             fake_high_b  = fake_close_b + atr * 0.01
@@ -509,11 +515,24 @@ def debug_signal_test():
                 "volume": fake_vol_b,
             }], index=pd.DatetimeIndex([bar_b_ts], tz="UTC"))
 
-            # ── 6. Build fake 5M bars for bar A (signal bar) ───────
-            # 12 bars covering bar_a_ts window
-            # signal is generated but entry must not fire here
-            fake_5m_a = []
-            fake_5m_a_ts = []
+            # ── 6. Build fake bar C (open bar — quiet) ────────────
+            fake_open_c  = fake_close_b + atr * 0.005
+            fake_close_c = fake_open_c  + atr * 0.005
+            fake_high_c  = fake_close_c + atr * 0.005
+            fake_low_c   = fake_open_c  - atr * 0.005
+            fake_vol_c   = avg_vol * 0.8
+
+            fake_bar_c = pd.DataFrame([{
+                "open":   fake_open_c,
+                "high":   fake_high_c,
+                "low":    fake_low_c,
+                "close":  fake_close_c,
+                "volume": fake_vol_c,
+            }], index=pd.DatetimeIndex([bar_c_ts], tz="UTC"))
+
+            # ── 7. Build fake 5M bars for bar A (signal bar) ───────
+            fake_5m_a_rows = []
+            fake_5m_a_ts   = []
             for i in range(12):
                 ts = bar_a_ts + pd.Timedelta(minutes=5 * i)
                 fake_5m_a_ts.append(ts)
@@ -527,20 +546,18 @@ def debug_signal_test():
                     h = c    + atr * 0.005
                     l = o    - atr * 0.003
                     v = avg_vol / 10
-                fake_5m_a.append({
+                fake_5m_a_rows.append({
                     "open": o, "high": h, "low": l, "close": c, "volume": v,
                 })
 
             df_5m_a = pd.DataFrame(
-                fake_5m_a,
+                fake_5m_a_rows,
                 index=pd.DatetimeIndex(fake_5m_a_ts, tz="UTC")
             )
 
-            # ── 7. Build fake 5M bars for bar B (entry bar) ────────
-            # 12 bars covering bar_b_ts window
-            # entry MUST fire on the first bar here
-            fake_5m_b = []
-            fake_5m_b_ts = []
+            # ── 8. Build fake 5M bars for bar B (entry bar) ────────
+            fake_5m_b_rows = []
+            fake_5m_b_ts   = []
             for i in range(12):
                 ts = bar_b_ts + pd.Timedelta(minutes=5 * i)
                 fake_5m_b_ts.append(ts)
@@ -550,22 +567,34 @@ def debug_signal_test():
                 h = c    + atr * 0.003
                 l = o    - atr * 0.002
                 v = avg_vol / 8
-                fake_5m_b.append({
+                fake_5m_b_rows.append({
                     "open": o, "high": h, "low": l, "close": c, "volume": v,
                 })
 
             df_5m_b = pd.DataFrame(
-                fake_5m_b,
+                fake_5m_b_rows,
                 index=pd.DatetimeIndex(fake_5m_b_ts, tz="UTC")
             )
 
-            # ── 8. Build tick 1 injected dataframes ───────────────
-            # Tick 1: runner sees bar A as last 1H bar
-            # 5M data only goes up to end of bar A window
+            # ── 9. Build fake 5M bar for bar C (one bar only) ──────
+            df_5m_c = pd.DataFrame([{
+                "open":   fake_open_c,
+                "high":   fake_high_c,
+                "low":    fake_low_c,
+                "close":  fake_close_c,
+                "volume": fake_vol_c,
+            }], index=pd.DatetimeIndex([bar_c_ts], tz="UTC"))
+
+            # ── 10. Build tick 1 dataframes ────────────────────────
+            # Tick 1: bar A is df.index[-1]
+            # 5M data covers bar A only
+            # zeroing block targets bar A — no entry expected
+            # cursor advances to end of bar A 5M window
             df_1h_tick1 = pd.concat([
                 df_1h[df_1h.index < bar_a_ts],
                 fake_bar_a,
             ]).sort_index()
+            df_1h_tick1.index = pd.to_datetime(df_1h_tick1.index, utc=True)
 
             df_5m_tick1 = pd.concat([
                 df_5m[df_5m.index < bar_a_ts],
@@ -574,24 +603,29 @@ def debug_signal_test():
             df_5m_tick1 = df_5m_tick1[
                 ~df_5m_tick1.index.duplicated(keep="last")
             ].sort_index()
+            df_5m_tick1.index = pd.to_datetime(df_5m_tick1.index, utc=True)
 
-            # ── 9. Generate signals for tick 1, force all gates ────
+            # ── 11. Generate signals tick 1, force all gates ───────
             now_hour    = pd.Timestamp.now(tz="UTC").floor("h")
             htf_clipped = df_4h[df_4h.index < now_hour].copy()
+            htf_clipped.index = pd.to_datetime(htf_clipped.index, utc=True)
 
             df_sig_tick1 = generate_signal(
-                df_1h_tick1.copy(), htf_clipped, live=True
+                df_1h_tick1.copy(), htf_clipped.copy(), live=True
             )
+            df_sig_tick1.index = pd.to_datetime(df_sig_tick1.index, utc=True)
 
-            for col, val in [
-                ("HTF_QUALITY", 1.0), ("HTF_DIRECTION", 1),
-                ("COMPRESSION_OK", True), ("COMPRESSION_BARS", 10),
-                ("VALID_BREAK_LONG", True), ("EARLY_EXPANSION", True),
-                ("ENTRY_LONG", True), ("signal", 1), ("final_signal", 1),
-            ]:
-                df_sig_tick1[col] = pd.Series(val, index=df_sig_tick1.index)
+            df_sig_tick1["HTF_QUALITY"]      = 1.0
+            df_sig_tick1["HTF_DIRECTION"]    = 1
+            df_sig_tick1["COMPRESSION_OK"]   = True
+            df_sig_tick1["COMPRESSION_BARS"] = 10
+            df_sig_tick1["VALID_BREAK_LONG"] = True
+            df_sig_tick1["EARLY_EXPANSION"]  = True
+            df_sig_tick1["ENTRY_LONG"]       = True
+            df_sig_tick1["signal"]           = 1
+            df_sig_tick1["final_signal"]     = 1
 
-            # ── 10. Clear blocking state before tick 1 ─────────────
+            # ── 12. Clear blocking state ───────────────────────────
             if os.path.exists(reentry_lock_path):
                 with open(reentry_lock_path, "r") as f:
                     lock_data = json.load(f)
@@ -604,39 +638,29 @@ def debug_signal_test():
                 with open(executed_signals_path, "w") as f:
                     json.dump([], f)
 
-            # set cursor to just before bar A 5M bars
-            # so runner sees all of bar A as new bars
             injection_cursor_tick1 = bar_a_ts - pd.Timedelta(seconds=1)
-
-            # ── 11. Read cursor before tick 1 ─────────────────────
-            cursor_before_tick1 = _read(cursor_path)
+            cursor_before_tick1    = _read(cursor_path)
 
             notifier.send_text(
                 f"🕐 *TICK 1 — SIGNAL BAR*\n"
                 f"`{symbol}`\n"
                 f"bar A ts: `{bar_a_ts}` (signal bar)\n"
                 f"bar B ts: `{bar_b_ts}` (entry bar)\n"
+                f"bar C ts: `{bar_c_ts}` (open bar — df.index[-1] in tick 2)\n"
                 f"cursor before tick 1: `{cursor_before_tick1}`\n"
                 f"all gates forced — calling runner..."
             )
 
-            # ── 12. Run tick 1 ─────────────────────────────────────
-            # Runner should:
-            # - process 12 fake 5M bars of bar A
-            # - find final_signal=1 on them
-            # - NOT enter because signal_bar_ts zeroing block zeros
-            #   out signal on bars within bar A window
-            # - advance cursor to end of bar A 5M window
+            # ── 13. Run tick 1 ─────────────────────────────────────
             result_tick1 = run_hourly_for_symbol(
                 symbol,
                 injected_df=df_sig_tick1,
-                injected_htf=df_4h.copy(),
+                injected_htf=htf_clipped.copy(),
                 injected_lltf=df_5m_tick1,
                 notify_override=True,
-                replay_cursor=injection_cursor_tick1,
+                injection_cursor=injection_cursor_tick1,
             )
 
-            # read cursor after tick 1
             cursor_after_tick1 = _read(cursor_path)
 
             notifier.send_text(
@@ -646,103 +670,73 @@ def debug_signal_test():
                 f"cursor after:  `{cursor_after_tick1}`\n"
                 f"result: `{str(result_tick1)[:200]}`\n"
                 f"cursor advanced: `{cursor_after_tick1 != cursor_before_tick1}`\n"
-                f"no entry expected here — entry fires on tick 2"
+                f"no entry expected — zeroing block covers bar A window\n"
+                f"entry fires on tick 2 bar B 5M bars"
             )
 
-            # ── 13. Build tick 2 injected dataframes ──────────────
-            # Tick 2: runner sees bar B as last 1H bar
-            # 5M data now includes bar B bars
-            # signal forward-fills from bar A onto bar B 5M bars
-            # entry must fire on first 5M bar of bar B
+            # ── 14. Build tick 2 dataframes ────────────────────────
+            # Tick 2: bar C is df.index[-1]
+            # 5M data covers bar A + bar B + bar C
+            # zeroing block targets bar C window only
+            # bar B 5M bars survive — entry fires on first bar of bar B
+            # cursor is at end of bar A — bar B and bar C are new bars
             df_1h_tick2 = pd.concat([
                 df_1h[df_1h.index < bar_a_ts],
                 fake_bar_a,
                 fake_bar_b,
+                fake_bar_c,
             ]).sort_index()
+            df_1h_tick2.index = pd.to_datetime(df_1h_tick2.index, utc=True)
 
             df_5m_tick2 = pd.concat([
                 df_5m[df_5m.index < bar_a_ts],
                 df_5m_a,
                 df_5m_b,
+                df_5m_c,
             ])
             df_5m_tick2 = df_5m_tick2[
                 ~df_5m_tick2.index.duplicated(keep="last")
             ].sort_index()
+            df_5m_tick2.index = pd.to_datetime(df_5m_tick2.index, utc=True)
 
+            # ── 15. Generate signals tick 2, force all gates ───────
             df_sig_tick2 = generate_signal(
-                df_1h_tick2.copy(), htf_clipped, live=True
+                df_1h_tick2.copy(), htf_clipped.copy(), live=True
             )
+            df_sig_tick2.index = pd.to_datetime(df_sig_tick2.index, utc=True)
 
-            for col, val in [
-                ("HTF_QUALITY", 1.0), ("HTF_DIRECTION", 1),
-                ("COMPRESSION_OK", True), ("COMPRESSION_BARS", 10),
-                ("VALID_BREAK_LONG", True), ("EARLY_EXPANSION", True),
-                ("ENTRY_LONG", True), ("signal", 1), ("final_signal", 1),
-            ]:
-                df_sig_tick2[col] = pd.Series(val, index=df_sig_tick2.index)
+            df_sig_tick2["HTF_QUALITY"]      = 1.0
+            df_sig_tick2["HTF_DIRECTION"]    = 1
+            df_sig_tick2["COMPRESSION_OK"]   = True
+            df_sig_tick2["COMPRESSION_BARS"] = 10
+            df_sig_tick2["VALID_BREAK_LONG"] = True
+            df_sig_tick2["EARLY_EXPANSION"]  = True
+            df_sig_tick2["ENTRY_LONG"]       = True
+            df_sig_tick2["signal"]           = 1
+            df_sig_tick2["final_signal"]     = 1
 
             # cursor for tick 2 = end of bar A 5M window
-            # runner should only see bar B 5M bars as new
+            # runner sees bar B and bar C 5M bars as new
             injection_cursor_tick2 = df_5m_a.index[-1]
 
             notifier.send_text(
                 f"🕑 *TICK 2 — ENTRY BAR*\n"
                 f"`{symbol}`\n"
-                f"cursor set to end of bar A: `{injection_cursor_tick2}`\n"
-                f"runner will see `{len(df_5m_b)}` new 5M bars\n"
-                f"entry expected on first bar: `{bar_b_ts}`\n"
+                f"cursor set to: `{injection_cursor_tick2}` (end of bar A)\n"
+                f"new bars: bar B (`{len(df_5m_b)}`) + bar C (`{len(df_5m_c)}`)\n"
+                f"zeroing targets bar C window — bar B survives\n"
+                f"entry expected on: `{bar_b_ts + pd.Timedelta(minutes=5)}` (XX:05)\n"
                 f"calling runner..."
             )
 
-            # ── 14. Run tick 2 ─────────────────────────────────────
-            # Runner should:
-            # - see bar B 5M bars as new (cursor is at end of bar A)
-            # - find final_signal=1 forward-filled onto bar B bars
-            # - signal_bar_ts = bar_b_ts (last 1H bar)
-            # - bar B 5M bars are inside bar_b_ts window — zeroed out
-            #
-            # WAIT — this is still the same zeroing problem.
-            # bar B 5M bars sit inside bar_b_ts + 1H window.
-            # They will be zeroed. Entry will not fire.
-            #
-            # The zeroing block zeros signal on bars where
-            # index >= signal_bar_ts AND index <= signal_bar_ts + 1H
-            # signal_bar_ts = df.index[-1] = bar_b_ts
-            # bar B 5M bars start at bar_b_ts — all zeroed.
-            #
-            # This means the zeroing block is PREVENTING entry
-            # on the first 5M bar of the new candle.
-            # That is actually a bug in the real live system too.
-            # Entry can never fire on 5M bars within the last 1H bar.
-            #
-            # The test exposes this. Stopping here and reporting.
-
-            notifier.send_text(
-                f"🚨 *CURSOR TEST FOUND A REAL BUG*\n"
-                f"`{symbol}`\n"
-                f"The signal_bar zeroing block in run_hourly_for_symbol() "
-                f"zeros final_signal on ALL 5M bars where:\n"
-                f"index >= df.index[-1] AND index <= df.index[-1] + 1H\n"
-                f"\n"
-                f"This means entry can NEVER fire on 5M bars "
-                f"inside the current last 1H bar window.\n"
-                f"\n"
-                f"In practice this means: when the new 1H candle opens "
-                f"and becomes df.index[-1], its 5M bars are all zeroed.\n"
-                f"Entry only fires on 5M bars of the PREVIOUS 1H bar "
-                f"if that bar is no longer df.index[-1].\n"
-                f"\n"
-                f"Check: is this intentional? Or is entry "
-                f"systematically delayed by one full 1H bar?"
-            )
-
+            # ── 16. Run tick 2 ─────────────────────────────────────
             result_tick2 = run_hourly_for_symbol(
                 symbol,
                 injected_df=df_sig_tick2,
-                injected_htf=df_4h.copy(),
+                injected_htf=htf_clipped.copy(),
                 injected_lltf=df_5m_tick2,
                 notify_override=True,
-                replay_cursor=injection_cursor_tick2,
+                injection_cursor=injection_cursor_tick2,
             )
 
             cursor_after_tick2 = _read(cursor_path)
@@ -752,8 +746,8 @@ def debug_signal_test():
                 f"`{symbol}`\n"
                 f"cursor after tick 2: `{cursor_after_tick2}`\n"
                 f"result: `{str(result_tick2)[:200]}`\n"
-                f"TRADE READY = entry fired correctly\n"
-                f"No TRADE READY = zeroing block killed the signal"
+                f"TRADE READY above = cursor and entry pipeline work.\n"
+                f"No TRADE READY = check runner logs for block reason."
             )
 
         except Exception as e:
@@ -783,6 +777,62 @@ def debug_signal_test():
     thread.start()
 
     return {"status": "cursor_test_started", "symbol": symbol}, 200
+
+
+@app.route("/debug/cursor-health")
+def debug_cursor_health():
+    """
+    Checks cursor state across all symbols and flags gaps.
+    A 1-bar gap (5 minutes) is normal — cron hasn't fired yet.
+    A 2+ bar gap means the cron fired but the cursor didn't advance,
+    or update_symbol() returned early via fast-exit before processing.
+    """
+    import pandas as pd
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    minutes_floored = (now.minute // 5) * 5
+    current_5m_boundary = pd.Timestamp(
+        now.replace(minute=minutes_floored, second=0, microsecond=0)
+    ).tz_convert("UTC")
+
+    cursor_dir = "data/cursors"
+    results = {}
+
+    if not os.path.exists(cursor_dir):
+        return {"error": "no cursor directory"}, 500
+
+    for fname in sorted(os.listdir(cursor_dir)):
+        if not fname.startswith("live_"):
+            continue
+        symbol = fname.replace("live_", "").replace(".json", "")
+        fpath  = os.path.join(cursor_dir, fname)
+        try:
+            with open(fpath) as f:
+                raw = json.load(f)
+            cursor_ts = pd.Timestamp(raw).tz_convert("UTC")
+            gap_seconds = (current_5m_boundary - cursor_ts).total_seconds()
+            gap_bars    = int(gap_seconds // 300)  # 300s = 5 minutes
+            results[symbol] = {
+                "cursor_ts":            str(cursor_ts),
+                "current_5m_boundary":  str(current_5m_boundary),
+                "gap_bars":             gap_bars,
+                "gap_minutes":          int(gap_seconds // 60),
+                "status": (
+                    "ok"       if gap_bars <= 1 else
+                    "warning"  if gap_bars <= 3 else
+                    "critical"
+                ),
+                "note": (
+                    "normal — cron hasnt fired yet"         if gap_bars <= 1 else
+                    "cron fired but cursor didnt advance"   if gap_bars <= 3 else
+                    "cursor significantly behind — check fast-exit or cron health"
+                ),
+            }
+        except Exception as e:
+            results[symbol] = {"error": str(e)}
+
+    return {"server_time_utc": now.isoformat(), "cursors": results}, 200
 
 # ==================================================
 # ENTRYPOINT

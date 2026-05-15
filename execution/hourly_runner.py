@@ -144,6 +144,7 @@ def run_hourly_for_symbol(
     injected_df=None,
     injected_htf=None,
     injected_lltf=None,
+    injection_cursor=None,
 ):
     is_injection = injected_df is not None
     is_live = not replay and forced_time is None
@@ -245,6 +246,11 @@ def run_hourly_for_symbol(
                 df      = injected_df.copy()
                 htf_df  = injected_htf.copy()
                 lltf_df = injected_lltf.copy()
+                # normalize all indexes to consistent UTC representation
+                # prevents searchsorted and reindex from failing on tz mismatch
+                df.index      = pd.to_datetime(df.index,      utc=True)
+                htf_df.index  = pd.to_datetime(htf_df.index,  utc=True)
+                lltf_df.index = pd.to_datetime(lltf_df.index, utc=True)
             elif forced_time is None and not replay:
                 df, htf_df, lltf_df = update_symbol(symbol)
             else:
@@ -304,7 +310,12 @@ def run_hourly_for_symbol(
         # -------------------
         # GENERATE & MAP SIGNALS
         # -------------------
-        df = generate_signal(df.copy(), htf_df.copy(), live=is_live)
+        if is_injection:
+            # signals already generated and force-patched by caller
+            # skipping generate_signal() preserves forced column values
+            pass
+        else:
+            df = generate_signal(df.copy(), htf_df.copy(), live=is_live)
 
         _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
         _htf_direction = int(df['HTF_DIRECTION'].iloc[-1])
@@ -406,11 +417,18 @@ def run_hourly_for_symbol(
             last_seen = pd.Timestamp(raw) if raw else None
 
         if is_injection:
-            last_seen = None
+            # normalize injection_cursor to same UTC repr as lltf_frozen.index
+            # so the > comparison in new_bars doesn't fail on tz mismatch
+            if injection_cursor is not None:
+                last_seen = pd.Timestamp(injection_cursor).tz_localize("UTC") \
+                    if pd.Timestamp(injection_cursor).tzinfo is None \
+                    else pd.Timestamp(injection_cursor).tz_convert("UTC")
+            else:
+                last_seen = None
         elif is_live and last_seen == latest_ts:
             return None
 
-        if last_seen is None and not replay and not forced_time:
+        if last_seen is None and not replay and not forced_time and not is_injection:
             notifier.send_text(
                 f"⚠️ *CURSOR RESET DETECTED*\n"
                 f"Symbol: `{symbol}`\n"
