@@ -138,11 +138,13 @@ class PositionManager:
                 self._bar_history[symbol] = self._bar_history[symbol][-200:]
 
             # DEFINE THIS EARLY (BEFORE USING IT)
-            is_entry_candle = pd.Timestamp(position["entry_5m_ts"]) == current_ts
-            # print(f"[DEBUG] bars_in_trade={position['bars_in_trade']} is_entry_candle={is_entry_candle} entry_5m_ts={position['entry_5m_ts']} current_ts={current_ts}")
+            _entry_ts = pd.Timestamp(position["entry_5m_ts"])
+            if _entry_ts.tzinfo is None:
+                _entry_ts = _entry_ts.tz_localize("UTC")
+            _current_ts_norm = current_ts if current_ts.tzinfo is not None else pd.Timestamp(current_ts).tz_localize("UTC")
+            is_entry_candle = _entry_ts == _current_ts_norm
 
             if is_entry_candle:
-                # still allow bar history update + ATR tracking
                 skip_exit_checks = True
             else:
                 skip_exit_checks = False
@@ -252,7 +254,7 @@ class PositionManager:
 
             # increment real trade age AFTER exit checks (backtest parity)
             position["bars_in_trade"] += 1
-            bars_5m = position["bars_in_trade"]
+            self._dirty = True
         
         # =====================================================
         # 🔓 REENTRY UNLOCK LOGIC

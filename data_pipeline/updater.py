@@ -301,14 +301,15 @@ def update_symbol(symbol: str):
     # The 16:00 bar closes exactly at 20:00 — we exclude it at the boundary to be safe.
     hours_into_cycle = now_hour.hour % 4
     last_closed_4h = now_hour - timedelta(hours=hours_into_cycle) - timedelta(hours=4)
+    current_4h_open = last_closed_4h + timedelta(hours=4)
 
     df_htf = df_htf.sort_index()
     df_htf = df_htf[df_htf.index >= start_required]
-    df_htf = df_htf[df_htf.index <= last_closed_4h]
+    df_htf = df_htf[df_htf.index <= current_4h_open]
     df_htf = df_htf.iloc[-HOURS_LOOKBACK:]
     validate_ohlcv(df_htf, symbol, freq=HTF_INTERVAL)
 
-    print(f"[DEBUG] live htf_df last={df_htf.index[-1]} len={len(df_htf)} last_closed_4h={last_closed_4h}")
+    print(f"[DEBUG] live htf_df last={df_htf.index[-1]} len={len(df_htf)} current_4h_open={current_4h_open}")
 
     print("[HTF] candles:", len(df_htf))
 
