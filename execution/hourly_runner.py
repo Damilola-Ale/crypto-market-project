@@ -239,14 +239,17 @@ def run_hourly_for_symbol(
         # -------------------
         try:
             if forced_time is None and not replay:
-                df, htf_df, lltf_df = update_symbol(symbol)
+                df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
             else:
-                df, htf_df, lltf_df = update_symbol(symbol)
+                df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
 
                 if forced_time:
                     df      = df[df.index <= forced_time].copy()
                     htf_df  = htf_df[htf_df.index <= forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
+                    # trim scores to forced_time as well
+                    if htf_scores is not None:
+                        htf_scores = htf_scores[htf_scores.index <= forced_time].copy()
 
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
                         _tg_debug(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
@@ -306,7 +309,7 @@ def run_hourly_for_symbol(
         # -------------------
         # GENERATE & MAP SIGNALS
         # -------------------
-        df = generate_signal(df.copy(), htf_df.copy(), live=is_live, symbol=symbol)
+        df = generate_signal(df.copy(), htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
 
         _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
         _htf_direction = int(df['HTF_DIRECTION'].iloc[-1])

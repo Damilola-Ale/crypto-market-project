@@ -781,48 +781,35 @@ def pressure_volatility(df, period=20, alpha=0.2):
     pv = df['COMPOSITE_PRESSURE'].ewm(alpha=alpha, adjust=False).std()
     return pv
 
-def htf_structural_stack(df, htf_df,
-                         vol_lookback=200,
-                         part_lookback=50,
-                         regime_window=10,
-                         er_window=20):
-
+def compute_htf_scores(htf_df,
+                       part_lookback=50,
+                       regime_window=10,
+                       er_window=20):
+    """
+    Pure HTF computation — no dependency on LTF index.
+    Run this once per 4H close and cache the result.
+    Returns a DataFrame with HTF_DIRECTION and HTF_QUALITY
+    indexed on the 4H timestamps only.
+    """
     htf = htf_df.copy()
 
-    # ======================================================
-    # 1️⃣ DIRECTION (Hard Anchor)
-    # ======================================================
-
+    # 1. DIRECTION
     htf = supertrend(htf, period=10, multiplier=3)
-    htf['HTF_DIRECTION'] = htf['SUPERTREND']  # 1 / -1
+    htf['HTF_DIRECTION'] = htf['SUPERTREND']
 
-    # ======================================================
-    # 2️⃣ VOLATILITY STATE (History-invariant)
-    # Replace rolling percentile rank with VER ratio
-    # Same economic meaning: is volatility expanding vs baseline?
-    # ======================================================
-
+    # 2. VOLATILITY STATE
     htf['HTF_ATR'] = atr_ema(htf)
     htf['HTF_ATR_FAST'] = htf['HTF_ATR'].ewm(span=20, adjust=False).mean()
     htf['HTF_ATR_SLOW'] = htf['HTF_ATR'].ewm(span=50, adjust=False).mean()
-
-    # Ratio of fast to slow ATR — bounded naturally around 1.0
-    # Does not depend on how many bars are in the window
     ver = htf['HTF_ATR_FAST'] / (htf['HTF_ATR_SLOW'] + 1e-9)
     htf['VOL_SCORE'] = ((ver - 0.8) / 0.4).clip(0, 1)
 
-    # ======================================================
-    # 3️⃣ PARTICIPATION (Already stable — keep as is)
-    # ======================================================
-
+    # 3. PARTICIPATION
     htf['HTF_VOL_MA'] = htf['volume'].ewm(span=part_lookback, adjust=False).mean()
     htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_MA'] + 1e-9)
     htf['PART_SCORE'] = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
 
-    # ======================================================
-    # 4️⃣ REGIME PERSISTENCE (Already stable — keep as is)
-    # ======================================================
-
+    # 4. REGIME PERSISTENCE
     direction_series = htf['HTF_DIRECTION']
     htf['HTF_REGIME_PERSIST'] = (
         direction_series
@@ -831,35 +818,22 @@ def htf_structural_stack(df, htf_df,
     )
     htf['REGIME_SCORE'] = htf['HTF_REGIME_PERSIST'].clip(0, 1)
 
-    # ======================================================
-    # 5️⃣ STRUCTURE QUALITY (Already stable — keep as is)
-    # ======================================================
-
+    # 5. STRUCTURE QUALITY
     htf['HTF_ER'] = efficiency_ratio(htf['close'], er_window)
     htf['STRUCTURE_SCORE'] = htf['HTF_ER'].clip(0, 1)
 
-    # ======================================================
-    # HTF MOMENTUM (History-invariant)
-    # Replace hybrid_zscore with tanh normalization
-    # tanh output is always in (-1, 1) regardless of history
-    # ======================================================
-
+    # 6. HTF MOMENTUM
     window = 12
     price_slope = htf['close'].diff(window)
     htf['HTF_TREND_MOMENTUM'] = (
         price_slope / (htf['HTF_ATR'] * window + 1e-9)
     ).ewm(span=3).mean()
-
-    # tanh squashes to (-1,1) without needing historical context
     htf['HTF_TREND_MOMENTUM_NORM'] = np.tanh(htf['HTF_TREND_MOMENTUM'] * 3.0)
     htf['MOMENTUM_SCORE'] = (
         (htf['HTF_TREND_MOMENTUM_NORM'] + 1) / 2
     ).clip(0, 1)
 
-    # ======================================================
-    # 6️⃣ COMPOSITE QUALITY SCORE (unchanged)
-    # ======================================================
-
+    # 7. COMPOSITE QUALITY
     htf['HTF_QUALITY'] = (
         0.25 * htf['VOL_SCORE'] +
         0.20 * htf['PART_SCORE'] +
@@ -868,15 +842,37 @@ def htf_structural_stack(df, htf_df,
         0.15 * htf['MOMENTUM_SCORE']
     )
 
-    # ======================================================
-    # ALIGN TO LTF
-    # ======================================================
+    return htf[['HTF_DIRECTION', 'HTF_QUALITY']]
 
-    htf_aligned = htf[['HTF_DIRECTION', 'HTF_QUALITY']].shift(1)
 
-    aligned = htf_aligned.reindex(df.index, method='ffill')
-
+def align_htf_scores(htf_scores, df, is_live=False):
+    """
+    Cheap alignment step — reindex precomputed HTF scores onto LTF index.
+    Run this every hour. htf_scores comes from compute_htf_scores (cached).
+    """
+    shift_n = 0 if is_live else 1
+    htf_shifted = htf_scores.shift(shift_n)
+    aligned = htf_shifted.reindex(df.index, method='ffill')
     return aligned.fillna(0)
+
+
+def htf_structural_stack(df, htf_df,
+                         vol_lookback=200,
+                         part_lookback=50,
+                         regime_window=10,
+                         er_window=20,
+                         is_live=False):
+    """
+    Backward-compatible wrapper. Used in backtest and anywhere a precomputed
+    cache isn't available. Internally calls the split functions.
+    """
+    htf_scores = compute_htf_scores(
+        htf_df,
+        part_lookback=part_lookback,
+        regime_window=regime_window,
+        er_window=er_window,
+    )
+    return align_htf_scores(htf_scores, df, is_live=is_live)
 
 # ==========================================================
 # VOLATILITY SHOCK DETECTOR
@@ -1428,7 +1424,7 @@ def entry_location_filter(df, lookback=20):
 # ==========================================================
 # INTEGRATE INTO SIGNAL GENERATION
 # ==========================================================
-def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"):
+def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?", htf_stack_cache=None):
     if df.empty:
         return df
 
@@ -1484,7 +1480,12 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # NEW HTF STRUCTURAL STACK
     # =========================
 
-    htf_stack = htf_structural_stack(df, htf_df)
+    if htf_stack_cache is not None:
+        # Use precomputed 4H scores, just reindex onto current LTF df
+        htf_stack = align_htf_scores(htf_stack_cache, df, is_live=live)
+    else:
+        # Fallback: full recompute (backtest path, or cache unavailable)
+        htf_stack = htf_structural_stack(df, htf_df, is_live=live)
 
     df = pd.concat([df, htf_stack], axis=1)
 

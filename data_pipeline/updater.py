@@ -126,12 +126,22 @@ def update_symbol(symbol: str):
                 df_htf  = pd.read_parquet(path_htf)
                 df_htf.index  = pd.to_datetime(df_htf.index,  utc=True)
                 df = df[df.index <= now_hour - timedelta(hours=1)]
-                # include current open 4H bar as shift(1) landing pad
                 hours_into_cycle = now_hour.hour % 4
                 _last_closed_4h = now_hour - timedelta(hours=hours_into_cycle) - timedelta(hours=4)
                 _current_4h_open = _last_closed_4h + timedelta(hours=4)
                 df_htf = df_htf[df_htf.index < _current_4h_open]
-                return df, df_htf, df_lltf
+
+                # Load HTF scores cache for fast-exit path
+                _htf_scores = None
+                _path_htf_scores = _cache_path(symbol, "htf_scores")
+                if os.path.exists(_path_htf_scores):
+                    try:
+                        _htf_scores = pd.read_parquet(_path_htf_scores)
+                        _htf_scores.index = pd.to_datetime(_htf_scores.index, utc=True)
+                    except Exception:
+                        _htf_scores = None
+
+                return df, df_htf, df_lltf, _htf_scores
         except Exception as e:
             import pyarrow.lib as _pal
             # ArrowInvalid inherits from ValueError — must check isinstance
@@ -315,6 +325,38 @@ def update_symbol(symbol: str):
     print("[HTF] candles:", len(df_htf))
 
     # --------------------------------------------------
+    # HTF SCORES CACHE (compute once per 4H close)
+    # --------------------------------------------------
+    from indicators.indicators import compute_htf_scores
+
+    path_htf_scores = _cache_path(symbol, "htf_scores")
+    htf_scores = None
+    last_scores_ts = None
+
+    if os.path.exists(path_htf_scores):
+        try:
+            htf_scores = pd.read_parquet(path_htf_scores)
+            htf_scores.index = pd.to_datetime(htf_scores.index, utc=True)
+            last_scores_ts = htf_scores.index[-1]
+        except Exception as e:
+            print(f"[HTF SCORES] cache load failed: {e}, recomputing")
+            htf_scores = None
+            last_scores_ts = None
+
+    htf_last_ts = df_htf.index[-1]
+
+    if last_scores_ts is None or last_scores_ts < htf_last_ts:
+        print(f"[HTF SCORES] recomputing — scores_last={last_scores_ts} htf_last={htf_last_ts}")
+        htf_scores = compute_htf_scores(df_htf)
+
+        tmp_scores = path_htf_scores + ".tmp"
+        htf_scores.to_parquet(tmp_scores)
+        os.replace(tmp_scores, path_htf_scores)
+        print(f"[HTF SCORES] saved — {len(htf_scores)} bars, last={htf_scores.index[-1]}")
+    else:
+        print(f"[HTF SCORES] cache current — last={last_scores_ts}")
+
+    # --------------------------------------------------
     # SAVE ATOMIC
     # --------------------------------------------------
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -386,4 +428,4 @@ def update_symbol(symbol: str):
 
     print("[SAVE] LLTF cache updated | candles:", len(df_lltf))
 
-    return df, df_htf, df_lltf
+    return df, df_htf, df_lltf, htf_scores
