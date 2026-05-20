@@ -81,6 +81,10 @@ def update_symbol(symbol: str):
     now_hour = now.replace(minute=0, second=0, microsecond=0)
     start_required = now_hour - timedelta(hours=HOURS_LOOKBACK)
 
+    # Compute 4H boundary once — used in both fast-exit and slow paths
+    hours_into_cycle = now_hour.hour % 4
+    current_4h_open = now_hour - timedelta(hours=hours_into_cycle)
+
     # --------------------------------------------------
     # FAST EARLY-EXIT — nothing new to fetch
     # --------------------------------------------------
@@ -299,9 +303,6 @@ def update_symbol(symbol: str):
     # Example: now_hour=21:00 → 21%4=1 → last_closed_4h = 21:00 - 1h - 4h = 16:00 ✓
     # Example: now_hour=20:00 → 20%4=0 → last_closed_4h = 20:00 - 0h - 4h = 16:00 ✓
     # The 16:00 bar closes exactly at 20:00 — we exclude it at the boundary to be safe.
-    hours_into_cycle = now_hour.hour % 4
-    last_closed_4h = now_hour - timedelta(hours=hours_into_cycle) - timedelta(hours=4)
-    current_4h_open = last_closed_4h + timedelta(hours=4)
 
     df_htf = df_htf.sort_index()
     df_htf = df_htf[df_htf.index >= start_required]
