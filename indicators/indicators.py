@@ -172,67 +172,42 @@ def pressure_state(df):
     return df
 
 # ==========================================================
-# INSTITUTIONAL PARTICIPATION (Magnitude-Aware VWM)
-# ==========================================================
-# ==========================================================
 # INSTITUTIONAL PARTICIPATION (SIGNED DOLLAR FLOW MODEL)
 # ==========================================================
 def participation_state(df, lookback=20, threshold=0.5):
 
-    # ------------------------------------------------------
-    # 1️⃣ Signed institutional flow
-    # ------------------------------------------------------
+    # ── 1. Signed institutional flow ─────────────────────────────
     df['FLOW'] = df['volume'] * (df['close'] - df['open'])
 
-    # ------------------------------------------------------
-    # 2️⃣ Normalize by rolling volatility (z-score style)
-    # ------------------------------------------------------
-    df['FLOW_Z'] = hybrid_zscore(df['FLOW'])
+    # ── 2. Recursive flow normalization ──────────────────────────
+    df['FLOW_Z'] = _ewma_zscore_series(df['FLOW'], alpha=0.05, min_periods=20)
 
-    # ------------------------------------------------------
-    # 3️⃣ Capital accumulation (rolling flow)
-    # ------------------------------------------------------
-    df['FLOW_ROLL'] = df['FLOW_Z'].rolling(lookback).mean()
+    # ── 3. Capital accumulation — EWM instead of rolling mean ────
+    df['FLOW_ROLL'] = df['FLOW_Z'].ewm(span=lookback, adjust=False).mean()
 
-    # ------------------------------------------------------
-    # 4️⃣ Institutional accumulation detector
-    # ------------------------------------------------------
+    # ── 4. Stealth accumulation ───────────────────────────────────
+    # ewm(span=10).mean() * 10 is a weighted sum proxy, no hard window
+    df['ACCUMULATION'] = df['FLOW_Z'].ewm(span=10, adjust=False).mean() * 10
 
-    # Cumulative capital inflow
-    df['ACCUMULATION'] = df['FLOW_Z'].rolling(10).sum()
-
-    # Price drift over same window
     price_drift = df['close'].pct_change(10)
-
-    # Normalize drift by volatility so regime independent
-    vol = df['close'].pct_change().rolling(50).std()
-
+    vol = df['close'].pct_change().ewm(span=50, adjust=False).std()
     df['PRICE_DRIFT_NORM'] = price_drift / (vol + 1e-9)
 
-    # Stealth accumulation condition
     df['STEALTH_ACCUM'] = (
-        (df['ACCUMULATION'] > 1.5) &      # sustained positive flow
-        (df['PRICE_DRIFT_NORM'].abs() < 0.5)  # price not moving much
+        (df['ACCUMULATION'] > 1.5) &
+        (df['PRICE_DRIFT_NORM'].abs() < 0.5)
     )
-
-    # Distribution version
     df['STEALTH_DISTRIB'] = (
         (df['ACCUMULATION'] < -1.5) &
         (df['PRICE_DRIFT_NORM'].abs() < 0.5)
     )
 
-    # ------------------------------------------------------
-    # 4️⃣ Final flow strength metric
-    # ------------------------------------------------------
+    # ── 5. Flow strength ──────────────────────────────────────────
     df['FLOW_STRENGTH'] = df['FLOW_ROLL']
-
-    # Boost if stealth accumulation detected
-    df.loc[df['STEALTH_ACCUM'], 'FLOW_STRENGTH'] += 0.5
+    df.loc[df['STEALTH_ACCUM'],   'FLOW_STRENGTH'] += 0.5
     df.loc[df['STEALTH_DISTRIB'], 'FLOW_STRENGTH'] -= 0.5
 
-    # ------------------------------------------------------
-    # 5️⃣ Participation classification
-    # ------------------------------------------------------
+    # ── 6. Classification ─────────────────────────────────────────
     df['PARTICIPATION'] = np.select(
         [
             df['FLOW_STRENGTH'] > threshold,
@@ -786,59 +761,60 @@ def compute_htf_scores(htf_df,
                        regime_window=10,
                        er_window=20):
     """
-    Pure HTF computation — no dependency on LTF index.
-    Run this once per 4H close and cache the result.
-    Returns a DataFrame with HTF_DIRECTION and HTF_QUALITY
-    indexed on the 4H timestamps only.
+    Fully recursive HTF quality scorer.
+    All components use EWM or causal online estimators.
+    No rolling windows → identical backtest/live output.
     """
     htf = htf_df.copy()
 
-    # 1. DIRECTION
+    # ── 1. DIRECTION ─────────────────────────────────────────────
     htf = supertrend(htf, period=10, multiplier=3)
     htf['HTF_DIRECTION'] = htf['SUPERTREND']
 
-    # 2. VOLATILITY STATE
-    # 2. VOLATILITY STATE
-    htf['HTF_ATR'] = atr_ema(htf)
-    htf['HTF_ATR_FAST'] = htf['HTF_ATR'].ewm(span=20, adjust=False, min_periods=20).mean()
-    htf['HTF_ATR_SLOW'] = htf['HTF_ATR'].ewm(span=50, adjust=False, min_periods=50).mean()
+    # ── 2. VOL SCORE ─────────────────────────────────────────────
+    htf['HTF_ATR']      = atr_ema(htf)
+    htf['HTF_ATR_FAST'] = htf['HTF_ATR'].ewm(span=20, adjust=False, min_periods=5).mean()
+    htf['HTF_ATR_SLOW'] = htf['HTF_ATR'].ewm(span=50, adjust=False, min_periods=5).mean()
     ver = htf['HTF_ATR_FAST'] / (htf['HTF_ATR_SLOW'] + 1e-9)
     htf['VOL_SCORE'] = ((ver - 0.8) / 0.4).clip(0, 1)
 
-    # 3. PARTICIPATION
-    htf['HTF_VOL_MA'] = htf['volume'].ewm(span=part_lookback, adjust=False, min_periods=part_lookback).mean()
-    htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_MA'] + 1e-9)
-    htf['PART_SCORE'] = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
+    # ── 3. PARTICIPATION SCORE ───────────────────────────────────
+    htf['HTF_VOL_EWM']   = htf['volume'].ewm(span=part_lookback, adjust=False, min_periods=5).mean()
+    htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_EWM'] + 1e-9)
+    htf['PART_SCORE']    = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
 
-    # 4. REGIME PERSISTENCE
-    direction_series = htf['HTF_DIRECTION']
-    htf['HTF_REGIME_PERSIST'] = (
-        direction_series
-        .rolling(regime_window)
-        .apply(lambda x: abs(x.mean()), raw=False)
+    # ── 4. REGIME PERSISTENCE — recursive directional memory ─────
+    # Replaces rolling(regime_window).apply(abs mean) — no hard window cliff
+    htf['REGIME_SCORE'] = (
+        htf['HTF_DIRECTION']
+        .ewm(span=regime_window, adjust=False, min_periods=3)
+        .mean()
+        .abs()
+        .clip(0, 1)
     )
-    htf['REGIME_SCORE'] = htf['HTF_REGIME_PERSIST'].clip(0, 1)
 
-    # 5. STRUCTURE QUALITY
-    htf['HTF_ER'] = efficiency_ratio(htf['close'], er_window)
-    htf['STRUCTURE_SCORE'] = htf['HTF_ER'].clip(0, 1)
+    # ── 5. STRUCTURE QUALITY — recursive efficiency ratio ─────────
+    direction_move = (htf['close'] - htf['close'].shift(er_window)).abs()
+    path_length    = htf['close'].diff().abs().ewm(
+        span=er_window, adjust=False, min_periods=3
+    ).mean() * er_window
+    htf['HTF_ER']          = (direction_move / (path_length + 1e-9)).clip(0, 1)
+    htf['STRUCTURE_SCORE'] = htf['HTF_ER']
 
-    # 6. HTF MOMENTUM
+    # ── 6. MOMENTUM SCORE (already EWM — unchanged) ───────────────
     window = 12
     price_slope = htf['close'].diff(window)
     htf['HTF_TREND_MOMENTUM'] = (
         price_slope / (htf['HTF_ATR'] * window + 1e-9)
     ).ewm(span=3, min_periods=3).mean()
     htf['HTF_TREND_MOMENTUM_NORM'] = np.tanh(htf['HTF_TREND_MOMENTUM'] * 3.0)
-    htf['MOMENTUM_SCORE'] = (
-        (htf['HTF_TREND_MOMENTUM_NORM'] + 1) / 2
-    ).clip(0, 1)
+    htf['MOMENTUM_SCORE'] = ((htf['HTF_TREND_MOMENTUM_NORM'] + 1) / 2).clip(0, 1)
 
-    # 7. COMPOSITE QUALITY
+    # ── 7. COMPOSITE ─────────────────────────────────────────────
     htf['HTF_QUALITY'] = (
-        0.25 * htf['VOL_SCORE'] +
-        0.20 * htf['PART_SCORE'] +
-        0.20 * htf['REGIME_SCORE'] +
+        0.25 * htf['VOL_SCORE']       +
+        0.20 * htf['PART_SCORE']      +
+        0.20 * htf['REGIME_SCORE']    +
         0.20 * htf['STRUCTURE_SCORE'] +
         0.15 * htf['MOMENTUM_SCORE']
     )
@@ -1170,44 +1146,57 @@ def compression_context(df, lookback=7, memory=6):
 # ==========================================================
 # ANCHORED NORMALIZATION ENGINE (Long-term memory)
 # ==========================================================
-def anchored_zscore(series, min_periods=200):
-    """
-    Expanding (lifetime) z-score.
-    Gives the model permanent memory of what 'normal' is.
-    """
-    mean = series.expanding(min_periods=min_periods).mean()
-    std  = series.expanding(min_periods=min_periods).std()
+import threading
+_EWMA_STATE: dict = {}
+_EWMA_LOCK = threading.Lock()
 
-    return (series - mean) / (std + 1e-9)
+def _ewma_zscore_series(series: pd.Series,
+                        alpha: float = 0.05,
+                        min_periods: int = 30) -> pd.Series:
+    """
+    Fully recursive online z-score. No rolling windows.
+    Identical output whether run bar-by-bar (live) or on full series (backtest).
+
+        mu_t  = mu_{t-1}  + alpha * (x_t - mu_{t-1})
+        var_t = (1-alpha) * var_{t-1} + alpha * (x_t - mu_t)²
+        z_t   = (x_t - mu_t) / sqrt(var_t)
+    """
+    values = series.to_numpy(dtype=float)
+    n = len(values)
+    out = np.empty(n)
+    out[:] = np.nan
+
+    mu  = np.nan
+    var = np.nan
+
+    for i, x in enumerate(values):
+        if np.isnan(x):
+            continue
+        if np.isnan(mu):
+            mu  = x
+            var = 0.0
+            continue
+        mu  = mu  + alpha * (x - mu)
+        var = (1.0 - alpha) * var + alpha * (x - mu) ** 2
+        if i >= min_periods:
+            std = np.sqrt(var) if var > 1e-12 else 1e-6
+            out[i] = (x - mu) / std
+
+    return pd.Series(out, index=series.index)
+
+
+def anchored_zscore(series, min_periods=200):
+    """Backward-compat shim — now delegates to recursive estimator."""
+    return _ewma_zscore_series(series, alpha=0.02, min_periods=min_periods)
 
 
 def hybrid_zscore(series, roll_window=200, anchor_weight=0.6, min_periods=200):
     """
-    Combines short-term regime awareness (rolling)
-    with long-term memory (expanding).
-
-    min_periods controls the warmup for both the rolling and
-    anchored components. Pass a smaller value when operating on
-    short datasets (e.g. HTF ~250 bars) to prevent NaN→0
-    zeroing at the warmup boundary.
-
-    min_periods is always clamped to <= roll_window to prevent
-    pandas ValueError regardless of caller.
+    Drop-in replacement — now fully recursive.
+    alpha=0.05 ≈ 39-bar half-life. Contextual but stable.
+    Identical in backtest and live. No rolling windows.
     """
-
-    # clamp min_periods so it never exceeds roll_window
-    min_periods = min(min_periods, roll_window)
-
-    # short-term regime normalization
-    roll_mean = series.rolling(roll_window, min_periods=min_periods).mean()
-    roll_std  = series.rolling(roll_window, min_periods=min_periods).std()
-    rolling_z = (series - roll_mean) / (roll_std + 1e-9)
-
-    # long-term anchored normalization
-    anchor_z = anchored_zscore(series, min_periods=min_periods)
-
-    # blend them (prevents restrictiveness)
-    return anchor_weight * anchor_z + (1 - anchor_weight) * rolling_z
+    return _ewma_zscore_series(series, alpha=0.05, min_periods=30)
 
 def sanitize_features_for_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1338,37 +1327,25 @@ def volatility_regime_index(df, fast=200, slow=2000):
 # ==========================================================
 def expansion_maturity(df, lookback=20):
 
-    # Expansion proxy = volatility + participation + trend quality
     expansion_raw = (
         0.4 * df['ATR_ACCEL_NORM'] +
-        0.3 * df['FLOW_STRENGTH'] +
+        0.3 * df['FLOW_STRENGTH']  +
         0.3 * df['TREND_QUALITY']
     )
 
-    # Smooth expansion state
-    df['EXPANSION_STATE'] = expansion_raw.ewm(span=5).mean()
+    df['EXPANSION_STATE']       = expansion_raw.ewm(span=5).mean()
+    df['EXPANSION_VELOCITY']    = df['EXPANSION_STATE'].diff()
 
-    # Expansion velocity (growth vs decay)
-    df['EXPANSION_VELOCITY'] = df['EXPANSION_STATE'].diff()
+    # EWM persistence — recursive, no rolling mean cliff
+    df['EXPANSION_PERSISTENCE'] = df['EXPANSION_STATE'].ewm(
+        span=lookback, adjust=False
+    ).mean()
 
-    # Expansion persistence (trend maturity)
-    df['EXPANSION_PERSISTENCE'] = (
-        df['EXPANSION_STATE']
-        .rolling(lookback)
-        .mean()
-    )
+    # tanh squash replaces expanding min/max — bounded, causal, live-consistent
+    df['EXPANSION_MATURITY'] = (
+        (np.tanh(df['EXPANSION_PERSISTENCE'] * 2.0) + 1) / 2
+    ).clip(0, 1)
 
-    # Normalized maturity score 0 → 1
-    exp_min = df['EXPANSION_PERSISTENCE'].expanding(min_periods=lookback).min()
-    exp_max = df['EXPANSION_PERSISTENCE'].expanding(min_periods=lookback).max()
-
-    maturity = (
-        df['EXPANSION_PERSISTENCE'] - exp_min
-    ) / (exp_max - exp_min + 1e-9)
-
-    df['EXPANSION_MATURITY'] = maturity.clip(0, 1)
-
-    # Entry window = early-to-mid expansion only
     df['EARLY_EXPANSION'] = df['EXPANSION_MATURITY'] < 0.6
 
     return df
@@ -1517,114 +1494,6 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     df = micro_consolidation(df)
     df = momentum_continuity(df)
     df = post_breakout_entry(df)
-
-    # ==========================================================
-    # 🧠 PREDICTIVE-WEIGHTED ASYMMETRY ENGINE
-    # ==========================================================
-
-    # --- Directional pressure sign
-    df['DIR'] = np.sign(df['COMPOSITE_PRESSURE']).fillna(0)
-
-    # ======================================================
-    # 1️⃣ DIRECTIONAL LEADING SCORES
-    # ======================================================
-
-    phase_long = ((df['PHASE'] == 1) | (df['PHASE'] == 2)).astype(int)
-    phase_short = (df['PHASE'] == 3).astype(int)
-
-    lead_long = (
-        df['VOL_COMPRESS'].astype(int) +
-        phase_long +
-        df['STEALTH_ACCUM'].astype(int)
-    )
-
-    lead_short = (
-        df['VOL_COMPRESS'].astype(int) +
-        phase_short +
-        df['STEALTH_DISTRIB'].astype(int)
-    )
-
-    lead_total = lead_long + lead_short + 1e-9
-
-    df['LEAD_BIAS'] = (lead_long - lead_short) / lead_total
-    lead_norm = df['LEAD_BIAS']
-
-    # ======================================================
-    # 2️⃣ CONFIRMATION SCORE (reactive signals)
-    # ======================================================
-
-    confirm_score = (
-        (df['VALID_BREAK_LONG'] | df['VALID_BREAK_SHORT']).astype(int) +
-        df['STRONG_BODY'].astype(int) +
-        df['ATR_EXPAND'].astype(int) +
-        (df['COMPOSITE_PRESSURE'] > 0).astype(int)
-    )
-
-    mom = df['MOMENTUM_CONTINUITY']
-
-    df['MOMENTUM_SCORE'] = (
-        (mom - 0.5) / 0.2
-    ).clip(-1, 1)
-
-    confirm_norm = (confirm_score / 4) + (0.20 * df['MOMENTUM_SCORE'])
-
-    # ===============================
-    # RSI + VWAP RISK ADJUSTMENTS
-    # ===============================
-    rsi_long_ok, rsi_short_ok = rsi_risk_filter(df)
-    vwap_long_ok, vwap_short_ok = anchored_vwap_risk(df)
-
-    risk_penalty = (
-        (~rsi_long_ok).astype(int) * 0.2 +
-        (~rsi_short_ok).astype(int) * 0.2 +
-        (~vwap_long_ok).astype(int) * 0.25 +
-        (~vwap_short_ok).astype(int) * 0.25
-    )
-
-    fail_score = (
-        (df['PARTICIPATION'] == -1).astype(int)
-    )
-
-    fail_norm = (fail_score) + risk_penalty
-
-    # ======================================================
-    # 4️⃣ STRUCTURAL CONTEXT WEIGHT
-    # ======================================================
-
-    trend_weight = df['TREND_QUALITY'].abs().clip(0, 1)
-
-    # ======================================================
-    # 5️⃣ FINAL ASYMMETRY CALCULATION
-    # ======================================================
-
-    micro_weight = 1 + df['MICRO_BREAK_SCORE'].clip(-0.6, 0.6)
-    state_weight = (
-        df['STATE_STABILITY'] *
-        (1 - df['TRANSITION_FORCE'].clip(0,1)) *
-        (1 + df['STATE_ACCEL'].clip(-0.5,0.5))
-    )
-    lead_dynamic_weight = 0.3 + 0.7 * df['TRANSITION_FORCE'].clip(0,1)
-
-    df['ASYM_RAW'] = state_weight * micro_weight * trend_weight * (
-        (lead_dynamic_weight * lead_norm) +
-        (0.7 * confirm_norm) -
-        fail_norm
-    )
-
-    # -----------------------------------------
-    # Directional Asymmetry Injection
-    # -----------------------------------------
-    df['DIR'] = np.sign(
-        df['COMPOSITE_PRESSURE'].ewm(span=3).mean()
-    ).fillna(0)
-
-    df['ASYM_RAW'] *= df['DIR']
-
-    # ======================================================
-    # 6️⃣ SMOOTHING (REGIME STABILITY)
-    # ======================================================
-
-    df['ASYM_SCORE'] = df['ASYM_RAW'].ewm(span=3, adjust=False).mean() # tune here <-
     
     LONG_CONDITION = (df['VALID_BREAK_LONG'])
     SHORT_CONDITION = (df['VALID_BREAK_SHORT'])
