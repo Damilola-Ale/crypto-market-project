@@ -321,6 +321,9 @@ def update_symbol(symbol: str):
     validate_ohlcv(df_htf, symbol, freq=HTF_INTERVAL)
 
     print(f"[DEBUG] live htf_df last={df_htf.index[-1]} len={len(df_htf)} current_4h_open={current_4h_open}")
+    # TEMP DIAGNOSTIC
+    for _ts, _row in df_htf.tail(3).iterrows():
+        print(f"[DEBUG HTF BAR] {_ts} | open={_row['open']:.4f} close={_row['close']:.4f} volume={_row['volume']:.2f}")
 
     print("[HTF] candles:", len(df_htf))
 

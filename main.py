@@ -76,7 +76,7 @@ def fetch_binance(symbol, interval, limit):
 # BTC/, ZEN/, AVAX-, RUNE/, ORDI/, PENDLE/, ADA\, XRP/, TIA/, SOL/, MKR/, ETC/, TRB/
 # ==========================================================
 
-SYMBOL = "TRBUSDT"
+SYMBOL = "AXSUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -328,6 +328,17 @@ print(f"\nHTF threshold: 0.45")
 print(f"Last HTF_DIRECTION : {int(ltf_df['HTF_DIRECTION'].iloc[-1])}")
 print(f"Last HTF_QUALITY   : {ltf_df['HTF_QUALITY'].iloc[-1]:.4f}")
 print(f"Last final_signal  : {int(ltf_df['final_signal'].iloc[-1])}")
+
+# Add this to your backtest script after computing scores
+from indicators.indicators import compute_htf_scores
+scores = compute_htf_scores(htf_df)
+print("Backtest HTF last 5 bars:")
+print(scores.tail(5))
+print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
+
+print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
+for _ts, _row in htf_df.tail(3).iterrows():
+    print(f"[DEBUG HTF BAR] {_ts} | open={_row['open']:.4f} close={_row['close']:.4f} volume={_row['volume']:.2f}")
 
 # # ── 5m candle dump per trade ────────────────────────────────
 # print("\n=== 5M CANDLES PER TRADE ===")
