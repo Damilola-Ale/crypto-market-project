@@ -745,6 +745,9 @@ class PositionManager:
         self._reentry_lock_ts[symbol] = pd.Timestamp(ts) if not isinstance(ts, pd.Timestamp) else ts
         if self._reentry_lock_ts[symbol].tzinfo is None:
             self._reentry_lock_ts[symbol] = self._reentry_lock_ts[symbol].tz_localize("UTC")
+        # Write lock immediately — prevents race condition where next cron tick
+        # instantiates a fresh PositionManager before flush() runs and misses the lock
+        self._save_reentry_lock()
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
         
@@ -817,6 +820,20 @@ class PositionManager:
         )
 
         return pos.copy()
+    
+    def _save_reentry_lock(self):
+        if not self.persist:
+            return
+        lock_payload = {
+            k: {
+                "direction": v,
+                "locked_at": self._reentry_lock_ts.get(k, pd.Timestamp.now(tz="UTC")).isoformat()
+            }
+            for k, v in self._reentry_lock.items()
+        }
+        with open(REENTRY_LOCK_FILE + ".tmp", "w") as f:
+            json.dump(lock_payload, f, indent=2)
+        os.replace(REENTRY_LOCK_FILE + ".tmp", REENTRY_LOCK_FILE)
 
     def has_open_position(self, symbol: str) -> bool:
         return symbol in self.positions

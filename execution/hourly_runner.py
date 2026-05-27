@@ -60,11 +60,45 @@ def run_hourly():
             indent=2
         )
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     symbol_summaries = []
     failed_symbols = []
-    for symbol in SYMBOLS:
+
+    # ── STEP 1: fetch all symbols in parallel (I/O bound, safe on free tier) ──
+    fetched = {}
+
+    def _fetch_symbol(symbol):
         try:
-            result = run_hourly_for_symbol(symbol)
+            return symbol, update_symbol(symbol), None
+        except Exception as e:
+            import traceback
+            return symbol, None, (e, traceback.format_exc())
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_symbol, s): s for s in SYMBOLS}
+        for future in as_completed(futures):
+            symbol, data, err = future.result()
+            if err is not None:
+                e, tb = err
+                failed_symbols.append(symbol)
+                notifier.send_text(
+                    f"💥 *FETCH CRASH*\n"
+                    f"Symbol: `{symbol}`\n"
+                    f"Error: `{str(e)[:300]}`\n"
+                    f"Traceback:\n`{tb[:600]}`"
+                )
+                fetched[symbol] = None
+            else:
+                fetched[symbol] = data
+
+    # ── STEP 2: signal generation + execution sequentially (CPU/RAM bound) ──
+    for symbol in SYMBOLS:
+        if fetched.get(symbol) is None:
+            symbol_summaries.append((symbol, None))
+            continue
+        try:
+            result = run_hourly_for_symbol(symbol, prefetched=fetched[symbol])
             if isinstance(result, tuple):
                 summary, _ = result
             else:
@@ -141,7 +175,8 @@ def run_hourly_for_symbol(
     notify_override=None,
     verbose=True,
     replay_cursor=None,
-    external_pm=None,          # FIX 2: accept shared PM from replay caller
+    external_pm=None,
+    prefetched=None,           # pre-fetched data from parallel fetch step
 ):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
@@ -238,7 +273,9 @@ def run_hourly_for_symbol(
         # FETCH DATA
         # -------------------
         try:
-            if forced_time is None and not replay:
+            if prefetched is not None:
+                df, htf_df, lltf_df, htf_scores = prefetched
+            elif forced_time is None and not replay:
                 df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
             else:
                 df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
@@ -247,15 +284,12 @@ def run_hourly_for_symbol(
                     df      = df[df.index <= forced_time].copy()
                     htf_df  = htf_df[htf_df.index <= forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
-                    # trim scores to forced_time as well
                     if htf_scores is not None:
                         htf_scores = htf_scores[htf_scores.index <= forced_time].copy()
 
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
                         _tg_debug(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
                         return None, replay_cursor
-                else:
-                    pass
 
         except Exception as fetch_err:
             notifier.send_text(
