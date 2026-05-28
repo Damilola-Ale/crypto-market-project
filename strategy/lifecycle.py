@@ -367,13 +367,15 @@ class PositionManager:
                     print(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol}")
                     return {"state": "FLAT"}
 
+            sentinel = f"{symbol}|OPEN|{signal}"
             signal_id = symbol + "|" + str(external_row.name) + "|" + str(signal)
-            print(f"[ENTRY GATE 3] {symbol} signal_id={signal_id} in_executed={signal_id in self._executed_signals}")
-            if signal_id in self._executed_signals:
+            print(f"[ENTRY GATE 3] {symbol} signal_id={signal_id} sentinel_blocked={sentinel in self._executed_signals} id_blocked={signal_id in self._executed_signals}")
+            if sentinel in self._executed_signals or signal_id in self._executed_signals:
                 print(f"[ENTRY BLOCKED — EXECUTED SIGNAL] {symbol} signal_id={signal_id}")
                 return {"state": "FLAT"}
 
             self._executed_signals.add(signal_id)
+            self._executed_signals.add(sentinel)
 
             entry_price = float(current_5m_row["open"])
             print(f"[ENTRY GATE 4] {symbol} atr={atr} entry_price={entry_price}")
@@ -746,6 +748,8 @@ class PositionManager:
         self._save_reentry_lock()
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
+        sentinel = f"{symbol}|OPEN|{pos['direction']}"
+        self._executed_signals.discard(sentinel)
         
         direction = pos["direction"]
         entry     = pos["entry_price"]
@@ -938,6 +942,12 @@ class PositionManager:
                 print(f"[WARN] Corrupted reentry lock — starting fresh")
                 self._reentry_lock = {}
                 self._reentry_lock_ts = {}
+
+        # Re-block any symbols that already have open positions so a fresh
+        # cron tick cannot re-enter them regardless of signal_id changes
+        for sym, pos in self.positions.items():
+            sentinel = f"{sym}|OPEN|{pos.get('direction', 0)}"
+            self._executed_signals.add(sentinel)
 
     def _save(self):
         if not self.persist:
