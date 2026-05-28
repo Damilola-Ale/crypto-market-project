@@ -331,8 +331,10 @@ class PositionManager:
                 lltf_df[(lltf_df.index >= signal_bar_end) & (lltf_df.index <= current_ts)]
             )
             expiry_limit = self.SIGNAL_EXPIRY_BARS_LIVE if self._is_live else self.SIGNAL_EXPIRY_BARS
+            print(f"[EXPIRY] {symbol} signal_bar_end={signal_bar_end} current_ts={current_ts} age={signal_age_bars} limit={expiry_limit} signal_before={signal}")
             if signal_age_bars > expiry_limit:
                 signal = 0
+            print(f"[EXPIRY] signal_after={signal}")
             
         # =====================================================
         # ENTRY LOGIC (MUST BE LAST STEP PER BAR)
