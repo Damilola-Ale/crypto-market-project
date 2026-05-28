@@ -653,9 +653,10 @@ def run_hourly_for_symbol(
 
             if new_hour:
                 last_hour_seen[symbol] = latest_hour_ts
-                with open(HOUR_MEMORY_FILE + ".tmp", "w") as f:
+                tmp_path = HOUR_MEMORY_FILE + f".{symbol}.tmp"
+                with open(tmp_path, "w") as f:
                     json.dump(last_hour_seen, f, indent=2)
-                os.replace(HOUR_MEMORY_FILE + ".tmp", HOUR_MEMORY_FILE)
+                os.replace(tmp_path, HOUR_MEMORY_FILE)
                 print(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
             else:
                 print(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
