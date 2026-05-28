@@ -907,6 +907,10 @@ class PositionManager:
                         parts = s.split("|")
                         if len(parts) < 2:
                             continue
+                        # Sentinels have format SYMBOL|OPEN|direction — keep always
+                        if parts[1] == "OPEN":
+                            kept.add(s)
+                            continue
                         ts = pd.Timestamp(parts[1])
                         if ts.tzinfo is None:
                             ts = ts.tz_localize("UTC")
