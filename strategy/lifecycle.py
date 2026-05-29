@@ -825,15 +825,22 @@ class PositionManager:
     def _save_reentry_lock(self):
         if not self.persist:
             return
-        lock_payload = {
-            k: {
+        existing = {}
+        if os.path.exists(REENTRY_LOCK_FILE):
+            try:
+                with open(REENTRY_LOCK_FILE, "r") as f:
+                    content = f.read().strip()
+                existing = json.loads(content) if content else {}
+            except (json.JSONDecodeError, ValueError):
+                existing = {}
+        merged = {**existing}
+        for k, v in self._reentry_lock.items():
+            merged[k] = {
                 "direction": v,
                 "locked_at": self._reentry_lock_ts.get(k, pd.Timestamp.now(tz="UTC")).isoformat()
             }
-            for k, v in self._reentry_lock.items()
-        }
         with open(REENTRY_LOCK_FILE + ".tmp", "w") as f:
-            json.dump(lock_payload, f, indent=2)
+            json.dump(merged, f, indent=2)
         os.replace(REENTRY_LOCK_FILE + ".tmp", REENTRY_LOCK_FILE)
 
     def has_open_position(self, symbol: str) -> bool:
