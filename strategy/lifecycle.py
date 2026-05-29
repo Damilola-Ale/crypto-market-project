@@ -84,6 +84,7 @@ class PositionManager:
         self._reentry_lock_ts: dict[str, pd.Timestamp] = {}
         self._just_unlocked: set[str] = set()
         self._dirty = False
+        self._managed_symbols: set[str] = set()
 
     # --------------------------------------------------
     # MAIN UPDATE  (called once per new 5M candle close)
@@ -697,6 +698,7 @@ class PositionManager:
         }
 
         self.positions[symbol] = position
+        self._managed_symbols.add(symbol)
         if self.persist:
             self._save()
 
@@ -748,6 +750,7 @@ class PositionManager:
         self._last_entry_ts.pop(symbol, None)
         sentinel = f"{symbol}|OPEN|{pos['direction']}"
         self._executed_signals.discard(sentinel)
+        self._managed_symbols.add(symbol)  # keep tracked so _save removes it from file
         
         direction = pos["direction"]
         entry     = pos["entry_price"]
@@ -954,8 +957,30 @@ class PositionManager:
     def _save(self):
         if not self.persist:
             return
+        # Additive merge — read existing positions, update only symbols
+        # this PM instance manages, leave other symbols untouched.
+        # Prevents parallel threads from overwriting each other's positions.
+        existing_positions = {}
+        if os.path.exists(POSITIONS_FILE):
+            try:
+                with open(POSITIONS_FILE, "r") as f:
+                    content = f.read().strip()
+                existing_positions = json.loads(content) if content else {}
+            except (json.JSONDecodeError, ValueError):
+                existing_positions = {}
+
+        # Merge: existing wins for symbols we don't know about,
+        # self.positions wins for symbols we do manage.
+        merged_positions = dict(existing_positions)
+        # Remove symbols we had on load but no longer have (closed)
+        for sym in list(self._managed_symbols):
+            if sym not in self.positions:
+                merged_positions.pop(sym, None)
+            else:
+                merged_positions[sym] = self.positions[sym]
+
         with open(POSITIONS_FILE + ".tmp", "w") as f:
-            json.dump(self.positions, f, indent=2, default=str)
+            json.dump(merged_positions, f, indent=2, default=str)
         os.replace(POSITIONS_FILE + ".tmp", POSITIONS_FILE)
 
         with open(BAR_HISTORY_FILE + ".tmp", "w") as f:
