@@ -72,8 +72,8 @@ def run_hourly():
     is_warmup = any(
         not os.path.exists(_last_5m_file(s, True)) for s in SYMBOLS
     )
-    fetch_workers   = 8  if is_warmup else 20
-    process_workers = 8  if is_warmup else 20
+    fetch_workers   = 8  if is_warmup else 10
+    process_workers = 8  if is_warmup else 10
 
     print(f"[WORKERS] warmup={is_warmup} fetch={fetch_workers} process={process_workers}")
 
