@@ -78,9 +78,11 @@ def run_hourly():
     print(f"[WORKERS] warmup={is_warmup} fetch={fetch_workers} process={process_workers}")
 
     # ── serial fetch + process ────────────────────────────────────
+    import time as _time
     for symbol in SYMBOLS:
         try:
             data = update_symbol(symbol)
+            _time.sleep(0.5)
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
