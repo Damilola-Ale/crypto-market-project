@@ -333,6 +333,7 @@ def run_hourly_for_symbol(
             is_live
             and seconds_elapsed >= 30
             and boundary_in_data
+            and current_5m_boundary.minute == 0
         )
 
         if _early_entry_eligible:
