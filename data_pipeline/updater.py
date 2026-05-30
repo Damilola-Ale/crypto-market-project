@@ -326,6 +326,7 @@ def update_symbol(symbol: str):
         print(f"[DEBUG HTF BAR] {_ts} | open={_row['open']:.4f} close={_row['close']:.4f} volume={_row['volume']:.2f}")
 
     print("[HTF] candles:", len(df_htf))
+    time.sleep(0.5)
 
     # --------------------------------------------------
     # HTF SCORES CACHE (compute once per 4H close)
@@ -376,6 +377,7 @@ def update_symbol(symbol: str):
     os.replace(tmp_htf, path_htf)
 
     print("[SAVE] LTF + HTF cache updated")
+    time.sleep(0.5)
 
     # --------------------------------------------------
     # BUILD LLTF (5M) — same pattern as HTF
