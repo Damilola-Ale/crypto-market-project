@@ -77,13 +77,8 @@ def run_hourly():
 
     print(f"[WORKERS] warmup={is_warmup} fetch={fetch_workers} process={process_workers}")
 
-    # ── STEP 1+2: fetch + signal gen in parallel, PM update serialized ────
-    import threading
-    pm_lock = threading.Lock()
-    pm_shared = PositionManager(persist=True, notify=True)
-    symbol_summaries_lock = threading.Lock()
-
-    def _fetch_and_process(symbol):
+    # ── serial fetch + process ────────────────────────────────────
+    for symbol in SYMBOLS:
         try:
             data = update_symbol(symbol)
         except Exception as e:
@@ -95,20 +90,13 @@ def run_hourly():
                 f"Error: `{str(e)[:300]}`\n"
                 f"Traceback:\n`{tb[:600]}`"
             )
-            with symbol_summaries_lock:
-                symbol_summaries.append((symbol, None))
-            return
+            symbol_summaries.append((symbol, None))
+            continue
 
         try:
-            result = run_hourly_for_symbol(
-                symbol,
-                prefetched=data,
-                external_pm=pm_shared,
-                pm_lock=pm_lock,
-            )
+            result = run_hourly_for_symbol(symbol, prefetched=data)
             summary = result[0] if isinstance(result, tuple) else result
-            with symbol_summaries_lock:
-                symbol_summaries.append((symbol, summary))
+            symbol_summaries.append((symbol, summary))
         except Exception as sym_err:
             import traceback
             tb = traceback.format_exc()
@@ -118,13 +106,7 @@ def run_hourly():
                 f"Error: `{str(sym_err)[:300]}`\n"
                 f"Traceback:\n`{tb[:600]}`"
             )
-            with symbol_summaries_lock:
-                symbol_summaries.append((symbol, None))
-
-    with ThreadPoolExecutor(max_workers=fetch_workers) as executor:
-        futures = {executor.submit(_fetch_and_process, s): s for s in SYMBOLS}
-        for future in as_completed(futures):
-            future.result()
+            symbol_summaries.append((symbol, None))
 
     now = datetime.now(timezone.utc)
     local_now = now + pd.Timedelta(hours=1)  # WAT = UTC+1
@@ -558,9 +540,6 @@ def run_hourly_for_symbol(
             )
             return None
 
-        # ── acquire lock before touching PM or any shared state ──
-        if pm_lock is not None:
-            pm_lock.acquire()
         try:
             bar_results = []
             _current_signal_birth = None
@@ -662,8 +641,7 @@ def run_hourly_for_symbol(
             pm.flush()
 
         finally:
-            if pm_lock is not None:
-                pm_lock.release()
+            pass
 
         try:
             import json as _json
