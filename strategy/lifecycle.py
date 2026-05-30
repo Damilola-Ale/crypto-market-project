@@ -84,7 +84,6 @@ class PositionManager:
         self._reentry_lock_ts: dict[str, pd.Timestamp] = {}
         self._just_unlocked: set[str] = set()
         self._dirty = False
-        self._managed_symbols: set[str] = set()
 
     # --------------------------------------------------
     # MAIN UPDATE  (called once per new 5M candle close)
@@ -101,8 +100,6 @@ class PositionManager:
 
         signal = 0 if pd.isna(external_signal) else int(external_signal)
         position = self.positions.get(symbol)
-        if position:
-            self._managed_symbols.add(symbol)
 
         o = float(current_5m_row["open"])
         h = float(current_5m_row["high"])
@@ -134,7 +131,6 @@ class PositionManager:
                 "ATR": atr,
                 "ATR_5M": atr_5m,
                 "ts": str(current_ts),
-                "volume": float(current_5m_row["volume"]) if "volume" in current_5m_row.index and not pd.isna(current_5m_row["volume"]) else float("nan"),
             }
 
             # Guard: if bar_history for this symbol is missing or empty after
@@ -230,21 +226,13 @@ class PositionManager:
                 position["MFE"] = max(position["MFE"], move_high)
                 position["MAE"] = min(position["MAE"], move_low)
 
-            # price-based excursions anchored to initial_stop R — used by stall exit
-            if side == 1:
-                position["_price_mfe"] = max(position.get("_price_mfe", 0.0), h - entry_price)
-                position["_price_mae"] = min(position.get("_price_mae", 0.0), l - entry_price)
-            else:
-                position["_price_mfe"] = max(position.get("_price_mfe", 0.0), entry_price - l)
-                position["_price_mae"] = min(position.get("_price_mae", 0.0), entry_price - h)
-
             # -------------------------------------------------------
             # BUILD 5M WINDOW (REAL ATR HISTORY — BACKTEST PARITY)
             # -------------------------------------------------------
             window_5m = pd.DataFrame(self._bar_history[symbol])
 
             # convert to R
-            position["mfe_r"] = position["_price_mfe"] / R
+            position["mfe_r"] = position["MFE"] / R
 
             # ONLY for reporting (not exit logic anymore)
             if side == 1:
@@ -276,9 +264,6 @@ class PositionManager:
                 # if self._momentum_decay_exit(position):
                 #     try_exit("momentum_decay", current_price)
 
-                if self._stall_exit(position):
-                    try_exit("stall_exit", current_price)
-
                 if self._opposite_impulse_exit(window_5m, side, position):
                     try_exit("opposite_impulse", current_price)
 
@@ -295,7 +280,6 @@ class PositionManager:
                         fill_price = float(current_5m_row["close"])
 
                     closed = self._close(symbol, fill_price, current_ts, exit_reason)
-                    print(f"[CLOSE] {symbol} reason={exit_reason} fill={fill_price} ts={current_ts}")
 
                     return {"state": "CLOSED", "exit": closed}
 
@@ -313,16 +297,17 @@ class PositionManager:
             locked_dir = self._reentry_lock[symbol]
             locked_at = self._reentry_lock_ts.get(symbol)
 
-            # Unlock only after a full hour has elapsed since the close,
-            # not just at the next 1H boundary.
-            # e.g. close at 02:25 → unlock at 03:25, not at 03:00.
-            unlock_at = locked_at + pd.Timedelta(hours=1) if locked_at is not None else None
-            ready_to_unlock = unlock_at is not None and current_ts >= unlock_at
+            # unlock only when a new 1H candle has formed since the stop
+            current_1h = current_ts.floor("h") if hasattr(current_ts, "floor") else pd.Timestamp(current_ts).floor("h")
+            locked_1h = locked_at.floor("h") if locked_at is not None else None
 
-            if ready_to_unlock:
+            new_candle_formed = locked_1h is not None and current_1h > locked_1h
+
+            if new_candle_formed:
                 self._reentry_lock.pop(symbol, None)
                 self._just_unlocked.add(symbol)  # block entry this bar only
                 self._dirty = True
+
 
         # ===================================================
         # SIGNAL EXPIRY CHECK
@@ -335,10 +320,8 @@ class PositionManager:
                 lltf_df[(lltf_df.index >= signal_bar_end) & (lltf_df.index <= current_ts)]
             )
             expiry_limit = self.SIGNAL_EXPIRY_BARS_LIVE if self._is_live else self.SIGNAL_EXPIRY_BARS
-            print(f"[EXPIRY] {symbol} signal_bar_end={signal_bar_end} current_ts={current_ts} age={signal_age_bars} limit={expiry_limit} signal_before={signal}")
             if signal_age_bars > expiry_limit:
                 signal = 0
-            print(f"[EXPIRY] signal_after={signal}")
             
         # =====================================================
         # ENTRY LOGIC (MUST BE LAST STEP PER BAR)
@@ -346,64 +329,106 @@ class PositionManager:
         # =====================================================
         position = self.positions.get(symbol)
 
-        print(f"[ENTRY GATE] {symbol} not_position={not position} signal={signal}")
-
         if not position and signal != 0:
 
-            print(f"[ENTRY GATE 1] {symbol} just_unlocked={symbol in self._just_unlocked}")
             if symbol in self._just_unlocked:
-                print(f"[ENTRY BLOCKED — JUST UNLOCKED] {symbol}")
+                _tg_debug(
+                    f"[ENTRY BLOCKED — JUST UNLOCKED] {symbol} "
+                    f"dir={signal} bar={current_ts}"
+                )
                 return {"state": "FLAT"}
 
-            print(f"[ENTRY GATE 2] {symbol} reentry_lock={self._reentry_lock.get(symbol)}")
+            if symbol in self._just_unlocked:
+                _tg_debug(
+                    f"[ENTRY BLOCKED — JUST UNLOCKED] {symbol} "
+                    f"dir={signal} bar={current_ts}"
+                )
+                return {"state": "FLAT"}
+
             if symbol in self._reentry_lock:
                 locked_dir = self._reentry_lock[symbol]
                 locked_at = self._reentry_lock_ts.get(symbol, "unknown")
-                if isinstance(locked_at, pd.Timestamp):
-                    unlock_at = locked_at + pd.Timedelta(hours=1)
-                    lock_still_valid = current_ts < unlock_at
-                else:
-                    lock_still_valid = True
-                print(f"[REENTRY LOCK STATE] {symbol} locked_dir={locked_dir} current_signal={signal} lock_still_valid={lock_still_valid}")
-                if signal == locked_dir and lock_still_valid:
-                    print(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol}")
+                _tg_debug(
+                    f"[REENTRY LOCK STATE] {symbol}\n"
+                    f"locked_dir={locked_dir} current_signal={signal}\n"
+                    f"locked_at={locked_at}\n"
+                    f"would_block={signal == locked_dir}"
+                )
+                if signal == locked_dir:
+                    _tg_debug(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol} dir={signal} locked_at={locked_at}")
                     return {"state": "FLAT"}
+                    # NOTE: no return here intentionally until we confirm fix is needed
 
-            sentinel = f"{symbol}|OPEN|{signal}"
-            signal_id = symbol + "|" + str(external_row.name) + "|" + str(signal)
-            print(f"[ENTRY GATE 3] {symbol} signal_id={signal_id} sentinel_blocked={sentinel in self._executed_signals} id_blocked={signal_id in self._executed_signals}")
-            if sentinel in self._executed_signals or signal_id in self._executed_signals:
-                print(f"[ENTRY BLOCKED — EXECUTED SIGNAL] {symbol} signal_id={signal_id}")
+            signal_ts = current_5m_row.name
+
+            # latest_bar_ts = lltf_df.index[-1] -- LIVE ONLY
+            # if signal_ts != latest_bar_ts:
+            #     print(f"[ENTRY BLOCKED — NOT LATEST BAR] {symbol} signal_ts={signal_ts} latest={latest_bar_ts}")
+            #     return {"state": "FLAT"}
+
+            signal_id = (
+                symbol + "|" +
+                str(external_row.name) + "|" +
+                str(signal)
+            )
+
+            if signal_id in self._executed_signals:
+                _tg_debug(
+                    f"[EXECUTED SIGNAL BLOCK] {symbol}\n"
+                    f"signal_id={signal_id}\n"
+                    f"all_executed_for_symbol={[s for s in self._executed_signals if symbol in s]}"
+                )
                 return {"state": "FLAT"}
 
             self._executed_signals.add(signal_id)
-            self._executed_signals.add(sentinel)
+            _tg_debug(
+                f"[EXECUTED SIGNAL REGISTERED] {symbol}\n"
+                f"signal_id={signal_id}\n"
+                f"total_executed={len(self._executed_signals)}"
+            )
 
+            # Use current 5m bar open as fill price.
+            # external_row["open"] is the signal bar open — a price that
+            # existed before the signal condition (close > resistance) was true.
+            # current_5m_row["open"] is the first price available after confirmation.
             entry_price = float(current_5m_row["open"])
-            print(f"[ENTRY GATE 4] {symbol} atr={atr} entry_price={entry_price}")
 
             if atr is None or atr <= 0 or np.isnan(atr):
-                print(f"[ENTRY BLOCKED — ATR INVALID] {symbol} atr={atr}")
-                return {"state": "FLAT"}
+                _tg_debug(
+                    f"[WARN ATR INVALID] {symbol}\n"
+                    f"ts={current_ts} atr={atr}\n"
+                    f"ENTRY WILL BE BLOCKED"
+                )
+                atr = 0.000001
 
             atr = float(atr)
 
+            _tg_debug(
+                f"[PRE-OPEN] {symbol}\n"
+                f"signal={signal} atr={atr}\n"
+                f"current_ts={current_ts}\n"
+                f"entry_price_raw={float(current_5m_row['open'])}\n"
+                f"positions_before_open={list(self.positions.keys())}"
+            )
+
             if atr <= 0:
-                print(f"[ENTRY BLOCKED — ATR ZERO] {symbol} atr={atr}")
+                _tg_debug(f"[ENTRY BLOCKED — ATR] {symbol} @ {current_ts} atr={atr}")
                 return {"state": "FLAT"}
 
             new_pos = self._open(symbol, signal, entry_price, current_ts, atr)
-            print(f"[ENTRY GATE 5] {symbol} new_pos={'ok' if new_pos else 'NONE'}")
 
             if new_pos:
+                # initialize bar history with entry candle
                 self._bar_history[symbol] = [{
-                    "open": o, "high": h, "low": l, "close": c,
-                    "ATR": atr, "ts": current_ts,
-                    "volume": float(current_5m_row["volume"]) if "volume" in current_5m_row.index and not pd.isna(current_5m_row["volume"]) else float("nan"),
+                    "open": o,
+                    "high": h,
+                    "low":  l,
+                    "close": c,
+                    "ATR": atr,
+                    "ts": current_ts,
                 }]
-                return {"state": "OPEN", "position": new_pos}
 
-            print(f"[ENTRY BLOCKED — _open returned falsy] {symbol}")
+                return {"state": "OPEN", "position": new_pos}
 
         return {"state": "FLAT"}
 
@@ -569,14 +594,14 @@ class PositionManager:
         bars   = position.get("bars_in_trade", "?")
         mfe_r  = position.get("mfe_r", 0.0)
 
-        # _tg_debug(
-        #     f"[OIE] {symbol} bar={bars} | {'🔥FIRED' if fired else 'miss'}\n"
-        #     f"o={last['open']:.6f} c={last['close']:.6f} | "
-        #     f"body={body:.6f} atr={atr:.6f} thr={atr*1.2:.6f} big={big_candle}\n"
-        #     f"wrong_dir={wrong_direction} | "
-        #     f"csr={close_to_stop_r:.3f} loc_block={location_blocked} mfe_r={mfe_r:.3f}\n"
-        #     f"vol: last={last_vol:.0f} avg={avg_vol:.0f} wlen={len(window)} vol_block={vol_blocked}"
-        # )
+        _tg_debug(
+            f"[OIE] {symbol} bar={bars} | {'🔥FIRED' if fired else 'miss'}\n"
+            f"o={last['open']:.6f} c={last['close']:.6f} | "
+            f"body={body:.6f} atr={atr:.6f} thr={atr*1.2:.6f} big={big_candle}\n"
+            f"wrong_dir={wrong_direction} | "
+            f"csr={close_to_stop_r:.3f} loc_block={location_blocked} mfe_r={mfe_r:.3f}\n"
+            f"vol: last={last_vol:.0f} avg={avg_vol:.0f} wlen={len(window)} vol_block={vol_blocked}"
+        )
 
         return fired
 
@@ -596,32 +621,6 @@ class PositionManager:
         if bars_5m < self.VALIDATION_BARS:
             return False
         return mfe_r < self.NO_FOLLOW_MFE
-    
-    def _stall_exit(self, position: dict) -> bool:
-        entry        = position.get("entry_price", 0)
-        initial_stop = position.get("initial_stop", position.get("stop_loss", entry))
-        R = abs(entry - initial_stop)
-        if R <= 0:
-            return False
-
-        mfe_r   = position.get("mfe_r", 0.0)
-        mae_r   = abs(position.get("_price_mae", 0.0)) / R
-        bars    = position.get("bars_in_trade", 0)
-
-        # Mode 1: immediate rejection — 15 minutes in, no positive movement,
-        # price already more than 60% of the way to the stop
-        if bars == 3:
-            if mfe_r == 0.0 and mae_r > 0.6:
-                _tg_debug(f"[STALL EXIT] {position.get('symbol','?')} mode=immediate_rejection bars={bars} mfe_r={mfe_r:.3f} mae_r={mae_r:.3f}")
-                return True
-
-        # Mode 2: prolonged stall — 90 minutes in, barely any progress
-        if bars == self.VALIDATION_BARS:
-            if mfe_r < 0.2 and mae_r > 0.4:
-                _tg_debug(f"[STALL EXIT] {position.get('symbol','?')} mode=prolonged_stall bars={bars} mfe_r={mfe_r:.3f} mae_r={mae_r:.3f}")
-                return True
-
-        return False
 
     def _update_dynamic_stop(self, position, current_price, atr, side):
         mfe_r = position["mfe_r"]
@@ -702,7 +701,6 @@ class PositionManager:
         }
 
         self.positions[symbol] = position
-        self._managed_symbols.add(symbol)
         if self.persist:
             self._save()
 
@@ -743,20 +741,12 @@ class PositionManager:
         duration_bars = pos.get("bars_in_trade", 0)
         
         self._reentry_lock[symbol] = pos["direction"]
-        # Floor to hour boundary — lock expires at the next hour, not close_time + 1h.
-        # e.g. close at 07:25 → locked_at=07:00 → unlock_at=08:00
-        _close_ts = pd.Timestamp(ts) if not isinstance(ts, pd.Timestamp) else ts
-        if _close_ts.tzinfo is None:
-            _close_ts = _close_ts.tz_localize("UTC")
-        self._reentry_lock_ts[symbol] = _close_ts.floor("h")
-        # Write lock immediately — prevents race condition where next cron tick
-        # instantiates a fresh PositionManager before flush() runs and misses the lock
-        self._save_reentry_lock()
+        # Use the bar's timestamp, not wall clock — critical for replay correctness
+        self._reentry_lock_ts[symbol] = pd.Timestamp(ts) if not isinstance(ts, pd.Timestamp) else ts
+        if self._reentry_lock_ts[symbol].tzinfo is None:
+            self._reentry_lock_ts[symbol] = self._reentry_lock_ts[symbol].tz_localize("UTC")
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
-        sentinel = f"{symbol}|OPEN|{pos['direction']}"
-        self._executed_signals.discard(sentinel)
-        self._managed_symbols.add(symbol)  # keep tracked so _save removes it from file
         
         direction = pos["direction"]
         entry     = pos["entry_price"]
@@ -827,27 +817,6 @@ class PositionManager:
         )
 
         return pos.copy()
-    
-    def _save_reentry_lock(self):
-        if not self.persist:
-            return
-        existing = {}
-        if os.path.exists(REENTRY_LOCK_FILE):
-            try:
-                with open(REENTRY_LOCK_FILE, "r") as f:
-                    content = f.read().strip()
-                existing = json.loads(content) if content else {}
-            except (json.JSONDecodeError, ValueError):
-                existing = {}
-        merged = {**existing}
-        for k, v in self._reentry_lock.items():
-            merged[k] = {
-                "direction": v,
-                "locked_at": self._reentry_lock_ts.get(k, pd.Timestamp.now(tz="UTC")).isoformat()
-            }
-        with open(REENTRY_LOCK_FILE + ".tmp", "w") as f:
-            json.dump(merged, f, indent=2)
-        os.replace(REENTRY_LOCK_FILE + ".tmp", REENTRY_LOCK_FILE)
 
     def has_open_position(self, symbol: str) -> bool:
         return symbol in self.positions
@@ -921,10 +890,6 @@ class PositionManager:
                         parts = s.split("|")
                         if len(parts) < 2:
                             continue
-                        # Sentinels have format SYMBOL|OPEN|direction — keep always
-                        if parts[1] == "OPEN":
-                            kept.add(s)
-                            continue
                         ts = pd.Timestamp(parts[1])
                         if ts.tzinfo is None:
                             ts = ts.tz_localize("UTC")
@@ -961,39 +926,11 @@ class PositionManager:
                 self._reentry_lock = {}
                 self._reentry_lock_ts = {}
 
-        # Re-block any symbols that already have open positions so a fresh
-        # cron tick cannot re-enter them regardless of signal_id changes
-        for sym, pos in self.positions.items():
-            sentinel = f"{sym}|OPEN|{pos.get('direction', 0)}"
-            self._executed_signals.add(sentinel)
-
     def _save(self):
         if not self.persist:
             return
-        # Additive merge — read existing positions, update only symbols
-        # this PM instance manages, leave other symbols untouched.
-        # Prevents parallel threads from overwriting each other's positions.
-        existing_positions = {}
-        if os.path.exists(POSITIONS_FILE):
-            try:
-                with open(POSITIONS_FILE, "r") as f:
-                    content = f.read().strip()
-                existing_positions = json.loads(content) if content else {}
-            except (json.JSONDecodeError, ValueError):
-                existing_positions = {}
-
-        # Merge: existing wins for symbols we don't know about,
-        # self.positions wins for symbols we do manage.
-        merged_positions = dict(existing_positions)
-        # Remove symbols we had on load but no longer have (closed)
-        for sym in list(self._managed_symbols):
-            if sym not in self.positions:
-                merged_positions.pop(sym, None)
-            else:
-                merged_positions[sym] = self.positions[sym]
-
         with open(POSITIONS_FILE + ".tmp", "w") as f:
-            json.dump(merged_positions, f, indent=2, default=str)
+            json.dump(self.positions, f, indent=2, default=str)
         os.replace(POSITIONS_FILE + ".tmp", POSITIONS_FILE)
 
         with open(BAR_HISTORY_FILE + ".tmp", "w") as f:
@@ -1007,18 +944,19 @@ class PositionManager:
             )
         os.replace(ENTRY_TS_FILE + ".tmp", ENTRY_TS_FILE)
 
-        # EXECUTED SIGNALS — additive merge to prevent parallel threads
-        # from overwriting each other's entries.
-        # Read current file, merge with in-memory set, write back.
-        existing = set()
-        if os.path.exists(EXECUTED_SIGNALS_FILE):
-            try:
-                with open(EXECUTED_SIGNALS_FILE, "r") as f:
-                    content = f.read().strip()
-                existing = set(json.loads(content)) if content else set()
-            except (json.JSONDecodeError, ValueError):
-                existing = set()
-        merged = existing | self._executed_signals
+        # REENTRY LOCK
+        lock_payload = {
+            k: {
+                "direction": v,
+                "locked_at": self._reentry_lock_ts.get(k, pd.Timestamp.now(tz="UTC")).isoformat()
+            }
+            for k, v in self._reentry_lock.items()
+        }
+        with open(REENTRY_LOCK_FILE + ".tmp", "w") as f:
+            json.dump(lock_payload, f, indent=2)
+        os.replace(REENTRY_LOCK_FILE + ".tmp", REENTRY_LOCK_FILE)
+
+        # EXECUTED SIGNALS
         with open(EXECUTED_SIGNALS_FILE + ".tmp", "w") as f:
-            json.dump(list(merged), f, indent=2)
+            json.dump(list(self._executed_signals), f, indent=2)
         os.replace(EXECUTED_SIGNALS_FILE + ".tmp", EXECUTED_SIGNALS_FILE)

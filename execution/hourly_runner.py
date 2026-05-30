@@ -21,7 +21,7 @@ def _tg_debug(msg: str) -> None:
 SYMBOLS = [
     "AXSUSDT", "XRPUSDT", "AVAXUSDT", "DOTUSDT", "AAVEUSDT", "XLMUSDT", 
     "SUIUSDT", "VETUSDT", "TRXUSDT", "LDOUSDT", "INJUSDT", "RUNEUSDT", 
-    "ORDIUSDT", "ADAUSDT", "EGLDUSDT", "TIAUSDT", "OPUSDT", "ICPUSDT", 
+    "ORDIUSDT", "ADAUSDT", "ZENUSDT", "TIAUSDT", "OPUSDT", "ICPUSDT", 
     "PAXGUSDT", "TRBUSDT"
 ]
 
@@ -60,48 +60,20 @@ def run_hourly():
             indent=2
         )
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import threading
-
     symbol_summaries = []
     failed_symbols = []
-
-    # ── Detect warmup vs live ──────────────────────────────────────
-    # Warmup = any symbol is missing its cursor file (first run ever)
-    # Live   = all cursors exist (normal hourly run)
-    is_warmup = any(
-        not os.path.exists(_last_5m_file(s, True)) for s in SYMBOLS
-    )
-    fetch_workers   = 8  if is_warmup else 10
-    process_workers = 8  if is_warmup else 10
-
-    print(f"[WORKERS] warmup={is_warmup} fetch={fetch_workers} process={process_workers}")
-
-    # ── serial fetch + process ────────────────────────────────────
-    import time as _time
     for symbol in SYMBOLS:
         try:
-            data = update_symbol(symbol)
-            _time.sleep(0.5)
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            notifier.send_text(
-                f"💥 *FETCH CRASH*\n"
-                f"Symbol: `{symbol}`\n"
-                f"Error: `{str(e)[:300]}`\n"
-                f"Traceback:\n`{tb[:600]}`"
-            )
-            symbol_summaries.append((symbol, None))
-            continue
-
-        try:
-            result = run_hourly_for_symbol(symbol, prefetched=data)
-            summary = result[0] if isinstance(result, tuple) else result
+            result = run_hourly_for_symbol(symbol)
+            if isinstance(result, tuple):
+                summary, _ = result
+            else:
+                summary = result
             symbol_summaries.append((symbol, summary))
         except Exception as sym_err:
             import traceback
             tb = traceback.format_exc()
+            failed_symbols.append(symbol)
             notifier.send_text(
                 f"💥 *SYMBOL CRASH*\n"
                 f"Symbol: `{symbol}`\n"
@@ -169,9 +141,7 @@ def run_hourly_for_symbol(
     notify_override=None,
     verbose=True,
     replay_cursor=None,
-    external_pm=None,
-    prefetched=None,           # pre-fetched data from parallel fetch step
-    pm_lock=None,
+    external_pm=None,          # FIX 2: accept shared PM from replay caller
 ):
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
@@ -242,9 +212,6 @@ def run_hourly_for_symbol(
     else:
         pm = PositionManager(persist=True, notify=notify)
 
-    # Hard gate — skip if position is open OR reentry lock is active.
-    print(f"[GATE CHECK] {symbol} positions={list(pm.positions.keys())} reentry_lock={dict(pm._reentry_lock)}")
-
     # =========================
     # 5M STREAM MEMORY
     # =========================
@@ -271,9 +238,7 @@ def run_hourly_for_symbol(
         # FETCH DATA
         # -------------------
         try:
-            if prefetched is not None:
-                df, htf_df, lltf_df, htf_scores = prefetched
-            elif forced_time is None and not replay:
+            if forced_time is None and not replay:
                 df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
             else:
                 df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
@@ -282,12 +247,15 @@ def run_hourly_for_symbol(
                     df      = df[df.index <= forced_time].copy()
                     htf_df  = htf_df[htf_df.index <= forced_time].copy()
                     lltf_df = lltf_df[lltf_df.index < forced_time].copy()
+                    # trim scores to forced_time as well
                     if htf_scores is not None:
                         htf_scores = htf_scores[htf_scores.index <= forced_time].copy()
 
                     if len(df) < 2 or len(htf_df) < 2 or len(lltf_df) < 2:
                         _tg_debug(f"[WARMUP SKIP] {symbol} forced_time={forced_time} — insufficient data (1h={len(df)} 4h={len(htf_df)} 5m={len(lltf_df)})")
                         return None, replay_cursor
+                else:
+                    pass
 
         except Exception as fetch_err:
             notifier.send_text(
@@ -313,7 +281,18 @@ def run_hourly_for_symbol(
 
         # generate_signal hasn't run yet here — check after it runs below
         # (split the guard: include decision is made after signal gen)
-        lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
+        _early_entry_eligible = (
+            is_live
+            and seconds_elapsed >= 30
+            and boundary_in_data
+            and boundary_is_hour_open
+        )
+
+        if _early_entry_eligible:
+            lltf_df = lltf_df[lltf_df.index <= current_5m_boundary].copy()
+            print(f"[EARLY ENTRY GUARD] {symbol} — boundary bar {current_5m_boundary} included ({seconds_elapsed:.0f}s elapsed)")
+        else:
+            lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
 
         # notifier.debug(
         #     f"[CANDLE GUARD] {symbol}\n"
@@ -328,46 +307,9 @@ def run_hourly_for_symbol(
             return None, replay_cursor
 
         # -------------------
-        # GENERATE & MAP SIGNALS (incremental signal cache)
+        # GENERATE & MAP SIGNALS
         # -------------------
-        signals_cache_path = os.path.join("data/cache", f"{symbol}_signals.parquet")
-        df_new = df.copy()
-
-        if os.path.exists(signals_cache_path):
-            try:
-                cached_signals = pd.read_parquet(signals_cache_path)
-                cached_signals.index = pd.to_datetime(cached_signals.index, utc=True)
-
-                n_new = (df_new.index > cached_signals.index[-1]).sum()
-
-                if n_new == 0:
-                    df = cached_signals
-                    print(f"[SIGNAL CACHE HIT] {symbol} — no new bars, using cached signals")
-                elif n_new <= 3:
-                    CONTEXT_BARS = 100
-                    tail_start_idx = max(0, len(df_new) - CONTEXT_BARS)
-                    df_tail = df_new.iloc[tail_start_idx:].copy()
-                    df_tail = generate_signal(df_tail, htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
-                    df_head = cached_signals[cached_signals.index < df_tail.index[0]]
-                    df = pd.concat([df_head, df_tail])
-                    print(f"[SIGNAL CACHE PARTIAL] {symbol} — {n_new} new bars, recomputed tail of {len(df_tail)}")
-                else:
-                    print(f"[SIGNAL CACHE MISS] {symbol} — {n_new} new bars, full recompute")
-                    df = generate_signal(df_new, htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
-
-            except Exception as e:
-                print(f"[SIGNAL CACHE ERROR] {symbol} — {e}, full recompute")
-                df = generate_signal(df_new, htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
-        else:
-            print(f"[SIGNAL CACHE COLD] {symbol} — first run, full recompute")
-            df = generate_signal(df_new, htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
-
-        try:
-            tmp_path = signals_cache_path + ".tmp"
-            df.to_parquet(tmp_path)
-            os.replace(tmp_path, signals_cache_path)
-        except Exception as e:
-            print(f"[SIGNAL CACHE SAVE FAILED] {symbol} — {e}")
+        df = generate_signal(df.copy(), htf_df.copy(), live=is_live, symbol=symbol, htf_stack_cache=htf_scores)
 
         _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
         _htf_direction = int(df['HTF_DIRECTION'].iloc[-1])
@@ -508,6 +450,7 @@ def run_hourly_for_symbol(
             last_seen = pd.Timestamp(raw) if raw else None
 
         if is_live and last_seen == latest_ts:
+            # notifier.debug(f"[CURSOR AT TIP] {symbol} — last_seen={last_seen} == latest_ts={latest_ts}, nothing to do")
             return None
 
         if last_seen is None and not replay and not forced_time:
@@ -533,6 +476,16 @@ def run_hourly_for_symbol(
             f"last_seen={last_seen} | latest_ts={latest_ts}"
         )
 
+        # notifier.debug(
+        #     f"[NEW BARS] {symbol}\n"
+        #     f"new_bars={len(new_bars)}\n"
+        #     f"last_seen={last_seen}\n"
+        #     f"latest_ts={latest_ts}\n"
+        #     f"new_bars_first={new_bars.index[0] if not new_bars.empty else 'EMPTY'}\n"
+        #     f"new_bars_last={new_bars.index[-1] if not new_bars.empty else 'EMPTY'}\n"
+        #     f"non_zero_in_new_bars={(new_bars['final_signal'] != 0).sum() if not new_bars.empty else 0}"
+        # )
+
         if new_bars.empty:
             notifier.debug(
                 f"[EMPTY NEW BARS] {symbol} — no new bars to process\n"
@@ -542,116 +495,139 @@ def run_hourly_for_symbol(
             )
             return None
 
-        try:
-            bar_results = []
-            _current_signal_birth = None
-            _closed_this_tick = False
-            for _, row_5m in new_bars.iterrows():
+        bar_results = []
 
-                if pd.isna(row_5m["final_signal"]):
-                    bar_signal = 0
-                else:
-                    bar_signal = int(row_5m["final_signal"])
+        # notifier.debug(f"[REPLAY LOOP] {symbol} — processing {len(new_bars)} bars from {new_bars.index[0]} to {new_bars.index[-1]}")
+        _current_signal_birth = None  # anchors signal expiry to first signal bar
+        for _, row_5m in new_bars.iterrows():
 
-                ltf_row = df.iloc[int(row_5m["ltf_index"])]
+            if pd.isna(row_5m["final_signal"]):
+                bar_signal = 0
+            else:
+                bar_signal = int(row_5m["final_signal"])
 
-                if _closed_this_tick:
-                    bar_signal = 0
+            ltf_row = df.iloc[int(row_5m["ltf_index"])]
 
-                if bar_signal != 0:
-                    if _current_signal_birth is None:
-                        _current_signal_birth = ltf_row
-                    signal_birth_row = _current_signal_birth
-                else:
-                    _current_signal_birth = None
-                    signal_birth_row = ltf_row
+            # Anchor expiry to signal birth — the first 1H bar where this
+            # signal appeared. _current_signal_birth does not advance with
+            # each new 1H bar, so expiry is measured correctly.
+            # Resets to None when signal goes flat so the next signal
+            # gets its own fresh birth anchor.
+            if bar_signal != 0:
+                if _current_signal_birth is None:
+                    _current_signal_birth = ltf_row
+                signal_birth_row = _current_signal_birth
+            else:
+                _current_signal_birth = None
+                signal_birth_row = ltf_row
 
-                if bar_signal != 0:
-                    print(
-                        f"[SIGNAL BAR] {symbol} | ts={_} | signal={bar_signal} | "
-                        f"ltf_index={int(row_5m['ltf_index'])} | "
-                        f"reentry_lock={pm._reentry_lock.get(symbol)} | "
-                        f"has_position={symbol in pm.positions} | "
-                        f"executed_count={len(pm._executed_signals)}"
-                    )
-
-                result = pm.update(
-                    df=df,
-                    symbol=symbol,
-                    lltf_df=lltf_frozen,
-                    external_signal=bar_signal,
-                    external_row=signal_birth_row,
-                    current_5m_row=row_5m
+            if bar_signal != 0:
+                print(
+                    f"[SIGNAL BAR] {symbol} | ts={_} | signal={bar_signal} | "
+                    f"ltf_index={int(row_5m['ltf_index'])} | "
+                    f"reentry_lock={pm._reentry_lock.get(symbol)} | "
+                    f"has_position={symbol in pm.positions} | "
+                    f"executed_count={len(pm._executed_signals)}"
                 )
 
-                if bar_signal != 0:
-                    print(
-                        f"[PM RESULT] {symbol} | ts={_} | "
-                        f"state={result.get('state') if isinstance(result, dict) else result}"
-                    )
+            result = pm.update(
+                df=df,
+                symbol=symbol,
+                lltf_df=lltf_frozen,
+                external_signal=bar_signal,
+                external_row=signal_birth_row,
+                current_5m_row=row_5m
+            )
 
-                if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
-                    bar_results.append(result)
-                    if result.get("state") == "CLOSED":
-                        _closed_this_tick = True
-                    if result.get("state") == "OPEN" and bar_signal != 0:
-                        notifier.debug(
-                            f"🚨 SIGNAL ENTERED | {symbol} | ts={_} | "
-                            f"signal={bar_signal} | "
-                            f"1H_ts={ltf_row.name} | "
-                            f"1H_open={ltf_row['open']:.6f} | "
-                            f"df_last={df.index[-1]} | "
-                            f"ltf_index={int(row_5m['ltf_index'])}"
-                        )
-
-                has_position = symbol in pm.positions
-                if has_position:
-                    pos = pm.positions[symbol]
+            if bar_signal != 0:
+                print(
+                    f"[PM RESULT] {symbol} | ts={_} | "
+                    f"state={result.get('state') if isinstance(result, dict) else result}"
+                )
+                
+            if isinstance(result, dict) and result.get("state") in ("OPEN", "CLOSED"):
+                bar_results.append(result)
+                if result.get("state") == "OPEN" and bar_signal != 0:
                     notifier.debug(
-                        f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(_)} | "
-                        f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
-                        f"entry={pos['entry_price']:.6f} | "
-                        f"stop={pos['stop_loss']:.6f} | "
-                        f"bars={pos.get('bars_in_trade', 0)} | "
-                        f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
+                        f"🚨 SIGNAL ENTERED | {symbol} | ts={_} | "
+                        f"signal={bar_signal} | "
+                        f"1H_ts={ltf_row.name} | "
+                        f"1H_open={ltf_row['open']:.6f} | "
+                        f"df_last={df.index[-1]} | "
+                        f"ltf_index={int(row_5m['ltf_index'])}"
                     )
 
-            if not replay and replay_cursor is None:
-                if not new_bars.empty:
+            has_position = symbol in pm.positions
+            if has_position:
+                pos = pm.positions[symbol]
+                notifier.debug(
+                    f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(_)} | "
+                    f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
+                    f"entry={pos['entry_price']:.6f} | "
+                    f"stop={pos['stop_loss']:.6f} | "
+                    f"bars={pos.get('bars_in_trade', 0)} | "
+                    f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
+                )
+
+        if not replay and replay_cursor is None:
+            if not new_bars.empty:
+                current_1h_open = pd.Timestamp(datetime.now(timezone.utc)).floor("h")
+                has_open_position = symbol in pm.positions
+
+                if has_open_position:
                     last_clean_ts = new_bars.index[-1]
-                    if last_clean_ts is not None:
-                        with open(last_5m_file + ".tmp", "w") as f:
-                            json.dump(last_clean_ts.isoformat(), f)
-                        os.replace(last_5m_file + ".tmp", last_5m_file)
-
-            if not replay and not forced_time:
-                cursor_file = _last_5m_file(symbol, True)
-                cursor_exists = os.path.exists(cursor_file)
-                if not cursor_exists and not new_hour:
-                    _tg_debug(f"[CLOCK SYNC] {symbol} — cursor was absent but hour memory has entry, forcing hour reset")
-                    new_hour = True
-                if new_hour:
-                    last_hour_seen[symbol] = latest_hour_ts
-                    tmp_path = HOUR_MEMORY_FILE + f".{symbol}.tmp"
-                    with open(tmp_path, "w") as f:
-                        json.dump(last_hour_seen, f, indent=2)
-                    os.replace(tmp_path, HOUR_MEMORY_FILE)
-                    print(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
                 else:
-                    print(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
+                    # advance cursor fully — candle guard in update_symbol
+                    # already prevents incomplete bars from leaking in
+                    last_clean_ts = new_bars.index[-1]
 
-            pm.flush()
+                if last_clean_ts is not None:
+                    with open(last_5m_file + ".tmp", "w") as f:
+                        json.dump(last_clean_ts.isoformat(), f)
+                    os.replace(last_5m_file + ".tmp", last_5m_file)
 
-        finally:
-            pass
+        # ==========================================================
+        # SAVE LAST PROCESSED HOUR
+        # ==========================================================
+        if not replay and not forced_time:
+            cursor_file = _last_5m_file(symbol, True)
+            cursor_exists = os.path.exists(cursor_file)
 
+            # FIX: if cursor was just reset (file didn't exist before this run),
+            # force hour memory to reset too so the two clocks stay in sync
+            if not cursor_exists and not new_hour:
+                _tg_debug(f"[CLOCK SYNC] {symbol} — cursor was absent but hour memory has entry, forcing hour reset")
+                new_hour = True
+
+            if new_hour:
+                last_hour_seen[symbol] = latest_hour_ts
+                with open(HOUR_MEMORY_FILE + ".tmp", "w") as f:
+                    json.dump(last_hour_seen, f, indent=2)
+                os.replace(HOUR_MEMORY_FILE + ".tmp", HOUR_MEMORY_FILE)
+                print(f"[HOUR MEMORY UPDATED] {symbol} — {latest_hour_ts}")
+            else:
+                print(f"[HOUR MEMORY UNCHANGED] {symbol} — already at {latest_hour_ts}")
+
+        pm.flush()
+
+        # ============================================================
+        # DEBUG — dump full state after every symbol run
+        # ============================================================
         try:
             import json as _json
             _reentry = {k: {"direction": v, "locked_at": str(pm._reentry_lock_ts.get(k))} for k, v in pm._reentry_lock.items()}
             _executed = [s for s in pm._executed_signals if symbol in s]
             _positions = {k: {"direction": v.get("direction"), "bars": v.get("bars_in_trade"), "entry": v.get("entry_time")} for k, v in pm.positions.items()}
+            # notifier.debug(
+            #     f"[STATE DUMP] {symbol}\n"
+            #     f"cursor_saved={new_bars.index[-1].isoformat() if not new_bars.empty else 'unchanged'}\n"
+            #     f"positions={_positions}\n"
+            #     f"reentry_lock={_reentry}\n"
+            #     f"executed_signals_for_symbol={_executed}"
+            # )
         except Exception as _e:
             notifier.debug(f"[STATE DUMP FAILED] {symbol} — {_e}")
+        # ============================================================
 
         new_cursor = new_bars.index[-1] if not new_bars.empty else replay_cursor
         return (bar_results if bar_results else None), new_cursor
