@@ -15,13 +15,6 @@ def atr_ema(df, period=14):
     ], axis=1).max(axis=1)
     return tr.ewm(span=period, adjust=False).mean()
 
-def RSI(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    rs = gain.rolling(period).mean() / loss.rolling(period).mean()
-    return 100 - (100 / (1 + rs))
-
 # ==========================================================
 # TREND CONTEXT
 # ==========================================================
@@ -127,19 +120,6 @@ def positioning_pressure(df, fast=10, slow=50):
     # --------------------------------------------------
     raw = df['POSITION_DIRECTION']
     df['TREND_QUALITY'] = hybrid_zscore(raw).clip(-2, 2) / 2
-
-    return df
-
-# ==========================================================
-# WICK ANALYSIS
-# ==========================================================
-def wick_rejection(df):
-    body = (df['close'] - df['open']).abs()
-    upper = df['high'] - df[['close', 'open']].max(axis=1)
-    lower = df[['close', 'open']].min(axis=1) - df['low']
-
-    df['UPPER_WICK_RATIO'] = upper / (body + 1e-9)
-    df['LOWER_WICK_RATIO'] = lower / (body + 1e-9)
 
     return df
 
@@ -625,14 +605,14 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
 
     df['VALID_BREAK_LONG'] = (
         df['EARLY_EXPANSION'] &
-        volume_confirmed &
+        # volume_confirmed &
         flow_bias_long &
         df['MICRO_BREAK_LONG']
     )
 
     df['VALID_BREAK_SHORT'] = (
         df['EARLY_EXPANSION'] &
-        volume_confirmed &
+        # volume_confirmed &
         flow_bias_short &
         df['MICRO_BREAK_SHORT']
     )
@@ -821,17 +801,6 @@ def supertrend_htf(df, htf_df, period=10, multiplier=3):
     
     # Align to LTF
     return htf_df['SUPERTREND'].reindex(df.index, method='ffill').fillna(0)
-
-# ==========================================================
-# RSI RISK FILTER (NON-GATING)
-# ==========================================================
-def rsi_risk_filter(df, period=14, overbought=70, oversold=30):
-    rsi = RSI(df['close'], period)
-
-    long_ok = rsi < overbought
-    short_ok = rsi > oversold
-
-    return long_ok.fillna(True), short_ok.fillna(True)
 
 # ==========================================================
 # ANCHORED VWAP RISK FILTER (NON-GATING)
@@ -1756,7 +1725,6 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # Core processing
     # =========================
     df = positioning_pressure(df)
-    df = wick_rejection(df)
     df = volume_confirmation(df)
     df = support_resistance(df)
     df = liquidity_displacement(df)
@@ -1807,15 +1775,15 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     htf_quality_baseline = df['HTF_QUALITY'].ewm(span=2000, adjust=False).mean()
     htf_quality_th       = (htf_quality_baseline * 1.05).clip(lower=0.30)
 
-    HTF_LONG_OK = (
-        # (df['HTF_DIRECTION'] == 1) |
-        (df['LTF_DIRECTION'] == 1)
+    HTF_OK = (
+        (df['HTF_QUALITY'] > htf_quality_th) 
+        # (df['LTF_DIRECTION'] == 1)
     )
 
-    HTF_SHORT_OK = (
-        # (df['HTF_DIRECTION'] == -1) |
-        (df['LTF_DIRECTION'] == -1)
-    )
+    # HTF_SHORT_OK = (
+    #     (df['HTF_DIRECTION'] == -1) 
+    #     # (df['LTF_DIRECTION'] == -1)
+    # )
 
     # =========================
     # PREDICTIVE MODULES
@@ -1840,8 +1808,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # LONG_CONDITION &= df['ENTRY_LONG']
     # SHORT_CONDITION &= df['ENTRY_SHORT']
 
-    # LONG_CONDITION &= HTF_LONG_OK
-    # SHORT_CONDITION &= HTF_SHORT_OK
+    LONG_CONDITION &= HTF_OK
+    SHORT_CONDITION &= HTF_OK
 
     # LONG_CONDITION  &= df['LOCATION_LONG_OK']
     # SHORT_CONDITION &= df['LOCATION_SHORT_OK']

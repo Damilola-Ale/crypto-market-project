@@ -46,9 +46,10 @@ class PositionManager:
     NO_FOLLOW_MFE  = 0.3       # 0.3R required after validation
     STOP_PROXIMITY = 0.2       # within 0.2R of stop = danger
 
-    ATR_MULT         = 1.5
-    ATR_AFTER_HALF_R = 2.0   # middle ground — protects without choking pullbacks
-    ATR_AFTER_ONE_R  = 1.5   # tighter once 1R+ secured
+    ATR_MULT          = 1.5
+    ATR_AFTER_ENTRY   = 1.5   # standard trail before 0.5R
+    ATR_AFTER_HALF_R  = 0.7   # tighter once 0.5R secured
+    ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
     USE_ACCOUNT_GATES = False
 
@@ -625,36 +626,41 @@ class PositionManager:
     def _update_dynamic_stop(self, position, current_price, atr, side):
         mfe_r = position["mfe_r"]
 
-        if mfe_r <= 0.5:
+        # Activate at 0.3R — early enough to catch the bar-3 peak,
+        # late enough to survive normal 5m entry noise.
+        if mfe_r < 0.3:
             return
 
         bars = position.get("bars_in_trade", 0)
         last_trail_bar = position.get("last_trail_bar", 0)
-        if bars - last_trail_bar < 3:
+
+        # Faster cadence once in profit — every 1 bar after 0.5R,
+        # every 2 bars before (avoids instant breakeven stops).
+        cadence = 1 if mfe_r >= 0.5 else 2
+        if bars - last_trail_bar < cadence:
             return
         position["last_trail_bar"] = bars
 
         entry = position["entry_price"]
         current_stop = position["stop_loss"]
 
-        # Use tighter multiplier only after 2R secured
-        atr_mult = self.ATR_AFTER_ONE_R if mfe_r > 2.0 else self.ATR_AFTER_HALF_R
+        if mfe_r >= 1.0:
+            atr_mult = self.ATR_AFTER_ONE_R
+        elif mfe_r >= 0.5:
+            atr_mult = self.ATR_AFTER_HALF_R
+        else:
+            atr_mult = self.ATR_AFTER_ENTRY
 
         if side == 1:
             trail_candidate = current_price - atr * atr_mult
-            if mfe_r > 2.0:
+            # Breakeven lock only once 0.5R is secured
+            if mfe_r >= 0.5:
                 trail_candidate = max(trail_candidate, entry)
-            # only move stop if trail candidate is profitable
-            if trail_candidate <= entry:
-                return
             new_stop = max(current_stop, trail_candidate)
         else:
             trail_candidate = current_price + atr * atr_mult
-            if mfe_r > 2.0:
+            if mfe_r >= 0.5:
                 trail_candidate = min(trail_candidate, entry)
-            # only move stop if trail candidate is profitable
-            if trail_candidate >= entry:
-                return
             new_stop = min(current_stop, trail_candidate)
 
         if new_stop != current_stop:

@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import requests
 import matplotlib.pyplot as plt
 import time
@@ -96,12 +97,12 @@ def fetch_binance(symbol, interval, limit):
 # CONFIG 
 # ==========================================================
 # SYMBOLS = [
-#     "AXSUSDT"-, "XRPUSDT", "AVAXUSDT", "DOTUSDT", "AAVEUSDT"-, "XLMUSDT"-, 
+#     "AXSUSDT"/, "XRPUSDT", "AVAXUSDT"/, "DOTUSDT", "AAVEUSDT"-, "XLMUSDT"-, 
 #     "SUIUSDT", "VETUSDT"-, "TRXUSDT", "LDOUSDT", "INJUSDT", "RUNEUSDT", 
 #     "ORDIUSDT", "ADAUSDT", "EGLDUSDT"-, "TIAUSDT", "OPUSDT", "ICPUSDT", 
 #     "PAXGUSDT"-, "TRBUSDT"-
 # ] EGLD LINK PENDLE
-SYMBOL = "PAXGUSDT"
+SYMBOL = "ADAUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -116,9 +117,9 @@ LEVERAGE = 1
 # LTF_LIMIT = 43800   # ~30 days of 1h candles
 # HTF_LIMIT = 10950   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 420480
-# LTF_LIMIT = 35040   # ~30 days of 1h candles
-# HTF_LIMIT = 8760   # ~120 days of 4h candles
+LLTF_LIMIT = 420480
+LTF_LIMIT = 35040   # ~30 days of 1h candles
+HTF_LIMIT = 8760   # ~120 days of 4h candles
 
 # LTF_LIMIT = 26280   # ~30 days of 1h candles
 # HTF_LIMIT = 6570   # ~120 days of 4h candles
@@ -138,9 +139,9 @@ LEVERAGE = 1
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-LLTF_LIMIT = 12000
-LTF_LIMIT = 1000   # ~30 days of 1h candles
-HTF_LIMIT = 250   # ~120 days of 4h candles
+# LLTF_LIMIT = 12000
+# LTF_LIMIT = 1000   # ~30 days of 1h candles
+# HTF_LIMIT = 250   # ~120 days of 4h candles
 
 # LLTF_LIMIT = 6000
 # LTF_LIMIT = 500   # ~30 days of 1h candles
@@ -199,7 +200,7 @@ def load_or_fetch(symbol, interval, limit, now_utc):
 
         if interval == "1h":
             fetch_start = last_ts + interval_td
-            fetch_end   = now_utc.floor("h") - interval_td
+            fetch_end   = now_utc.floor("h")
         elif interval == "4h":
             fetch_start = last_ts + interval_td
             fetch_end   = now_utc
@@ -374,45 +375,156 @@ print("HTF candles (4h):", len(htf_df))
 diagnostics_df = diagnose_trades(trade_log)
 
 # ==========================================================
+# EDGE DECAY ANALYSIS
+# ==========================================================
+def edge_decay_analysis(trades_df, lltf_df):
+    checkpoints = [3, 6, 12, 18, 24, 36, 48]
+    results = []
+
+    for _, trade in trades_df.iterrows():
+        entry_idx   = int(trade['entry_idx'])
+        entry_price = trade['entry_price']
+        side        = trade['side']
+        atr         = trade['ATR']
+        final_mfe   = trade['MFE']
+        R           = abs(entry_price - trade['initial_stop'])
+        if R <= 0:
+            R = atr * 1.5
+
+        row = {
+            'side': side,
+            'final_mfe_r': trade['mfe_r'],
+            'final_pnl_r': trade['pnl_r'],
+            'exit_reason': trade.get('exit_reason', ''),
+        }
+
+        for bars in checkpoints:
+            end_idx = min(entry_idx + bars, len(lltf_df) - 1)
+            window  = lltf_df.iloc[entry_idx:end_idx + 1]
+
+            if window.empty:
+                row[f'mfe_r_{bars}b'] = np.nan
+                row[f'pnl_r_{bars}b'] = np.nan
+                continue
+
+            if side == 1:
+                mfe_price = window['high'].max()
+                pnl_price = window['close'].iloc[-1]
+                mfe_r = (mfe_price - entry_price) / R
+                pnl_r = (pnl_price - entry_price) / R
+            else:
+                mfe_price = window['low'].min()
+                pnl_price = window['close'].iloc[-1]
+                mfe_r = (entry_price - mfe_price) / R
+                pnl_r = (entry_price - pnl_price) / R
+
+            row[f'mfe_r_{bars}b'] = max(mfe_r, 0.0)
+            row[f'pnl_r_{bars}b'] = pnl_r
+
+        # what fraction of final MFE was present at each checkpoint?
+        for bars in checkpoints:
+            if final_mfe > 0 and not np.isnan(row.get(f'mfe_r_{bars}b', np.nan)):
+                row[f'mfe_pct_{bars}b'] = row[f'mfe_r_{bars}b'] / trade['mfe_r'] if trade['mfe_r'] > 0 else np.nan
+            else:
+                row[f'mfe_pct_{bars}b'] = np.nan
+
+        results.append(row)
+
+    result_df = pd.DataFrame(results)
+
+    print("\n=== EDGE DECAY PROFILE ===")
+    print(f"{'Bars':>5} {'Time':>6} {'MFE%':>8} {'AvgPnL R':>10} {'WinMFE%':>10} {'LosMFE%':>10} {'AvgMFE R':>10}")
+    print("-" * 65)
+
+    winners = result_df[result_df['final_mfe_r'] >= 0.5]
+    losers  = result_df[result_df['final_mfe_r'] <  0.5]
+
+    for bars in checkpoints:
+        mfe_pct_col = f'mfe_pct_{bars}b'
+        pnl_col     = f'pnl_r_{bars}b'
+        mfe_r_col   = f'mfe_r_{bars}b'
+
+        avg_mfe_pct = result_df[mfe_pct_col].mean()
+        avg_pnl     = result_df[pnl_col].mean()
+        win_mfe_pct = winners[mfe_pct_col].mean() if not winners.empty else np.nan
+        los_mfe_pct = losers[mfe_pct_col].mean()  if not losers.empty  else np.nan
+        avg_mfe_r   = result_df[mfe_r_col].mean()
+
+        print(
+            f"{bars:>5} "
+            f"{bars*5:>5}m "
+            f"{avg_mfe_pct:>8.1%} "
+            f"{avg_pnl:>10.3f} "
+            f"{win_mfe_pct:>10.1%} "
+            f"{los_mfe_pct:>10.1%} "
+            f"{avg_mfe_r:>10.3f}"
+        )
+
+    # when does average PnL peak?
+    pnl_by_time = [result_df[f'pnl_r_{b}b'].mean() for b in checkpoints]
+    peak_idx    = int(np.nanargmax(pnl_by_time))
+    peak_bar    = checkpoints[peak_idx]
+    print(f"\nAvg PnL peaks at bar {peak_bar} ({peak_bar * 5} min) — holding longer costs edge on average")
+
+    # exit reason breakdown
+    print("\n--- Exit reason vs avg R ---")
+    for reason, grp in result_df.groupby('exit_reason'):
+        print(f"  {reason:<25} n={len(grp):>3}  avg_final_pnl_r={grp['final_pnl_r'].mean():>6.3f}")
+
+    # front-load score: what % of final MFE is captured in first 30 min?
+    fl = result_df['mfe_pct_6b'].mean()
+    print(f"\nFront-load score (MFE% at 30 min): {fl:.1%}")
+    if fl >= 0.70:
+        print("  → FRONT-LOADED. Most edge is gone by bar 6. Prioritize fast profit lock.")
+    elif fl >= 0.45:
+        print("  → GRADUAL BUILD. Edge persists past 30 min. Tighter trail is the fix.")
+    else:
+        print("  → SLOW STARTER. Edge develops late. Check if entries are early enough.")
+
+    return result_df
+
+decay_df = edge_decay_analysis(trade_log, backtester.lltf_df)
+
+# ==========================================================
 # HTF QUALITY DIAGNOSTIC — last 30 hours
 # ==========================================================
-print("\n=== HTF QUALITY (last 30 bars) ===")
-print(f"{'timestamp':>25} {'HTF_DIR':>8} {'HTF_QUAL':>10} {'signal':>8} {'final_sig':>10}")
-print("-" * 65)
+# print("\n=== HTF QUALITY (last 30 bars) ===")
+# print(f"{'timestamp':>25} {'HTF_DIR':>8} {'HTF_QUAL':>10} {'signal':>8} {'final_sig':>10}")
+# print("-" * 65)
 
-diag_cols = ["HTF_DIRECTION", "HTF_QUALITY", "signal", "final_signal"]
-available = [c for c in diag_cols if c in ltf_df.columns]
+# diag_cols = ["HTF_DIRECTION", "HTF_QUALITY", "signal", "final_signal"]
+# available = [c for c in diag_cols if c in ltf_df.columns]
 
-now_utc = pd.Timestamp.now(tz="UTC")
-last_closed_1h = now_utc.floor("h") - pd.Timedelta(hours=1)
-hours_into_4h = last_closed_1h.hour % 4
-last_closed_4h_boundary = last_closed_1h - pd.Timedelta(hours=hours_into_4h)
-diag = ltf_df[available][ltf_df.index <= last_closed_1h].tail(30)
+# now_utc = pd.Timestamp.now(tz="UTC")
+# last_closed_1h = now_utc.floor("h") - pd.Timedelta(hours=1)
+# hours_into_4h = last_closed_1h.hour % 4
+# last_closed_4h_boundary = last_closed_1h - pd.Timedelta(hours=hours_into_4h)
+# diag = ltf_df[available][ltf_df.index <= last_closed_1h].tail(30)
 
-for ts, row in diag.iterrows():
-    htf_dir  = int(row["HTF_DIRECTION"])  if "HTF_DIRECTION"  in row.index else "N/A"
-    htf_qual = f"{row['HTF_QUALITY']:.4f}" if "HTF_QUALITY"    in row.index else "N/A"
-    sig      = int(row["signal"])          if "signal"          in row.index else "N/A"
-    fsig     = int(row["final_signal"])    if "final_signal"    in row.index else "N/A"
+# for ts, row in diag.iterrows():
+#     htf_dir  = int(row["HTF_DIRECTION"])  if "HTF_DIRECTION"  in row.index else "N/A"
+#     htf_qual = f"{row['HTF_QUALITY']:.4f}" if "HTF_QUALITY"    in row.index else "N/A"
+#     sig      = int(row["signal"])          if "signal"          in row.index else "N/A"
+#     fsig     = int(row["final_signal"])    if "final_signal"    in row.index else "N/A"
 
-    import pytz
-    WAT = pytz.timezone("Africa/Lagos")
-    ts_wat = ts.tz_convert(WAT).strftime("%Y-%m-%d %H:%M WAT")
+#     import pytz
+#     WAT = pytz.timezone("Africa/Lagos")
+#     ts_wat = ts.tz_convert(WAT).strftime("%Y-%m-%d %H:%M WAT")
 
-    blocked = " ← NO HTF DATA" if (htf_qual == "nan" or htf_qual == "N/A") else (" ← BLOCKED" if float(htf_qual) <= 0.45 else "")
-    print(f"{ts_wat:>25} {str(htf_dir):>8} {htf_qual:>10} {str(sig):>8} {str(fsig):>10}{blocked}")
+#     blocked = " ← NO HTF DATA" if (htf_qual == "nan" or htf_qual == "N/A") else (" ← BLOCKED" if float(htf_qual) <= 0.45 else "")
+#     print(f"{ts_wat:>25} {str(htf_dir):>8} {htf_qual:>10} {str(sig):>8} {str(fsig):>10}{blocked}")
 
-print(f"\nHTF threshold: 0.45")
-print(f"Last HTF_DIRECTION : {int(ltf_df['HTF_DIRECTION'].iloc[-1])}")
-print(f"Last HTF_QUALITY   : {ltf_df['HTF_QUALITY'].iloc[-1]:.4f}")
-print(f"Last final_signal  : {int(ltf_df['final_signal'].iloc[-1])}")
+# print(f"\nHTF threshold: 0.45")
+# print(f"Last HTF_DIRECTION : {int(ltf_df['HTF_DIRECTION'].iloc[-1])}")
+# print(f"Last HTF_QUALITY   : {ltf_df['HTF_QUALITY'].iloc[-1]:.4f}")
+# print(f"Last final_signal  : {int(ltf_df['final_signal'].iloc[-1])}")
 
-# Add this to your backtest script after computing scores
-from indicators.indicators import compute_htf_scores
-scores = compute_htf_scores(htf_df)
-print("Backtest HTF last 5 bars:")
-print(scores.tail(5))
-print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
+# # Add this to your backtest script after computing scores
+# from indicators.indicators import compute_htf_scores
+# scores = compute_htf_scores(htf_df)
+# print("Backtest HTF last 5 bars:")
+# print(scores.tail(5))
+# print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
 
 # print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
 # for _ts, _row in htf_df.tail(3).iterrows():

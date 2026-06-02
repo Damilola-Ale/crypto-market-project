@@ -181,7 +181,11 @@ class SignalBacktester:
         # 2. BODY SIZE
         # ══════════════════════════════════════════
         body = abs(last.close - last.open)
-        big_candle = body > atr * 1.2
+        # Also check the last 2 bars together — gradual reversals
+        # don't always produce one big candle, but two medium ones
+        # in the wrong direction are equally meaningful.
+        two_bar_move = abs(window.iloc[-1].close - window.iloc[-2].close) if len(window) >= 2 else 0
+        big_candle = (body > atr * 1.2) or (two_bar_move > atr * 1.5 and body > atr * 0.6)
 
         # ══════════════════════════════════════════
         # 3. DIRECTION CHECK
@@ -265,19 +269,29 @@ class SignalBacktester:
 
         return False
     
-    # Mirrors lifecycle.py _update_dynamic_stop exactly
-    ATR_AFTER_HALF_R = 2.0   # before 2R MFE
-    ATR_AFTER_ONE_R  = 1.5   # after 2R MFE secured
+    # Calibrated for front-loaded edge profile (peak at bar 3 / 15 min).
+    # Trail activates at 0.3R — early enough to catch the peak,
+    # late enough to survive normal entry noise on 5m bars.
+    # Breakeven lock only at 0.5R+ to avoid instant stop-to-entry.
+    ATR_AFTER_ENTRY   = 1.5   # standard trail before 0.5R
+    ATR_AFTER_HALF_R  = 0.7   # tighter once 0.5R secured
+    ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
     def update_dynamic_stop(self, trade, current_price, atr):
         mfe_r = trade.get('mfe_r', 0.0)
 
-        if mfe_r <= 0.5:
+        # Activate at 0.3R — gives one to two 5m bars of breathing room
+        # before locking in, while still catching the bar-3 peak.
+        if mfe_r < 0.3:
             return
 
         bars = trade.get('bars_in_trade', 0)
         last_trail_bar = trade.get('last_trail_bar', 0)
-        if bars - last_trail_bar < 3:
+
+        # Once past 0.5R, update every bar to lock in gains quickly.
+        # Before 0.5R, update every 2 bars to avoid instant breakeven stops.
+        cadence = 1 if mfe_r >= 0.5 else 2
+        if bars - last_trail_bar < cadence:
             return
         trade['last_trail_bar'] = bars
 
@@ -285,25 +299,26 @@ class SignalBacktester:
         current_stop = trade['stop_loss']
         side = trade['side']
 
-        atr_mult = self.ATR_AFTER_ONE_R if mfe_r > 2.0 else self.ATR_AFTER_HALF_R
+        if mfe_r >= 1.0:
+            atr_mult = self.ATR_AFTER_ONE_R
+        elif mfe_r >= 0.5:
+            atr_mult = self.ATR_AFTER_HALF_R
+        else:
+            atr_mult = self.ATR_AFTER_ENTRY
 
         if side == 1:
             trail_candidate = current_price - atr * atr_mult
-            if mfe_r > 2.0:
+            # Only lock to breakeven once 0.5R is secured, not before
+            if mfe_r >= 0.5:
                 trail_candidate = max(trail_candidate, entry)
-            if trail_candidate <= entry:
-                return
             new_stop = max(current_stop, trail_candidate)
         else:
             trail_candidate = current_price + atr * atr_mult
-            if mfe_r > 2.0:
+            if mfe_r >= 0.5:
                 trail_candidate = min(trail_candidate, entry)
-            if trail_candidate >= entry:
-                return
             new_stop = min(current_stop, trail_candidate)
 
         trade['stop_loss'] = new_stop
-        # keep self.stop_loss in sync so hard stop check uses updated value
         self.stop_loss = new_stop
 
     # ------------------------
@@ -407,6 +422,14 @@ class SignalBacktester:
 
         hours_held = (exit_time - entry_time).total_seconds() / 3600
 
+        entry  = self.current_trade["entry_price"]
+        stop   = self.current_trade.get("initial_stop", self.current_trade["stop_loss"])
+        R_exit = abs(entry - stop)
+        pnl_r_final = (
+            ((price - entry) / R_exit) if self.position == 1
+            else ((entry - price) / R_exit)
+        ) if R_exit > 0 else 0.0
+
         self.current_trade.update({
             "exit_price": price,
             "exit_idx": idx,
@@ -414,6 +437,7 @@ class SignalBacktester:
             "bars_held": bars_held,
             "hours_held": hours_held,
             "pnl": pnl,
+            "pnl_r": pnl_r_final,
             "exit_reason": reason
         })
         self.trades.append(self.current_trade)
