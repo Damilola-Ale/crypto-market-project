@@ -4,7 +4,30 @@ from datetime import datetime, timezone
 import time
 
 BASE_URL = "https://api.binance.com/api/v3/klines"
+PING_URL = "https://api.binance.com/api/v3/ping"
 from data_pipeline.rate_limiter import rate_limiter
+
+def check_current_weight() -> int:
+    """
+    Costs 1 weight unit. Call once on startup before any data fetch.
+    Returns current weight, or -1 if banned/unreachable.
+    """
+    try:
+        r = requests.get(PING_URL, timeout=5)
+        if r.status_code == 418:
+            retry_after = r.headers.get("Retry-After")
+            retry_after_int = int(retry_after) if retry_after else None
+            rate_limiter.on_418(retry_after_int)
+            print(f"[STARTUP WEIGHT CHECK] still banned — retry_after={retry_after}")
+            return -1
+        used_weight_raw = r.headers.get("X-MBX-USED-WEIGHT-1M", "0")
+        weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
+        rate_limiter.on_response(weight)
+        print(f"[STARTUP WEIGHT CHECK] current_weight={weight}")
+        return weight
+    except Exception as e:
+        print(f"[STARTUP WEIGHT CHECK FAILED] {e}")
+        return -1
 
 def _to_ms(dt):
     """
@@ -39,7 +62,7 @@ def fetch_ohlcv(
 
     symbol = symbol.replace("-", "").upper()
 
-    def safe_request(params, _request_counter=[0]):
+    def safe_request(params, _request_counter=[0], _last_weight=[0]):
         try:
             rate_limiter.check()  # blocks if banned, rate-limited, or weight-throttled
 
@@ -52,10 +75,14 @@ def fetch_ohlcv(
             used_weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
             retry_after = r.headers.get("Retry-After", None)
             retry_after_int = int(retry_after) if retry_after else None
+
+            weight_delta = used_weight - _last_weight[0]
+            _last_weight[0] = used_weight
+
             print(
                 f"[BINANCE HEADERS] req=#{req_num} symbol={symbol} interval={interval} "
-                f"status={r.status_code} weight={used_weight} retry_after={retry_after} "
-                f"params_end={params.get('endTime')}"
+                f"status={r.status_code} weight={used_weight} delta=+{weight_delta} "
+                f"retry_after={retry_after} params_end={params.get('endTime')}"
             )
 
             # Always update weight tracker — even on error responses

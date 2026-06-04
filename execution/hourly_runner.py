@@ -47,7 +47,19 @@ def run_hourly():
     notifier = TelegramNotifier()
 
     from data_pipeline.rate_limiter import rate_limiter
-    if rate_limiter.is_banned():
+    from data_pipeline.fetcher import check_current_weight
+
+    # Live weight check — costs 1 unit, confirms ban status and current headroom
+    startup_weight = check_current_weight()
+    window_age = time.time() - rate_limiter._weight_window_start
+    seconds_until_reset = max(0, 60 - window_age)
+    print(
+        f"[WEIGHT STATUS] live={startup_weight} | "
+        f"tracked={rate_limiter.current_weight} | "
+        f"window_age={window_age:.0f}s | "
+        f"resets_in={seconds_until_reset:.0f}s"
+    )
+    if startup_weight == -1 or rate_limiter.is_banned():
         wait_secs = max(0, int(rate_limiter.banned_until + 900 - time.time()))
         print(f"[RUN SKIPPED] IP ban still active ({wait_secs}s remaining) — aborting")
         skip_notif_file = "data/last_skip_notif.json"
@@ -238,6 +250,13 @@ def run_hourly_for_symbol(
     is_live = not replay and forced_time is None
     notify = notify_override if notify_override is not None else is_live
     notifier = TelegramNotifier()
+
+    # Hard gate — never touch Binance while banned, even if called directly
+    from data_pipeline.rate_limiter import rate_limiter
+    if rate_limiter.is_banned():
+        wait_secs = max(0, int(rate_limiter.banned_until + 900 - time.time()))
+        print(f"[SYMBOL GATE] {symbol} — IP ban active ({wait_secs}s remaining), skipping")
+        return (None, replay_cursor) if replay_cursor is not None else None
 
     # -------------------
     # FAST GATE — skip entire symbol if no new 5m bar (LIVE ONLY)

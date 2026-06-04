@@ -2,6 +2,7 @@
 import time
 import json
 import os
+from datetime import datetime
 
 STATE_FILE = "data/rate_limiter_state.json"
 
@@ -12,6 +13,19 @@ class BinanceRateLimiter:
         self.current_weight = 0
         self._weight_window_start = time.time()
         self._load()
+        # Restore ban from sentinel file in case state file was wiped on redeploy
+        sentinel = STATE_FILE + ".ban_sentinel"
+        if os.path.exists(sentinel):
+            try:
+                with open(sentinel) as f:
+                    s = json.load(f)
+                sentinel_banned_until = s.get("banned_until_epoch", 0)
+                if sentinel_banned_until > self.banned_until:
+                    self.banned_until = sentinel_banned_until
+                    print(f"[RATE LIMITER] ⚠️  Ban restored from sentinel — expires {s.get('banned_until_human')}")
+                    self._save()
+            except Exception as e:
+                print(f"[RATE LIMITER] sentinel read failed: {e}")
 
     def _load(self):
         if os.path.exists(STATE_FILE):
@@ -105,9 +119,19 @@ class BinanceRateLimiter:
 
     def on_418(self, retry_after=None):
         self._load()
-        self.banned_until = time.time() + (retry_after or 7200)
+        ban_duration = retry_after or 7200
+        self.banned_until = time.time() + ban_duration
         self.current_weight = 1200
-        print(f"[RATE LIMITER] 418 — IP banned, blocking all requests for {retry_after or 7200}s")
+        print(f"[RATE LIMITER] 418 — IP banned until {datetime.utcfromtimestamp(self.banned_until).isoformat()}Z (duration={ban_duration}s)")
         self._save()
+        sentinel = STATE_FILE + ".ban_sentinel"
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(sentinel + ".tmp", "w") as f:
+            json.dump({
+                "banned_until_epoch": self.banned_until,
+                "banned_until_human": datetime.utcfromtimestamp(self.banned_until).isoformat() + "Z",
+                "ban_duration_secs": ban_duration,
+            }, f, indent=2)
+        os.replace(sentinel + ".tmp", sentinel)
 
 rate_limiter = BinanceRateLimiter()
