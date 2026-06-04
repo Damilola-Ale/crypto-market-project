@@ -39,49 +39,56 @@ def fetch_ohlcv(
 
     symbol = symbol.replace("-", "").upper()
 
-    def safe_request(params):
-            try:
-                rate_limiter.check()  # blocks if banned, rate-limited, or weight-throttled
+    def safe_request(params, _request_counter=[0]):
+        try:
+            rate_limiter.check()  # blocks if banned, rate-limited, or weight-throttled
 
-                r = requests.get(BASE_URL, params=params, timeout=10)
+            _request_counter[0] += 1
+            req_num = _request_counter[0]
 
-                used_weight_raw = r.headers.get("X-MBX-USED-WEIGHT-1M", "0")
-                used_weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
-                retry_after = r.headers.get("Retry-After", None)
-                retry_after_int = int(retry_after) if retry_after else None
-                print(f"[BINANCE HEADERS] status={r.status_code} weight_used={used_weight} retry_after={retry_after}")
+            r = requests.get(BASE_URL, params=params, timeout=10)
 
-                # Always update weight tracker — even on error responses
-                if used_weight > 0:
-                    rate_limiter.on_response(used_weight)
+            used_weight_raw = r.headers.get("X-MBX-USED-WEIGHT-1M", "0")
+            used_weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
+            retry_after = r.headers.get("Retry-After", None)
+            retry_after_int = int(retry_after) if retry_after else None
+            print(
+                f"[BINANCE HEADERS] req=#{req_num} symbol={symbol} interval={interval} "
+                f"status={r.status_code} weight={used_weight} retry_after={retry_after} "
+                f"params_end={params.get('endTime')}"
+            )
 
-                if r.status_code == 429:
-                    rate_limiter.on_429(retry_after_int)
-                    raise RuntimeError(f"RATE_LIMIT_429: weight={used_weight} retry_after={retry_after} url={r.url}")
-                if r.status_code == 418:
-                    rate_limiter.on_418(retry_after_int)
-                    raise RuntimeError(f"IP_BANNED_418: weight={used_weight} retry_after={retry_after} url={r.url}")
-                if r.status_code != 200:
-                    raise RuntimeError(f"HTTP_{r.status_code}: body={r.text[:300]} url={r.url}")
+            # Always update weight tracker — even on error responses
+            if used_weight > 0:
+                rate_limiter.on_response(used_weight)
 
-                data = r.json()
+            if r.status_code == 429:
+                rate_limiter.on_429(retry_after_int)
+                raise RuntimeError(f"RATE_LIMIT_429: weight={used_weight} retry_after={retry_after} url={r.url}")
+            if r.status_code == 418:
+                rate_limiter.on_418(retry_after_int)
+                raise RuntimeError(f"IP_BANNED_418: weight={used_weight} retry_after={retry_after} url={r.url}")
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP_{r.status_code}: body={r.text[:300]} url={r.url}")
 
-                if isinstance(data, dict):
-                    raise RuntimeError(f"BINANCE_ERROR_DICT: {data} url={r.url}")
+            data = r.json()
 
-                if not isinstance(data, list):
-                    raise RuntimeError(f"UNEXPECTED_TYPE: {type(data)} body={str(data)[:200]} url={r.url}")
+            if isinstance(data, dict):
+                raise RuntimeError(f"BINANCE_ERROR_DICT: {data} url={r.url}")
 
-                return data
+            if not isinstance(data, list):
+                raise RuntimeError(f"UNEXPECTED_TYPE: {type(data)} body={str(data)[:200]} url={r.url}")
 
-            except RuntimeError:
-                raise
-            except requests.exceptions.ConnectionError as e:
-                raise RuntimeError(f"CONNECTION_ERROR: {e}")
-            except requests.exceptions.Timeout as e:
-                raise RuntimeError(f"TIMEOUT: params={params} error={e}")
-            except Exception as e:
-                raise RuntimeError(f"UNKNOWN: {type(e).__name__}: {e}")
+            return data
+
+        except RuntimeError:
+            raise
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(f"CONNECTION_ERROR: {e}")
+        except requests.exceptions.Timeout as e:
+            raise RuntimeError(f"TIMEOUT: params={params} error={e}")
+        except Exception as e:
+            raise RuntimeError(f"UNKNOWN: {type(e).__name__}: {e}")
 
     start_ms = _to_ms(start) if start else None
     end_ms = _to_ms(end) if end else None
