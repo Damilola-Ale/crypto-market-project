@@ -110,6 +110,14 @@ def run_hourly():
         notifier.send_text("🔒 *LIVE SKIPPED*\nReplay lock active — skipping live execution")
         return
 
+    if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
+        from execution.binance_client import reconcile_positions
+        pm_check = PositionManager(persist=True, notify=False)
+        recon_warnings = reconcile_positions(pm_check.positions)
+        for w in recon_warnings:
+            print(f"[RECONCILE] {w}")
+            notifier.send_text(f"⚠️ *RECONCILE WARNING*\n`{w}`")
+
     with open("data/last_run.json", "w") as f:
         json.dump(
             {

@@ -10,6 +10,21 @@ from typing import Optional
 from execution.notifier import TelegramNotifier
 from strategy.account_state import account_state
 
+# Binance execution — only imported if env vars are set
+_EXECUTION_ENABLED = bool(
+    os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET")
+)
+if _EXECUTION_ENABLED:
+    from execution.binance_client import (
+        open_position as _binance_open,
+        close_position as _binance_close,
+        amend_stop as _binance_amend_stop,
+        BinanceExecutionError,
+    )
+    print("[LIFECYCLE] Binance execution ENABLED")
+else:
+    print("[LIFECYCLE] Binance execution DISABLED (no API keys set)")
+
 def _tg_debug(msg: str) -> None:
     """Fire-and-forget debug message to Telegram. Never raises."""
     try:
@@ -362,14 +377,14 @@ class PositionManager:
             if symbol in self._reentry_lock:
                 locked_dir = self._reentry_lock[symbol]
                 locked_at = self._reentry_lock_ts.get(symbol, "unknown")
-                _tg_debug(
-                    f"[REENTRY LOCK STATE] {symbol}\n"
-                    f"locked_dir={locked_dir} current_signal={signal}\n"
-                    f"locked_at={locked_at}\n"
-                    f"would_block={signal == locked_dir}"
-                )
+                # _tg_debug(
+                #     f"[REENTRY LOCK STATE] {symbol}\n"
+                #     f"locked_dir={locked_dir} current_signal={signal}\n"
+                #     f"locked_at={locked_at}\n"
+                #     f"would_block={signal == locked_dir}"
+                # )
                 if signal == locked_dir:
-                    _tg_debug(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol} dir={signal} locked_at={locked_at}")
+                    # _tg_debug(f"[ENTRY BLOCKED — REENTRY LOCK] {symbol} dir={signal} locked_at={locked_at}")
                     return {"state": "FLAT"}
                     # NOTE: no return here intentionally until we confirm fix is needed
 
@@ -679,6 +694,22 @@ class PositionManager:
             position["stop_loss"] = new_stop
             position["trailing_activated"] = True
 
+            # ── BINANCE STOP AMENDMENT ─────────────────────────────
+            if _EXECUTION_ENABLED and self._is_live:
+                try:
+                    new_stop_order = _binance_amend_stop(
+                        symbol=position["symbol"],
+                        direction=side,
+                        quantity=position.get("quantity", 0),
+                        new_stop_price=new_stop,
+                        existing_stop_order_id=position.get("binance_stop_order_id"),
+                        trade_id=position.get("trade_id"),
+                    )
+                    position["binance_stop_order_id"] = new_stop_order.get("orderId")
+                except BinanceExecutionError as e:
+                    _tg_debug(f"[BINANCE STOP AMEND FAILED] {position['symbol']} — {e}")
+            # ────────────────────────────────────────────────────────
+
     # --------------------------------------------------
     # OPEN / CLOSE
     # --------------------------------------------------
@@ -692,7 +723,12 @@ class PositionManager:
         stop_dist = abs(price - stop)
         stop_pct = stop_dist / price if price > 0 else 0
         risk_usd = round(position_value * stop_pct, 4)
-        quantity = round(position_value / price, 4) if price > 0 else 0
+        if _EXECUTION_ENABLED:
+            from execution.binance_client import _fmt_qty, _qty_precision
+            raw_qty = position_value / price if price > 0 else 0
+            quantity = float(_fmt_qty(symbol, raw_qty))
+        else:
+            quantity = round(position_value / price, 4) if price > 0 else 0
 
         position = {
             "symbol":        symbol,
@@ -724,6 +760,42 @@ class PositionManager:
 
         if self.USE_ACCOUNT_GATES:
             account_state.on_position_open()
+
+        # ── BINANCE EXECUTION ──────────────────────────────────────
+        if _EXECUTION_ENABLED and self._is_live:
+            try:
+                result = _binance_open(
+                    symbol=symbol,
+                    direction=direction,
+                    quantity=quantity,
+                    stop_price=stop,
+                    trade_id=position["trade_id"],
+                )
+                # store Binance order IDs so we can cancel/amend later
+                position["binance_stop_order_id"] = result["stop_order"].get("orderId")
+                position["binance_entry_order_id"] = result["entry_order"].get("orderId")
+                # use actual fill price if Binance returned one
+                if result.get("fill_price"):
+                    position["entry_price"] = result["fill_price"]
+                self._save()
+                _tg_debug(
+                    f"[BINANCE OPEN OK] {symbol}\n"
+                    f"entry_orderId={position['binance_entry_order_id']}\n"
+                    f"stop_orderId={position['binance_stop_order_id']}\n"
+                    f"fill={result.get('fill_price')}"
+                )
+            except BinanceExecutionError as e:
+                # Order failed — remove position so we don't track a ghost
+                self.positions.pop(symbol, None)
+                self._save()
+                _tg_debug(f"[BINANCE OPEN FAILED] {symbol} — {e}")
+                self.notifier.send_text(
+                    f"🚨 *BINANCE ENTRY FAILED*\n"
+                    f"`{symbol}` dir={direction}\n"
+                    f"error: `{str(e)[:300]}`"
+                )
+                return None
+        # ────────────────────────────────────────────────────────────
 
         if self.notify:
             self.notifier.notify_open(
@@ -805,6 +877,27 @@ class PositionManager:
         # Update account balance with actual dollars, not price cents
         if self.USE_ACCOUNT_GATES:
             account_state.on_position_close(pnl_usd)
+
+        # ── BINANCE EXECUTION ──────────────────────────────────────
+        if _EXECUTION_ENABLED and self._is_live:
+            try:
+                _binance_close(
+                    symbol=symbol,
+                    direction=direction,
+                    quantity=qty,
+                    stop_order_id=pos.get("binance_stop_order_id"),
+                    trade_id=pos.get("trade_id"),
+                )
+                _tg_debug(f"[BINANCE CLOSE OK] {symbol} reason={reason}")
+            except BinanceExecutionError as e:
+                _tg_debug(f"[BINANCE CLOSE FAILED] {symbol} — {e}")
+                self.notifier.send_text(
+                    f"🚨 *BINANCE CLOSE FAILED*\n"
+                    f"`{symbol}` reason={reason}\n"
+                    f"error: `{str(e)[:300]}`\n"
+                    f"⚠️ Manual close may be required"
+                )
+        # ────────────────────────────────────────────────────────────
 
         if self.notify:
             self.notifier.notify_close(
