@@ -3,9 +3,13 @@ import pandas as pd
 from datetime import datetime, timezone
 import time
 
-BASE_URL = "https://api.binance.com/api/v3/klines"
-PING_URL = "https://api.binance.com/api/v3/ping"
+import os as _os
+_PROXY_BASE = _os.getenv("BINANCE_PROXY_URL", "").rstrip("/")
+BASE_URL = f"{_PROXY_BASE}/api/v3/klines" if _PROXY_BASE else "https://api.binance.com/api/v3/klines"
+PING_URL = f"{_PROXY_BASE}/api/v3/ping"  if _PROXY_BASE else "https://api.binance.com/api/v3/ping"
 from data_pipeline.rate_limiter import rate_limiter
+
+print(f"[FETCHER] Using {'proxy: ' + _PROXY_BASE if _PROXY_BASE else 'direct Binance connection'}")
 
 def check_current_weight() -> int:
     """
