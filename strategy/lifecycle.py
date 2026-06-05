@@ -901,7 +901,7 @@ class PositionManager:
                 loaded = set(json.loads(content)) if content else set()
                 # FIX: 2-hour window is enough to prevent duplicates within a session
                 # 48 hours was creating phantom blocks that persisted across restarts
-                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=2)
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=8)
                 kept = set()
                 for s in loaded:
                     try:

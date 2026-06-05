@@ -200,7 +200,7 @@ def update_symbol(symbol: str):
     # --------------------------------------------------
 
     fetch_start = start_required if df is None else last_ts + timedelta(hours=1)
-    fetch_end = now_hour - timedelta(hours=1)  # only fetch closed 1H bars
+    fetch_end = now_hour  # fetch up to current hour boundary, trim after
 
     print("[FETCH WINDOW]")
     print("start:", fetch_start)
