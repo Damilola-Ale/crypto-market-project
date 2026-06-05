@@ -49,8 +49,34 @@ def run_hourly():
     from data_pipeline.rate_limiter import rate_limiter
     from data_pipeline.fetcher import check_current_weight
 
-    # Live weight check — costs 1 unit, confirms ban status and current headroom
-    startup_weight = check_current_weight()
+    # Only ping Binance once per 5m boundary — not every 10s cron tick
+    now_check = datetime.now(timezone.utc)
+    _ping_boundary = now_check.replace(
+        minute=(now_check.minute // 5) * 5, second=0, microsecond=0
+    )
+    _ping_cache_file = "data/last_ping.json"
+    _last_ping_boundary = None
+    if os.path.exists(_ping_cache_file):
+        try:
+            with open(_ping_cache_file) as f:
+                _last_ping_boundary = datetime.fromisoformat(json.load(f).get("boundary", ""))
+                if _last_ping_boundary.tzinfo is None:
+                    _last_ping_boundary = _last_ping_boundary.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    if _last_ping_boundary != _ping_boundary:
+        startup_weight = check_current_weight()
+        try:
+            with open(_ping_cache_file + ".tmp", "w") as f:
+                json.dump({"boundary": _ping_boundary.isoformat()}, f)
+            os.replace(_ping_cache_file + ".tmp", _ping_cache_file)
+        except Exception:
+            pass
+    else:
+        startup_weight = rate_limiter.current_weight
+        print(f"[WEIGHT STATUS CACHED] weight={startup_weight} (ping skipped — same 5m boundary)")
+
     window_age = time.time() - rate_limiter._weight_window_start
     seconds_until_reset = max(0, 60 - window_age)
     print(
@@ -387,9 +413,8 @@ def run_hourly_for_symbol(
 
                         _minutes_floored = (now_utc_c.minute // 5) * 5
                         _current_5m_boundary = pd.Timestamp(
-                            now_utc_c.replace(minute=_minutes_floored, second=0, microsecond=0),
-                            tz="UTC"
-                        )
+                            now_utc_c.replace(minute=_minutes_floored, second=0, microsecond=0, tzinfo=None)
+                        ).tz_localize("UTC")
 
                         if lltf_df.index[-1] < _current_5m_boundary:
                             # Cache is stale — fetch only the missing bars
