@@ -307,19 +307,25 @@ def open_position(
     )
 
     # ── Stop-loss ──────────────────────────────────────────────────
-    stop_order = _place_stop_market_order(
-        symbol=symbol,
-        side=stop_side,
-        stop_price=stop_price,
-        quantity=quantity,
-        reduce_only=True,
-        client_order_id=stop_cid,
-    )
-
-    print(
-        f"[BINANCE STOP] {symbol} {stop_side} stop={stop_price} "
-        f"qty={quantity} orderId={stop_order.get('orderId')}"
-    )
+    stop_order = {}
+    try:
+        stop_order = _place_stop_market_order(
+            symbol=symbol,
+            side=stop_side,
+            stop_price=stop_price,
+            quantity=quantity,
+            reduce_only=True,
+            client_order_id=stop_cid,
+        )
+        print(
+            f"[BINANCE STOP] {symbol} {stop_side} stop={stop_price} "
+            f"qty={quantity} orderId={stop_order.get('orderId')}"
+        )
+    except BinanceExecutionError as e:
+        if "-4120" in str(e) or "Algo Order" in str(e):
+            print(f"[BINANCE STOP SKIPPED] {symbol} — demo env does not support STOP_MARKET, stop will be software-managed")
+        else:
+            raise  # re-raise anything unexpected
 
     return {
         "entry_order": entry_order,
