@@ -53,7 +53,10 @@ class PositionManager:
     # ==========================================================
     # TRADE LIFECYCLE SETTINGS (mirrors SignalBacktester exactly)
     # ==========================================================
-    POSITION_VALUE_USDT = 10
+    POSITION_VALUE_USDT  = 10    # floor — never go below this
+    RISK_PCT_OF_ACCOUNT  = 0.20  # 20% of account per trade
+    ACCOUNT_THRESHOLD    = 50.0  # only scale above this balance
+    MAX_SIMULTANEOUS     = 2     # hard cap on open trades
     INCUBATION_BARS = 6        # 30 minutes (6×5m)
     VALIDATION_BARS = 18       # 90 minutes total
     PRESSURE_BARS   = 6        # stop proximity exit
@@ -734,7 +737,26 @@ class PositionManager:
             else price + self.ATR_MULT * atr
         )
 
-        position_value = self.POSITION_VALUE_USDT
+        # Hard cap on simultaneous trades
+        if len(self.positions) >= self.MAX_SIMULTANEOUS:
+            _tg_debug(
+                f"[ENTRY BLOCKED — MAX TRADES] {symbol}\n"
+                f"open={len(self.positions)} max={self.MAX_SIMULTANEOUS}"
+            )
+            return None
+
+        # Position sizing — fixed floor below threshold, percentage above
+        from strategy.account_state import account_state
+        account_balance = account_state.balance if hasattr(account_state, 'balance') and account_state.balance >= self.ACCOUNT_THRESHOLD else 0.0
+
+        if account_balance >= self.ACCOUNT_THRESHOLD:
+            position_value = account_balance * self.RISK_PCT_OF_ACCOUNT
+        else:
+            position_value = self.POSITION_VALUE_USDT  # validation mode — fixed $10
+
+        # Never go below floor
+        position_value = max(position_value, self.POSITION_VALUE_USDT)
+
         stop_dist = abs(price - stop)
         stop_pct = stop_dist / price if price > 0 else 0
         risk_usd = round(position_value * stop_pct, 4)

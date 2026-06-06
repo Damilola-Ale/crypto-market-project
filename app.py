@@ -410,6 +410,14 @@ def debug_full_state():
                 cache_summary[fname] = {"error": str(e)}
     result["cache_summary"] = cache_summary
 
+    # ── ACCOUNT STATE ──────────────────────────────────────
+    account_state_path = "data/positions/account_state.json"
+    if os.path.exists(account_state_path):
+        with open(account_state_path, "r") as f:
+            result["account_state"] = json.load(f)
+    else:
+        result["account_state"] = {"exists": False}
+
     # ── SERVER TIME ────────────────────────────────────────
     result["server_time_utc"] = datetime.now(timezone.utc).isoformat()
 

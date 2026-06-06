@@ -98,10 +98,10 @@ def fetch_binance(symbol, interval, limit):
 # ==========================================================
 # SYMBOLS = [
 #     "LINKUSDT", "XRPUSDT", "PENDLEUSDT", "ETHUSDT", "AAVEUSDT", "GMXUSDT", 
-#     "SOLUSDT", "LDOUSDT", "RUNEUSDT", "BANDUSDT", "TRBUSDT",  "ICPUSDT",
+#     "SOLUSDT", "LDOUSDT", "RUNEUSDT", "BANDUSDT", "TRBUSDT",  "STGUSDT",
 #     "ADAUSDT", "OPUSDT", "AXLUSDT", "ZILUSDT", "LSKUSDT"
 # ] MAV ID LRC IMX ACE NFP BSV TON RVN NMR UMA OGN SLP AGLD STG CVC CKB ICX CHR
-SYMBOL = "LDOUSDT"
+SYMBOL = "CVCUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -142,9 +142,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 1000   # ~30 days of 1h candles
 # HTF_LIMIT = 250   # ~120 days of 4h candles
 
-LLTF_LIMIT = 3600
-LTF_LIMIT = 300   # ~30 days of 1h candles
-HTF_LIMIT = 75   # ~120 days of 4h candles
+# LLTF_LIMIT = 6000
+# LTF_LIMIT = 500   # ~30 days of 1h candles
+# HTF_LIMIT = 125   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
