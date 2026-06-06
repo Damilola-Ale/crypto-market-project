@@ -21,7 +21,7 @@ def _tg_debug(msg: str) -> None:
 
 SYMBOLS = [
     "LINKUSDT", "XRPUSDT", "PENDLEUSDT", "ETHUSDT", "AAVEUSDT", "GMXUSDT", 
-    "SOLUSDT", "LDOUSDT", "RUNEUSDT", "BANDUSDT", "TRBUSDT",  "ICPUSDT",
+    "SOLUSDT", "LDOUSDT", "RUNEUSDT", "BANDUSDT", "TRBUSDT",
     "ADAUSDT", "OPUSDT", "AXLUSDT", "ZILUSDT", "LSKUSDT"
 ]
 
@@ -735,16 +735,43 @@ def run_hourly_for_symbol(
             return None
 
         if last_seen is None and not replay and not forced_time:
-            notifier.send_text(
-                f"⚠️ *CURSOR RESET DETECTED*\n"
-                f"Symbol: `{symbol}`\n"
-                f"Processing last 12 bars to recover signal state"
-            )
-            recovery_bars = 12
-            if len(lltf_frozen) > recovery_bars:
-                last_seen = lltf_frozen.index[-(recovery_bars + 1)]
+            # Cursor reset — position may be open and needs exit checks.
+            # Recovery window: look back enough bars to rebuild bar_history
+            # for OIE/trailing, but NEVER re-enter. We do this by setting
+            # last_seen to a point far enough back to cover any open position,
+            # and relying on _executed_signals + the staleness gate to block
+            # any entry that would have fired in the recovery window.
+            # The staleness gate (>300s) already blocks entries on old bars
+            # when _is_live=True, so re-entry during recovery is impossible
+            # as long as executed_signals is persisted (which it is).
+            has_open = symbol in pm.positions
+            if has_open:
+                # Recover from entry bar so bar_history rebuilds fully
+                entry_ts = pd.Timestamp(pm.positions[symbol]["entry_5m_ts"])
+                if entry_ts.tzinfo is None:
+                    entry_ts = entry_ts.tz_localize("UTC")
+                # find the bar just before entry so the entry bar itself is included
+                bars_before_entry = lltf_frozen[lltf_frozen.index < entry_ts]
+                last_seen = bars_before_entry.index[-1] if not bars_before_entry.empty else lltf_frozen.index[0]
+                notifier.send_text(
+                    f"⚠️ *CURSOR RESET DETECTED*\n"
+                    f"Symbol: `{symbol}`\n"
+                    f"Open position found — recovering from entry bar `{entry_ts}`\n"
+                    f"Entry is blocked by staleness gate. Exit checks will resume."
+                )
             else:
-                last_seen = lltf_frozen.index[0]
+                # No open position — just need the last 2 bars for signal state.
+                # Don't go back far enough to risk re-entry on an old signal.
+                recovery_bars = 2
+                if len(lltf_frozen) > recovery_bars:
+                    last_seen = lltf_frozen.index[-(recovery_bars + 1)]
+                else:
+                    last_seen = lltf_frozen.index[0]
+                notifier.send_text(
+                    f"⚠️ *CURSOR RESET DETECTED*\n"
+                    f"Symbol: `{symbol}`\n"
+                    f"No open position — minimal recovery (2 bars)"
+                )
 
         new_bars = (
             lltf_frozen if last_seen is None

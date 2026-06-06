@@ -408,6 +408,21 @@ class PositionManager:
                 )
                 return {"state": "FLAT"}
 
+            # Live staleness gate — BEFORE registering the signal ID.
+            # This ensures stale bars from cursor-reset recovery never
+            # consume a signal slot or touch Binance, even if executed_signals
+            # was empty on restart.
+            if self._is_live:
+                _now_utc = pd.Timestamp.now(tz="UTC")
+                _bar_age_seconds = (_now_utc - current_ts).total_seconds()
+                if _bar_age_seconds > 300:  # 5 minutes
+                    _tg_debug(
+                        f"[ENTRY BLOCKED — STALE BAR] {symbol}\n"
+                        f"bar_ts={current_ts} now={_now_utc}\n"
+                        f"age={_bar_age_seconds:.0f}s > 300s limit"
+                    )
+                    return {"state": "FLAT"}
+
             self._executed_signals.add(signal_id)
             _tg_debug(
                 f"[EXECUTED SIGNAL REGISTERED] {symbol}\n"
@@ -442,20 +457,6 @@ class PositionManager:
             if atr <= 0:
                 _tg_debug(f"[ENTRY BLOCKED — ATR] {symbol} @ {current_ts} atr={atr}")
                 return {"state": "FLAT"}
-
-            # Live staleness gate — block entry if the signal bar is more
-            # than 5 minutes behind wall clock. Catches cursor-reset replays
-            # and any other path that feeds old bars into live execution.
-            if self._is_live:
-                _now_utc = pd.Timestamp.now(tz="UTC")
-                _bar_age_seconds = (_now_utc - current_ts).total_seconds()
-                if _bar_age_seconds > 300:  # 5 minutes
-                    _tg_debug(
-                        f"[ENTRY BLOCKED — STALE BAR] {symbol}\n"
-                        f"bar_ts={current_ts} now={_now_utc}\n"
-                        f"age={_bar_age_seconds:.0f}s > 300s limit"
-                    )
-                    return {"state": "FLAT"}
 
             new_pos = self._open(symbol, signal, entry_price, current_ts, atr)
 
