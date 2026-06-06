@@ -111,7 +111,22 @@ def run_hourly():
         return
 
     if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
-        from execution.binance_client import reconcile_positions, get_open_positions, get_open_orders
+        from execution.binance_client import reconcile_positions, get_open_positions, get_open_orders, get_account_balance
+        from strategy.account_state import account_state as _account_state
+
+        # Sync equity from Binance so position sizing is always accurate
+        try:
+            _bal = get_account_balance()
+            _live_equity = _bal.get("total", 0.0)
+            if _live_equity > 0:
+                _account_state.equity = _live_equity
+                _account_state._save()
+                print(f"[ACCOUNT SYNC] equity synced from Binance: ${_live_equity:.2f}")
+            else:
+                print(f"[ACCOUNT SYNC] Binance returned 0 balance — keeping existing equity=${_account_state.equity:.2f}")
+        except Exception as _bal_err:
+            print(f"[ACCOUNT SYNC FAILED] {_bal_err} — keeping existing equity=${_account_state.equity:.2f}")
+
         pm_check = PositionManager(persist=True, notify=False)
         recon_warnings = reconcile_positions(pm_check.positions)
         for w in recon_warnings:

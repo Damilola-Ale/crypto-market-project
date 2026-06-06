@@ -69,7 +69,7 @@ class PositionManager:
     ATR_AFTER_HALF_R  = 0.7   # tighter once 0.5R secured
     ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
-    USE_ACCOUNT_GATES = False
+    USE_ACCOUNT_GATES = True
 
     SIGNAL_EXPIRY_BARS      = 6    # replay: signal dies after 6×5m = 30 minutes
     SIGNAL_EXPIRY_BARS_LIVE = 1   # live: entry only valid on the exact bar the signal fires
@@ -747,10 +747,10 @@ class PositionManager:
 
         # Position sizing — fixed floor below threshold, percentage above
         from strategy.account_state import account_state
-        account_balance = account_state.balance if hasattr(account_state, 'balance') and account_state.balance >= self.ACCOUNT_THRESHOLD else 0.0
+        account_equity = account_state.equity if hasattr(account_state, 'equity') and account_state.equity > 0 else 0.0
 
-        if account_balance >= self.ACCOUNT_THRESHOLD:
-            position_value = account_balance * self.RISK_PCT_OF_ACCOUNT
+        if account_equity >= self.ACCOUNT_THRESHOLD:
+            position_value = account_equity * self.RISK_PCT_OF_ACCOUNT
         else:
             position_value = self.POSITION_VALUE_USDT  # validation mode — fixed $10
 
