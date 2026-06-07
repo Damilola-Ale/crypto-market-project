@@ -52,7 +52,21 @@ class BinanceRateLimiter:
 
     def is_banned(self, buffer_secs=900) -> bool:
         self._load()
-        return time.time() < self.banned_until + buffer_secs
+        currently_banned = time.time() < self.banned_until + buffer_secs
+
+        # Write ban-end marker the first time we transition to unbanned.
+        # hourly_runner reads this to apply a post-ban stagger on first run.
+        if not currently_banned and self.banned_until > 0:
+            _marker = STATE_FILE.replace("rate_limiter_state.json", "last_ban_end.json")
+            try:
+                if not os.path.exists(_marker):
+                    with open(_marker + ".tmp", "w") as f:
+                        json.dump({"ended_at": datetime.utcnow().isoformat()}, f)
+                    os.replace(_marker + ".tmp", _marker)
+            except Exception:
+                pass
+
+        return currently_banned
 
     def check(self):
         self._load()

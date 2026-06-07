@@ -135,18 +135,41 @@ def run_hourly():
         from execution.binance_client import reconcile_positions, get_open_positions, get_open_orders, get_account_balance
         from strategy.account_state import account_state as _account_state
 
-        # Sync equity from Binance so position sizing is always accurate
-        try:
-            _bal = get_account_balance()
-            _live_equity = _bal.get("total", 0.0)
-            if _live_equity > 0:
-                _account_state.equity = _live_equity
-                _account_state._save()
-                print(f"[ACCOUNT SYNC] equity synced from Binance: ${_live_equity:.2f}")
-            else:
-                print(f"[ACCOUNT SYNC] Binance returned 0 balance — keeping existing equity=${_account_state.equity:.2f}")
-        except Exception as _bal_err:
-            print(f"[ACCOUNT SYNC FAILED] {_bal_err} — keeping existing equity=${_account_state.equity:.2f}")
+        # Sync equity from Binance — gated to same 5m boundary as recon
+        # to avoid hammering /fapi/v2/account on every 10s cron tick.
+        # _should_recon is computed below, so we use the same boundary check here.
+        _bal_cache_file = "data/last_bal_sync.json"
+        _last_bal_boundary = None
+        if os.path.exists(_bal_cache_file):
+            try:
+                with open(_bal_cache_file) as f:
+                    _last_bal_boundary = datetime.fromisoformat(json.load(f).get("boundary", ""))
+                    if _last_bal_boundary.tzinfo is None:
+                        _last_bal_boundary = _last_bal_boundary.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+
+        _bal_boundary = now_check.replace(
+            minute=(now_check.minute // 5) * 5, second=0, microsecond=0
+        )
+
+        if _last_bal_boundary != _bal_boundary:
+            try:
+                _bal = get_account_balance()
+                _live_equity = _bal.get("total", 0.0)
+                if _live_equity > 0:
+                    _account_state.equity = _live_equity
+                    _account_state._save()
+                    print(f"[ACCOUNT SYNC] equity synced from Binance: ${_live_equity:.2f}")
+                else:
+                    print(f"[ACCOUNT SYNC] Binance returned 0 balance — keeping existing equity=${_account_state.equity:.2f}")
+                with open(_bal_cache_file + ".tmp", "w") as f:
+                    json.dump({"boundary": _bal_boundary.isoformat()}, f)
+                os.replace(_bal_cache_file + ".tmp", _bal_cache_file)
+            except Exception as _bal_err:
+                print(f"[ACCOUNT SYNC FAILED] {_bal_err} — keeping existing equity=${_account_state.equity:.2f}")
+        else:
+            print(f"[ACCOUNT SYNC SKIPPED] same 5m boundary — using cached equity=${_account_state.equity:.2f}")
 
         # Gate reconcile + orphan adopt to once per 5m boundary —
         # positionRisk is expensive; no need to call it every 10s cron tick.
@@ -270,10 +293,35 @@ def run_hourly():
             indent=2
         )
 
+    # Post-ban stagger — if we just came out of a ban, cold caches across
+    # all 16 symbols will trigger full fetches simultaneously, spiking weight
+    # and potentially re-triggering the ban immediately. Space them out.
+    _post_ban_file = "data/last_ban_end.json"
+    _post_ban_stagger = 0
+    if os.path.exists(_post_ban_file):
+        try:
+            with open(_post_ban_file) as f:
+                _ban_ended_at = datetime.fromisoformat(json.load(f).get("ended_at", ""))
+                if _ban_ended_at.tzinfo is None:
+                    _ban_ended_at = _ban_ended_at.replace(tzinfo=timezone.utc)
+            _seconds_since_ban = (datetime.now(timezone.utc) - _ban_ended_at).total_seconds()
+            if _seconds_since_ban < 300:  # within 5 minutes of ban ending
+                _post_ban_stagger = 3  # 3s between symbols = ~48s total for 16 symbols
+                print(f"[POST-BAN STAGGER] {_seconds_since_ban:.0f}s since ban ended — staggering symbol fetches by {_post_ban_stagger}s")
+                TelegramNotifier().send_text(
+                    f"⚠️ *POST-BAN STAGGER ACTIVE*\n"
+                    f"Ban ended `{_seconds_since_ban:.0f}s` ago\n"
+                    f"Spacing symbol fetches by `{_post_ban_stagger}s` to avoid re-ban"
+                )
+        except Exception:
+            pass
+
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
     for symbol in SYMBOLS:
+        if _post_ban_stagger:
+            time.sleep(_post_ban_stagger)
         try:
             result = run_hourly_for_symbol(symbol)
             if isinstance(result, tuple):
