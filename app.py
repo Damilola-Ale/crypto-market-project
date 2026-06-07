@@ -18,6 +18,16 @@ def health():
     return {"status": "alive"}, 200
 
 
+@app.route("/debug/myip")
+def debug_myip():
+    import requests
+    try:
+        ip = requests.get("https://ifconfig.me", timeout=5).text.strip()
+        return {"ip": ip}, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
 @app.route("/test-proxy")
 def test_proxy():
     import requests
