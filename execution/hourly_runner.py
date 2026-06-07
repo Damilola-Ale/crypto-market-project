@@ -37,7 +37,28 @@ def _last_5m_file(symbol: str, live: bool) -> str:
     prefix = "live" if live else "replay"
     return f"data/cursors/{prefix}_{symbol}.json"
 
+def _check_ip_change():
+    try:
+        import requests
+        current_ip = requests.get("https://ifconfig.me", timeout=5).text.strip()
+        ip_file = "data/known_ip.txt"
+        if os.path.exists(ip_file):
+            with open(ip_file) as f:
+                known_ip = f.read().strip()
+            if current_ip != known_ip:
+                TelegramNotifier().send_text(
+                    f"⚠️ *IP ADDRESS CHANGED*\n"
+                    f"Old: `{known_ip}`\n"
+                    f"New: `{current_ip}`\n"
+                    f"Update Binance API whitelist or trades will fail!"
+                )
+        with open(ip_file, "w") as f:
+            f.write(current_ip)
+    except Exception:
+        pass
+
 def run_hourly():
+    _check_ip_change()
     print("\n==============================")
     print("CRYPTO MARKET PROJECT EXECUTION")
     print("==============================\n")

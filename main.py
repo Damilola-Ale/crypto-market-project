@@ -109,8 +109,6 @@ HTF_INTERVAL = "4h"
 
 LEVERAGE = 1
 
-# SHpbysSc5gYouGkcEm8klhZ3x5vU6VeOhEaSa1f0ZItZ5aomeJa2iJ9pgHyG37mQ
-# 0i1TFEsfTFDMuUoPuE9Ru8YGDJNKZl1to8kCeOXeHlDjTYz1QBLhoNs6xwNIAOZr
 # LLTF_LIMIT = 630720
 # LTF_LIMIT = 52560   # ~30 days of 1h candles
 # HTF_LIMIT = 13140   # ~120 days of 4h candles
