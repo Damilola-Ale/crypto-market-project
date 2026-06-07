@@ -148,82 +148,117 @@ def run_hourly():
         except Exception as _bal_err:
             print(f"[ACCOUNT SYNC FAILED] {_bal_err} — keeping existing equity=${_account_state.equity:.2f}")
 
+        # Gate reconcile + orphan adopt to once per 5m boundary —
+        # positionRisk is expensive; no need to call it every 10s cron tick.
+        _recon_cache_file = "data/last_recon.json"
+        _last_recon_boundary = None
+        if os.path.exists(_recon_cache_file):
+            try:
+                with open(_recon_cache_file) as f:
+                    _last_recon_boundary = datetime.fromisoformat(json.load(f).get("boundary", ""))
+                    if _last_recon_boundary.tzinfo is None:
+                        _last_recon_boundary = _last_recon_boundary.replace(tzinfo=timezone.utc)
+            except Exception:
+                pass
+
+        _recon_boundary = now_check.replace(
+            minute=(now_check.minute // 5) * 5, second=0, microsecond=0
+        )
+
+        _should_recon = _last_recon_boundary != _recon_boundary
+
         pm_check = PositionManager(persist=True, notify=False)
-        recon_warnings = reconcile_positions(pm_check.positions)
-        for w in recon_warnings:
-            print(f"[RECONCILE] {w}")
-            notifier.send_text(f"⚠️ *RECONCILE WARNING*\n`{w}`")
 
-        # Re-adopt orphaned Binance positions into local tracking so
-        # software exits (OIE, trailing, stall) resume managing them.
-        try:
-            live_positions = get_open_positions()
-            for symbol, live in live_positions.items():
-                if symbol not in pm_check.positions:
-                    # Find the standing stop order to recover stop price
-                    stop_price = None
-                    stop_order_id = None
-                    try:
-                        open_orders = get_open_orders(symbol)
-                        for o in open_orders:
-                            if o.get("type") == "STOP_MARKET" and o.get("reduceOnly"):
-                                stop_price = float(o["stopPrice"])
-                                stop_order_id = o.get("orderId")
-                                break
-                    except Exception as oe:
-                        _tg_debug(f"[RECON] Could not fetch open orders for {symbol}: {oe}")
+        if _should_recon:
+            # Single positionRisk call — shared between reconcile and orphan adopt
+            try:
+                live_positions = get_open_positions()
+            except Exception as _pos_err:
+                live_positions = None
+                notifier.send_text(f"⚠️ *POSITION FETCH FAILED*\n`{str(_pos_err)[:300]}`")
 
-                    entry_price = live["entry_price"]
-                    direction = live["side"]
-                    qty = live["qty"]
+            if live_positions is not None:
+                # Reconcile
+                recon_warnings = reconcile_positions(pm_check.positions, live_positions=live_positions)
+                for w in recon_warnings:
+                    print(f"[RECONCILE] {w}")
+                    notifier.send_text(f"⚠️ *RECONCILE WARNING*\n`{w}`")
 
-                    # If no stop order found, reconstruct stop from ATR
-                    # (1.5 ATR default — will be re-trailed on next bar anyway)
-                    if stop_price is None:
-                        _tg_debug(f"[RECON] No stop order found for {symbol} — stop will be reconstructed on next bar")
-                        stop_price = entry_price  # breakeven as safe fallback
+                # Orphan adopt — reuse live_positions already fetched above
+                try:
+                    for symbol, live in live_positions.items():
+                        if symbol not in pm_check.positions:
+                            stop_price = None
+                            stop_order_id = None
+                            try:
+                                open_orders = get_open_orders(symbol)
+                                for o in open_orders:
+                                    if o.get("type") == "STOP_MARKET" and o.get("reduceOnly"):
+                                        stop_price = float(o["stopPrice"])
+                                        stop_order_id = o.get("orderId")
+                                        break
+                            except Exception as oe:
+                                _tg_debug(f"[RECON] Could not fetch open orders for {symbol}: {oe}")
 
-                    recovered = {
-                        "symbol":           symbol,
-                        "trade_id":         TelegramNotifier.make_trade_id(symbol),
-                        "direction":        direction,
-                        "entry_price":      entry_price,
-                        "entry_time":       pd.Timestamp.now(tz="UTC").isoformat(),
-                        "entry_5m_ts":      pd.Timestamp.now(tz="UTC").isoformat(),
-                        "stop_loss":        stop_price,
-                        "initial_stop":     stop_price,
-                        "R":                abs(entry_price - stop_price) or 1e-9,
-                        "state":            "OPEN",
-                        "mfe_r":            0.0,
-                        "pnl_r":            0.0,
-                        "MAE":              0.0,
-                        "MFE":              0.0,
-                        "risk_usd":         0.0,
-                        "quantity":         qty,
-                        "position_value":   entry_price * qty,
-                        "bars_in_trade":    0,
-                        "last_mfe_bar":     0,
-                        "last_trail_bar":   0,
-                        "binance_stop_order_id": stop_order_id,
-                        "binance_entry_order_id": None,
-                        "recovered":        True,  # flag so you can identify these
-                    }
+                            entry_price = live["entry_price"]
+                            direction = live["side"]
+                            qty = live["qty"]
 
-                    pm_check.positions[symbol] = recovered
-                    pm_check._dirty = True
-                    pm_check.flush()
+                            if stop_price is None:
+                                _tg_debug(f"[RECON] No stop order found for {symbol} — stop will be reconstructed on next bar")
+                                stop_price = entry_price
 
-                    notifier.send_text(
-                        f"♻️ *ORPHAN RECOVERED*\n"
-                        f"`{symbol}` re-adopted into local tracking\n"
-                        f"side={'LONG' if direction == 1 else 'SHORT'} "
-                        f"entry={entry_price} stop={stop_price} qty={qty}\n"
-                        f"Software exits will resume on next bar."
-                    )
-                    _tg_debug(f"[RECON ADOPTED] {symbol} — position recovered from Binance")
-        except Exception as recon_err:
-            _tg_debug(f"[RECON ADOPT FAILED] {recon_err}")
-            notifier.send_text(f"⚠️ *RECON ADOPT ERROR*\n`{str(recon_err)[:300]}`")
+                            recovered = {
+                                "symbol":           symbol,
+                                "trade_id":         TelegramNotifier.make_trade_id(symbol),
+                                "direction":        direction,
+                                "entry_price":      entry_price,
+                                "entry_time":       pd.Timestamp.now(tz="UTC").isoformat(),
+                                "entry_5m_ts":      pd.Timestamp.now(tz="UTC").isoformat(),
+                                "stop_loss":        stop_price,
+                                "initial_stop":     stop_price,
+                                "R":                abs(entry_price - stop_price) or 1e-9,
+                                "state":            "OPEN",
+                                "mfe_r":            0.0,
+                                "pnl_r":            0.0,
+                                "MAE":              0.0,
+                                "MFE":              0.0,
+                                "risk_usd":         0.0,
+                                "quantity":         qty,
+                                "position_value":   entry_price * qty,
+                                "bars_in_trade":    0,
+                                "last_mfe_bar":     0,
+                                "last_trail_bar":   0,
+                                "binance_stop_order_id": stop_order_id,
+                                "binance_entry_order_id": None,
+                                "recovered":        True,
+                            }
+
+                            pm_check.positions[symbol] = recovered
+                            pm_check._dirty = True
+                            pm_check.flush()
+
+                            notifier.send_text(
+                                f"♻️ *ORPHAN RECOVERED*\n"
+                                f"`{symbol}` re-adopted into local tracking\n"
+                                f"side={'LONG' if direction == 1 else 'SHORT'} "
+                                f"entry={entry_price} stop={stop_price} qty={qty}\n"
+                                f"Software exits will resume on next bar."
+                            )
+                            _tg_debug(f"[RECON ADOPTED] {symbol} — position recovered from Binance")
+                except Exception as recon_err:
+                    _tg_debug(f"[RECON ADOPT FAILED] {recon_err}")
+                    notifier.send_text(f"⚠️ *RECON ADOPT ERROR*\n`{str(recon_err)[:300]}`")
+
+            # Save boundary so we skip next cron ticks in this same 5m window
+            try:
+                with open(_recon_cache_file + ".tmp", "w") as f:
+                    json.dump({"boundary": _recon_boundary.isoformat()}, f)
+                os.replace(_recon_cache_file + ".tmp", _recon_cache_file)
+            except Exception:
+                pass
+        else:
+            print(f"[RECON SKIPPED] same 5m boundary ({_recon_boundary}) — positionRisk call suppressed")
 
     with open("data/last_run.json", "w") as f:
         json.dump(

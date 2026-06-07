@@ -85,6 +85,14 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
     Low-level HTTP call. Adds timestamp + signature for signed endpoints.
     Raises BinanceExecutionError on any non-200 or Binance error code.
     """
+    from data_pipeline.rate_limiter import rate_limiter
+
+    # Block if currently banned or rate-limited
+    try:
+        rate_limiter.check()
+    except RuntimeError as e:
+        raise BinanceExecutionError(f"Rate limiter blocked request: {e}") from e
+
     params = params or {}
     if signed:
         params["timestamp"]  = int(time.time() * 1000)
@@ -104,6 +112,26 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
             raise BinanceExecutionError(f"Unknown HTTP method: {method}")
     except requests.exceptions.RequestException as e:
         raise BinanceExecutionError(f"Network error [{method} {path}]: {e}") from e
+
+    # Always update weight tracker from response headers
+    used_weight_raw = r.headers.get("X-MBX-USED-WEIGHT-1M", "0")
+    used_weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
+    if used_weight > 0:
+        rate_limiter.on_response(used_weight)
+
+    retry_after_raw = r.headers.get("Retry-After")
+    retry_after_int = int(retry_after_raw) if retry_after_raw else None
+
+    if r.status_code == 429:
+        rate_limiter.on_429(retry_after_int)
+        raise BinanceExecutionError(
+            f"Binance HTTP 429 [{method} {path}]: rate limited, retry_after={retry_after_int}"
+        )
+    if r.status_code == 418:
+        rate_limiter.on_418(retry_after_int)
+        raise BinanceExecutionError(
+            f"Binance HTTP 418 [{method} {path}]: IP banned, retry_after={retry_after_int}"
+        )
 
     try:
         body = r.json()
@@ -468,15 +496,15 @@ def get_account_balance() -> dict:
             }
     return {"total": 0.0, "available": 0.0}
 
-def reconcile_positions(local_positions: dict) -> list[str]:
+def reconcile_positions(local_positions: dict, live_positions: dict = None) -> list[str]:
     """
     Compare local open_positions.json against Binance's actual state.
     Returns a list of warning strings for any divergence found.
-    Call this at startup in run_hourly() before processing any symbols.
+    Pass live_positions if already fetched to avoid a second API call.
     """
     warnings = []
     try:
-        live = get_open_positions()
+        live = live_positions if live_positions is not None else get_open_positions()
     except BinanceExecutionError as e:
         return [f"reconcile: could not fetch Binance positions — {e}"]
 
