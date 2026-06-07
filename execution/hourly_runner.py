@@ -155,14 +155,23 @@ def run_hourly():
 
         if _last_bal_boundary != _bal_boundary:
             try:
-                _bal = get_account_balance()
-                _live_equity = _bal.get("total", 0.0)
-                if _live_equity > 0:
-                    _account_state.equity = _live_equity
+                # Try websocket state first — zero REST calls
+                from execution.ws_listener import read_ws_equity
+                _ws_equity = read_ws_equity()
+                if _ws_equity and _ws_equity > 0:
+                    _account_state.equity = _ws_equity
                     _account_state._save()
-                    print(f"[ACCOUNT SYNC] equity synced from Binance: ${_live_equity:.2f}")
+                    print(f"[ACCOUNT SYNC] equity from websocket: ${_ws_equity:.2f}")
                 else:
-                    print(f"[ACCOUNT SYNC] Binance returned 0 balance — keeping existing equity=${_account_state.equity:.2f}")
+                    # Websocket not ready yet — fall back to REST once
+                    _bal = get_account_balance()
+                    _live_equity = _bal.get("total", 0.0)
+                    if _live_equity > 0:
+                        _account_state.equity = _live_equity
+                        _account_state._save()
+                        print(f"[ACCOUNT SYNC] equity from REST fallback: ${_live_equity:.2f}")
+                    else:
+                        print(f"[ACCOUNT SYNC] both sources returned 0 — keeping equity=${_account_state.equity:.2f}")
                 with open(_bal_cache_file + ".tmp", "w") as f:
                     json.dump({"boundary": _bal_boundary.isoformat()}, f)
                 os.replace(_bal_cache_file + ".tmp", _bal_cache_file)
@@ -193,9 +202,26 @@ def run_hourly():
         pm_check = PositionManager(persist=True, notify=False)
 
         if _should_recon:
-            # Single positionRisk call — shared between reconcile and orphan adopt
+            # Try websocket state first — zero REST calls
             try:
-                live_positions = get_open_positions()
+                from execution.ws_listener import read_ws_positions
+                _ws_positions = read_ws_positions()
+                if _ws_positions:
+                    live_positions = {
+                        sym: {
+                            "side":        p["side"],
+                            "qty":         p["qty"],
+                            "entry_price": p["entry_price"],
+                            "unrealized_pnl": 0.0,
+                            "leverage": 1,
+                        }
+                        for sym, p in _ws_positions.items()
+                    }
+                    print(f"[RECON] positions from websocket: {list(live_positions.keys()) or 'none'}")
+                else:
+                    # Websocket not ready yet — fall back to REST once
+                    live_positions = get_open_positions()
+                    print(f"[RECON] positions from REST fallback: {list(live_positions.keys()) or 'none'}")
             except Exception as _pos_err:
                 live_positions = None
                 notifier.send_text(f"⚠️ *POSITION FETCH FAILED*\n`{str(_pos_err)[:300]}`")

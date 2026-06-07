@@ -665,6 +665,11 @@ def debug_cursor_health():
 # ENTRYPOINT
 # ==================================================
 
+# Start websocket listener on startup if API keys are present
+if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
+    from execution.ws_listener import start_ws_listener
+    start_ws_listener()
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
