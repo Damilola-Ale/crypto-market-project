@@ -101,13 +101,16 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
 
     url = BASE_URL + path
 
+    _proxy_url = os.getenv("PROXY_URL")
+    _proxies = {"http": _proxy_url, "https": _proxy_url} if _proxy_url else None
+
     try:
         if method == "GET":
-            r = requests.get(url, params=params, headers=_headers(), timeout=10)
+            r = requests.get(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "POST":
-            r = requests.post(url, data=params, headers=_headers(), timeout=10)
+            r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "DELETE":
-            r = requests.delete(url, params=params, headers=_headers(), timeout=10)
+            r = requests.delete(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
         else:
             raise BinanceExecutionError(f"Unknown HTTP method: {method}")
     except requests.exceptions.RequestException as e:
