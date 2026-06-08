@@ -57,11 +57,17 @@ def _headers() -> dict:
     return {"X-MBX-APIKEY": _API_KEY}
 
 
+def _proxies() -> dict | None:
+    _proxy_url = os.getenv("PROXY_URL")
+    return {"http": _proxy_url, "https": _proxy_url} if _proxy_url else None
+
+
 def _get_listen_key() -> str:
     r = requests.post(
         f"{_REST_BASE}/fapi/v1/listenKey",
         headers=_headers(),
         timeout=10,
+        proxies=_proxies(),
     )
     r.raise_for_status()
     return r.json()["listenKey"]
@@ -73,6 +79,7 @@ def _keepalive_listen_key(key: str) -> None:
         headers=_headers(),
         params={"listenKey": key},
         timeout=10,
+        proxies=_proxies(),
     )
 
 
@@ -83,6 +90,7 @@ def _delete_listen_key(key: str) -> None:
             headers=_headers(),
             params={"listenKey": key},
             timeout=10,
+            proxies=_proxies(),
         )
     except Exception:
         pass
