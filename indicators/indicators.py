@@ -575,10 +575,10 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     
     displacement_ok = df['DISPLACEMENT_SCORE'] > 0.15
     displacement_long_ok  = (
-        df['BREAK_RESISTANCE'] | (df['DISPLACEMENT_SCORE'] > 0.45)
+        df['BREAK_RESISTANCE'] | (df['DISPLACEMENT_SCORE'] > 0.4)
     )
     displacement_short_ok = (
-        df['BREAK_SUPPORT'] | (df['DISPLACEMENT_SCORE'] > 0.45)
+        df['BREAK_SUPPORT'] | (df['DISPLACEMENT_SCORE'] > 0.4)
     )
     # Close location bias during compression
     # Where is price closing within the local compression range?
@@ -600,8 +600,8 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     # Above 0.55 = consistently closing in upper half = long bias
     # Below 0.45 = consistently closing in lower half = short bias
     # Between 0.45-0.55 = genuinely ambiguous, no trade
-    flow_bias_long  = close_location_bias > 0.6
-    flow_bias_short = close_location_bias < 0.4
+    flow_bias_long  = close_location_bias > 0.5
+    flow_bias_short = close_location_bias < 0.5
 
     df['VALID_BREAK_LONG'] = (
         df['EARLY_EXPANSION'] &
@@ -1775,9 +1775,33 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     htf_quality_baseline = df['HTF_QUALITY'].ewm(span=2000, adjust=False).mean()
     htf_quality_th       = (htf_quality_baseline * 1.05).clip(lower=0.30)
 
+    # ── HTF COMPRESSION GATE ──────────────────────────────────────────
+    # Compute compression state on the 4H bars, then align to 1H index.
+    # A breakout without prior 4H compression is a chase — the liquidity
+    # pool that fuels follow-through hasn't built yet.
+    _htf = htf_df.copy()
+    _htf = volatility_expansion(_htf)       # populates VER, VOL_EXPAND_TH, VOL_COMPRESS_TH
+    _htf = volatility_state(_htf)           # populates VOL_STATE
+    _htf = trend_efficiency_state(_htf)     # populates STRUCT_STATE (ER-based)
+    _htf = compression_detector(_htf)       # populates COMPRESSION_BARS, IS_COMPRESSION
+
+    # Require at least 3 consecutive compressed 4H bars before a 1H entry.
+    # 3 bars = 12 hours of coiling. Below that it's ambiguous structure.
+    _htf['HTF_COMPRESSED'] = _htf['COMPRESSION_BARS'] < 8
+
+    # Align to 1H — forward-fill so the flag stays True until expansion fires.
+    # Shift by 1 bar (4H close time) to prevent lookahead on the current open bar.
+    htf_compressed_aligned = (
+        _htf['HTF_COMPRESSED']
+        .shift(1)
+        .reindex(df.index, method='ffill')
+        .fillna(False)
+        .astype(bool)
+    )
+
     HTF_OK = (
-        (df['HTF_QUALITY'] > htf_quality_th) 
-        # (df['LTF_DIRECTION'] == 1)
+        (df['HTF_QUALITY'] > htf_quality_th) &
+        htf_compressed_aligned
     )
 
     # HTF_SHORT_OK = (

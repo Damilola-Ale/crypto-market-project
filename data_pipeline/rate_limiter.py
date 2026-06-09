@@ -20,12 +20,31 @@ class BinanceRateLimiter:
                 with open(sentinel) as f:
                     s = json.load(f)
                 sentinel_banned_until = s.get("banned_until_epoch", 0)
-                if sentinel_banned_until > self.banned_until:
-                    self.banned_until = sentinel_banned_until
-                    print(f"[RATE LIMITER] ⚠️  Ban restored from sentinel — expires {s.get('banned_until_human')}")
-                    self._save()
+                if sentinel_banned_until + 900 > time.time():
+                    if sentinel_banned_until > self.banned_until:
+                        self.banned_until = sentinel_banned_until
+                        print(f"[RATE LIMITER] ⚠️  Ban restored from sentinel — expires {s.get('banned_until_human')}")
+                        self._save()
+                else:
+                    os.remove(sentinel)
+                    print(f"[RATE LIMITER] Stale ban sentinel cleared (expired {s.get('banned_until_human')})")
             except Exception as e:
                 print(f"[RATE LIMITER] sentinel read failed: {e}")
+
+        # ── ONE-TIME GHOST BAN SELF-HEAL ─────────────────────────────
+        # If banned_until is in the past (including the 900s buffer),
+        # the ban has genuinely expired and any active block is a ghost.
+        # Reset it here so the next run proceeds normally without needing
+        # a manual file edit or shell command.
+        if self.banned_until > 0 and self.banned_until + 900 < time.time():
+            print(
+                f"[RATE LIMITER] Ghost ban detected — "
+                f"banned_until={datetime.utcfromtimestamp(self.banned_until).isoformat()}Z "
+                f"has expired. Clearing."
+            )
+            self.banned_until = 0
+            self.rate_limited_until = 0
+            self._save()
 
     def _load(self):
         if os.path.exists(STATE_FILE):
