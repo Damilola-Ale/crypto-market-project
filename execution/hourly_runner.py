@@ -20,8 +20,8 @@ def _tg_debug(msg: str) -> None:
         print(f"[TG DEBUG FALLBACK] {msg}")
 
 SYMBOLS = [
-    "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "JTOUSDT",
-    "XRPUSDT", "LDOUSDT", "ADAUSDT", "CVCUSDT", "FXSUSDT", "ICPUSDT",
+    "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT",
+    "XRPUSDT", "LDOUSDT", "ADAUSDT", "CVCUSDT", "ICPUSDT",
     "AXLUSDT", "HEIUSDT", "SANDUSDT", "JTOUSDT",
 ] 
 
