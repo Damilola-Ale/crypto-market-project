@@ -28,6 +28,13 @@ def _ensure_cache_dir():
 def _cache_path(symbol: str, tf: str):
     return os.path.join(CACHE_DIR, f"{symbol}_{tf}.parquet")
 
+def _estimate_pages(start: datetime, end: datetime, interval: str) -> int:
+    """Estimate worst-case number of 1000-bar pages needed to cover [start, end]."""
+    interval_seconds = {"5m": 5 * 60, "1h": 60 * 60, "4h": 4 * 60 * 60}
+    bar_sec = interval_seconds.get(interval, 60 * 60)
+    bars    = max(0, (end - start).total_seconds()) / bar_sec
+    return max(1, int(bars / 1000) + 1)
+
 def _fetch_all(symbol: str, interval: str, start: datetime, end: datetime) -> pd.DataFrame:
     """
     Paginating fetch — works backwards from end until start is covered.
@@ -211,6 +218,12 @@ def update_symbol(symbol: str):
     # --------------------------------------------------
 
     if fetch_start <= fetch_end:
+        from data_pipeline.rate_limiter import rate_limiter
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/1h",
+            n_timeframes = 1,
+            pages_per_tf = _estimate_pages(fetch_start, fetch_end, LTF_INTERVAL),
+        )
         new_data = _fetch_all(symbol, LTF_INTERVAL, fetch_start, fetch_end)
 
         if not new_data.empty:
@@ -297,6 +310,12 @@ def update_symbol(symbol: str):
 
     # Fetch only missing HTF candles
     if htf_fetch_start <= htf_fetch_end:
+        from data_pipeline.rate_limiter import rate_limiter
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/4h",
+            n_timeframes = 1,
+            pages_per_tf = _estimate_pages(htf_fetch_start, htf_fetch_end, HTF_INTERVAL),
+        )
         new_htf = _fetch_all(symbol, HTF_INTERVAL, htf_fetch_start, htf_fetch_end)
 
         if not new_htf.empty:
@@ -406,6 +425,12 @@ def update_symbol(symbol: str):
     print("end:  ", lltf_fetch_end)
 
     if lltf_fetch_start <= lltf_fetch_end:
+        from data_pipeline.rate_limiter import rate_limiter
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/5m",
+            n_timeframes = 1,
+            pages_per_tf = _estimate_pages(lltf_fetch_start, lltf_fetch_end, LLTF_INTERVAL),
+        )
         new_lltf = _fetch_all(symbol, LLTF_INTERVAL, lltf_fetch_start, lltf_fetch_end)
         
         if not new_lltf.empty:

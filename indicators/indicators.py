@@ -575,10 +575,10 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     
     displacement_ok = df['DISPLACEMENT_SCORE'] > 0.15
     displacement_long_ok  = (
-        df['BREAK_RESISTANCE'] | (df['DISPLACEMENT_SCORE'] > 0.4)
+        df['BREAK_RESISTANCE'] & (df['DISPLACEMENT_SCORE'] > 0.4)
     )
     displacement_short_ok = (
-        df['BREAK_SUPPORT'] | (df['DISPLACEMENT_SCORE'] > 0.4)
+        df['BREAK_SUPPORT'] & (df['DISPLACEMENT_SCORE'] > 0.4)
     )
     # Close location bias during compression
     # Where is price closing within the local compression range?
@@ -1800,7 +1800,7 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     )
 
     HTF_OK = (
-        (df['HTF_QUALITY'] > htf_quality_th) &
+        (df['HTF_QUALITY'] > htf_quality_th) |
         htf_compressed_aligned
     )
 

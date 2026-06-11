@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 import time
 
 import os as _os
-_PROXY_BASE = _os.getenv("BINANCE_PROXY_URL", "").rstrip("/")
-BASE_URL = f"{_PROXY_BASE}/api/v3/klines" if _PROXY_BASE else "https://api.binance.com/api/v3/klines"
-PING_URL = f"{_PROXY_BASE}/api/v3/ping"  if _PROXY_BASE else "https://api.binance.com/api/v3/ping"
+_PROXY_BASE = _os.getenv("PROXY_URL", "").rstrip("/")
+_BINANCE_BASE = "https://api.binance.com"
+_API_ROOT = _PROXY_BASE if _PROXY_BASE else _BINANCE_BASE
+BASE_URL = f"{_API_ROOT}/api/v3/klines"
+PING_URL = f"{_API_ROOT}/api/v3/ping"
 from data_pipeline.rate_limiter import rate_limiter
 
 print(f"[FETCHER] Using {'proxy: ' + _PROXY_BASE if _PROXY_BASE else 'direct Binance connection'}")

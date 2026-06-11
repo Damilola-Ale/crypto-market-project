@@ -20,10 +20,11 @@ def _tg_debug(msg: str) -> None:
         print(f"[TG DEBUG FALLBACK] {msg}")
 
 SYMBOLS = [
-    "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT",
-    "XRPUSDT", "LDOUSDT", "ADAUSDT", "CVCUSDT", "ICPUSDT",
-    "AXLUSDT", "HEIUSDT", "SANDUSDT", "JTOUSDT",
-] 
+    "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "LDOUSDT", 
+    "ADAUSDT", "APTUSDT", "LINKUSDT", "AAVEUSDT", "GMXUSDT", "LSKUSDT",
+    "AXLUSDT", "SANDUSDT", "VETUSDT", "ORDIUSDT", "TRBUSDT", "LTCUSDT",
+    "IDUSDT", "INJUSDT", "PENDLEUSDT"
+]
 
 SIGNAL_STORE       = "data/signals.json"
 HOUR_MEMORY_FILE = "data/last_hour_seen.json"
@@ -348,6 +349,11 @@ def run_hourly():
     for symbol in SYMBOLS:
         if _post_ban_stagger:
             time.sleep(_post_ban_stagger)
+        # Weight gate: check before touching Binance for this symbol.
+        # Uses 3 timeframes × 2 pages as a conservative warm-cache estimate.
+        # updater.py will apply tighter per-timeframe gates with exact page counts.
+        from data_pipeline.rate_limiter import rate_limiter as _rl
+        _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
         try:
             result = run_hourly_for_symbol(symbol)
             if isinstance(result, tuple):

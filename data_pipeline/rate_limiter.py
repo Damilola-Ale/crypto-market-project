@@ -166,5 +166,78 @@ class BinanceRateLimiter:
                 "ban_duration_secs": ban_duration,
             }, f, indent=2)
         os.replace(sentinel + ".tmp", sentinel)
+    
+    # ── WEIGHT CONSTANTS ─────────────────────────────────────────────────────
+    WEIGHT_PER_KLINES_REQUEST = 2   # each /api/v3/klines call costs 2 units
+    WEIGHT_SOFT_LIMIT         = 1100
+    WEIGHT_SAFETY_BUFFER      = 50
+
+    def headroom(self) -> int:
+        """Available weight units before the soft limit, in the current window."""
+        self._load()
+        now = time.time()
+        if now - self._weight_window_start > 60:
+            return self.WEIGHT_SOFT_LIMIT - self.WEIGHT_SAFETY_BUFFER
+        return max(0, self.WEIGHT_SOFT_LIMIT - self.WEIGHT_SAFETY_BUFFER - self.current_weight)
+
+    def seconds_until_window_reset(self) -> float:
+        """Seconds remaining in the current 1-minute weight window."""
+        self._load()
+        elapsed = time.time() - self._weight_window_start
+        return max(0.0, 60.0 - elapsed)
+
+    def estimate_symbol_weight(self, n_timeframes: int = 3, pages_per_tf: int = 2) -> int:
+        """
+        Conservative upper-bound weight estimate for fetching one symbol.
+        Each klines page costs 2 weight units.
+        Default: 3 timeframes × 2 pages = 12 units (warm cache is usually 1 page each).
+        Pass pages_per_tf=5 for a cold/full-lookback fetch.
+        """
+        return n_timeframes * pages_per_tf * self.WEIGHT_PER_KLINES_REQUEST
+
+    def wait_if_needed_for_symbol(
+        self,
+        symbol: str,
+        n_timeframes: int = 3,
+        pages_per_tf: int = 2,
+    ) -> None:
+        """
+        Call this once per symbol BEFORE fetching.
+        If the estimated cost of fetching this symbol would push weight over the
+        soft limit within the current minute window, sleeps until the window resets.
+        """
+        self._load()
+        now = time.time()
+
+        # If window already expired, reset it — we have full headroom
+        if now - self._weight_window_start > 60:
+            self.current_weight       = 0
+            self._weight_window_start = now
+            self._save()
+
+        estimated_cost = self.estimate_symbol_weight(n_timeframes, pages_per_tf)
+        available      = self.headroom()
+
+        print(
+            f"[WEIGHT GATE] {symbol} | "
+            f"current_weight={self.current_weight} "
+            f"estimated_cost={estimated_cost} "
+            f"headroom={available} "
+            f"window_resets_in={self.seconds_until_window_reset():.1f}s"
+        )
+
+        if estimated_cost > available:
+            wait = self.seconds_until_window_reset() + 1.0  # +1s grace
+            print(
+                f"[WEIGHT GATE] ⏳ {symbol} — cost {estimated_cost} > headroom {available}. "
+                f"Waiting {wait:.1f}s for window reset."
+            )
+            time.sleep(wait)
+            self.current_weight       = 0
+            self._weight_window_start = time.time()
+            self._save()
+            print(f"[WEIGHT GATE] ✅ {symbol} — window reset, proceeding")
+        else:
+            print(f"[WEIGHT GATE] ✅ {symbol} — headroom OK, proceeding immediately")
 
 rate_limiter = BinanceRateLimiter()

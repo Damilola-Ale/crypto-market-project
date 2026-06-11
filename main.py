@@ -97,11 +97,12 @@ def fetch_binance(symbol, interval, limit):
 # CONFIG 
 # ==========================================================
 # SYMBOLS = [
-#     "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "JTOUSDT",
-#     "XRPUSDT", "LDOUSDT", "ADAUSDT", "CVCUSDT", "FXSUSDT", "ICPUSDT",
-#     "AXLUSDT", "HEIUSDT", "SANDUSDT", "JTOUSDT",
-# ] 
-SYMBOL = "JTOUSDT"
+#     "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "LDOUSDT", 
+#     "ADAUSDT", "APTUSDT", "LINKUSDT", "AAVEUSDT", "GMXUSDT", "LSKUSDT",
+#     "AXLUSDT", "SANDUSDT", "VETUSDT", "ORDIUSDT", "TRBUSDT", "LTCUSDT",
+#     "IDUSDT", "INJUSDT", "PENDLEUSDT"
+# ] APT LINK AAVE GMX LSK VET ORDI TRB LTC ID | INJ PENDLE | ALGO
+SYMBOL = "LTCUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -484,72 +485,218 @@ def edge_decay_analysis(trades_df, lltf_df):
 
 decay_df = edge_decay_analysis(trade_log, backtester.lltf_df)
 
-# ==========================================================
-# HTF QUALITY DIAGNOSTIC — last 30 hours
-# ==========================================================
-print("\n=== HTF QUALITY (last 30 bars) ===")
-print(f"{'timestamp':>25} {'HTF_DIR':>8} {'HTF_QUAL':>10} {'signal':>8} {'final_sig':>10}")
-print("-" * 65)
+# # ==========================================================
+# # EXIT COUNTERFACTUAL
+# # ==========================================================
+# def exit_counterfactual(trades_df, lltf_df):
+#     """
+#     For each soft exit (OIE or stall), shows what would have happened
+#     if the trade held to the hard stop instead.
+#     Key question: are these exits saving losses or cutting winners?
+#     """
+#     soft_exits = trades_df[
+#         trades_df['exit_reason'].isin(['opposite_impulse', 'stall_exit'])
+#     ].copy()
 
-diag_cols = ["HTF_DIRECTION", "HTF_QUALITY", "signal", "final_signal"]
-available = [c for c in diag_cols if c in ltf_df.columns]
+#     if soft_exits.empty:
+#         print("\n=== EXIT COUNTERFACTUAL ===")
+#         print("No OIE or stall exits to analyse.")
+#         return pd.DataFrame()
 
-now_utc = pd.Timestamp.now(tz="UTC")
-last_closed_1h = now_utc.floor("h") - pd.Timedelta(hours=1)
-hours_into_4h = last_closed_1h.hour % 4
-last_closed_4h_boundary = last_closed_1h - pd.Timedelta(hours=hours_into_4h)
-diag = ltf_df[available][ltf_df.index <= last_closed_1h].tail(30)
+#     results = []
+#     for _, trade in soft_exits.iterrows():
+#         entry       = trade['entry_price']
+#         stop        = trade['initial_stop']
+#         side        = trade['side']
+#         exit_idx    = int(trade['exit_idx'])
+#         R           = abs(entry - stop)
+#         if R <= 0:
+#             continue
 
-for ts, row in diag.iterrows():
-    htf_dir  = int(row["HTF_DIRECTION"])  if "HTF_DIRECTION"  in row.index else "N/A"
-    htf_qual = f"{row['HTF_QUALITY']:.4f}" if "HTF_QUALITY"    in row.index else "N/A"
-    sig      = int(row["signal"])          if "signal"          in row.index else "N/A"
-    fsig     = int(row["final_signal"])    if "final_signal"    in row.index else "N/A"
+#         # bars AFTER the soft exit
+#         future = lltf_df.iloc[exit_idx + 1 : exit_idx + 49]
+#         if future.empty:
+#             continue
 
-    import pytz
-    WAT = pytz.timezone("Africa/Lagos")
-    ts_wat = ts.tz_convert(WAT).strftime("%Y-%m-%d %H:%M WAT")
-
-    blocked = " ← NO HTF DATA" if (htf_qual == "nan" or htf_qual == "N/A") else (" ← BLOCKED" if float(htf_qual) <= 0.45 else "")
-    print(f"{ts_wat:>25} {str(htf_dir):>8} {htf_qual:>10} {str(sig):>8} {str(fsig):>10}{blocked}")
-
-print(f"\nHTF threshold: 0.45")
-print(f"Last HTF_DIRECTION : {int(ltf_df['HTF_DIRECTION'].iloc[-1])}")
-print(f"Last HTF_QUALITY   : {ltf_df['HTF_QUALITY'].iloc[-1]:.4f}")
-print(f"Last final_signal  : {int(ltf_df['final_signal'].iloc[-1])}")
-
-# Add this to your backtest script after computing scores
-from indicators.indicators import compute_htf_scores
-scores = compute_htf_scores(htf_df)
-print("Backtest HTF last 5 bars:")
-print(scores.tail(5))
-print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
-
-print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
-for _ts, _row in htf_df.tail(3).iterrows():
-    print(f"[DEBUG HTF BAR] {_ts} | open={_row['open']:.4f} close={_row['close']:.4f} volume={_row['volume']:.2f}")
-
-# # ── 5m candle dump per trade ────────────────────────────────
-# print("\n=== 5M CANDLES PER TRADE ===")
-# for _, t in trade_log.iterrows():
-#     entry_time = backtester.lltf_df.index[int(t["entry_idx"])]
-#     exit_time  = backtester.lltf_df.index[int(t["exit_idx"])]
-#     window     = backtester.lltf_df.loc[entry_time:exit_time].copy()
-#     R          = abs(t["entry_price"] - t["stop_loss"])
-#     print(f"\n{'='*60}")
-#     print(f"{t['direction']} | entry={t['entry_price']:.4f} stop={t['stop_loss']:.4f} R={R:.4f}")
-#     print(f"{'time':>8} {'open':>8} {'high':>8} {'low':>8} {'close':>8} {'vol':>12} {'body/atr':>9} {'stop_r':>7} {'pnl_r':>7}")
-#     for ts, row in window.iterrows():
-#         body    = abs(row["close"] - row["open"])
-#         atr_5m  = row.get("ATR_5M", float("nan"))
-#         if pd.isna(atr_5m) or atr_5m <= 0:
-#             atr_5m = row.get("ATR", float("nan")) * 0.20
-#         body_atr = body / atr_5m if atr_5m and not pd.isna(atr_5m) and atr_5m > 0 else float("nan")
-#         if t["side"] == 1:
-#             stop_r = (row["close"] - t["stop_loss"]) / R if R > 0 else float("nan")
-#             pnl_r  = (row["close"] - t["entry_price"]) / R if R > 0 else float("nan")
+#         if side == 1:
+#             stop_hit_after  = (future['low'] <= stop).any()
+#             max_future_r    = (future['high'].max() - entry) / R
 #         else:
-#             stop_r = (t["stop_loss"] - row["close"]) / R if R > 0 else float("nan")
-#             pnl_r  = (t["entry_price"] - row["close"]) / R if R > 0 else float("nan")
-#         wat_ts = (ts + pd.Timedelta(hours=1)).strftime("%H:%M")
-#         print(f"{wat_ts:>8} {row['open']:>8.4f} {row['high']:>8.4f} {row['low']:>8.4f} {row['close']:>8.4f} {row['volume']:>12.2f} {body_atr:>9.2f} {stop_r:>7.2f} {pnl_r:>7.2f}")
+#             stop_hit_after  = (future['high'] >= stop).any()
+#             max_future_r    = (entry - future['low'].min()) / R
+
+#         max_future_r_clipped = max(max_future_r, 0.0)
+
+#         results.append({
+#             'exit_reason':    trade['exit_reason'],
+#             'actual_pnl_r':   trade['pnl_r'],
+#             'mfe_r':          trade['mfe_r'],
+#             'bars_held':      trade.get('bars_held', 0),
+#             'stop_hit_after': stop_hit_after,
+#             'max_future_r':   max_future_r_clipped,
+#             'cost_of_exit':   max_future_r_clipped - trade['pnl_r'],
+#         })
+
+#     if not results:
+#         print("\n=== EXIT COUNTERFACTUAL ===")
+#         print("No valid counterfactuals computable.")
+#         return pd.DataFrame()
+
+#     df = pd.DataFrame(results)
+
+#     print("\n=== EXIT COUNTERFACTUAL ===")
+#     print("stop_hit_after = % of exits where stop would have been hit anyway")
+#     print("max_future_r   = avg best-case R if trade had been held")
+#     print("cost_of_exit   = avg R left on table by exiting early")
+#     print()
+#     summary = df.groupby('exit_reason').agg(
+#         n               = ('actual_pnl_r', 'count'),
+#         actual_pnl_r    = ('actual_pnl_r', 'mean'),
+#         stop_hit_after  = ('stop_hit_after', 'mean'),
+#         max_future_r    = ('max_future_r', 'mean'),
+#         cost_of_exit    = ('cost_of_exit', 'mean'),
+#     ).round(3)
+#     print(summary.to_string())
+
+#     print("\n--- Interpretation ---")
+#     for reason, row in summary.iterrows():
+#         pct_would_stop = row['stop_hit_after'] * 100
+#         cost           = row['cost_of_exit']
+#         print(f"\n  {reason}:")
+#         if row['stop_hit_after'] > 0.6:
+#             print(f"    {pct_would_stop:.0f}% of these exits: stop would have been hit anyway → exit is CORRECT")
+#         else:
+#             print(f"    Only {pct_would_stop:.0f}% would have stopped out → exit is cutting winners early")
+#         if cost > 0.1:
+#             print(f"    Avg {cost:.3f}R left on table per exit — consider loosening this exit")
+#         else:
+#             print(f"    Minimal R left on table — exit timing is reasonable")
+
+#     return df
+
+# counterfactual_df = exit_counterfactual(trade_log, backtester.lltf_df)
+
+# # ==========================================================
+# # OIE FIRING ANALYSIS
+# # ==========================================================
+# def oie_firing_analysis(trades_df):
+#     """
+#     Shows exactly when and in what state OIE fired.
+#     Identifies whether it fires too early (low mfe_r) or appropriately.
+#     """
+#     oie = trades_df[trades_df['exit_reason'] == 'opposite_impulse'].copy()
+
+#     print("\n=== OIE FIRING ANALYSIS ===")
+
+#     if oie.empty:
+#         print("No OIE exits found.")
+#         return
+
+#     print(f"Total OIE exits : {len(oie)}")
+#     print(f"Avg bars held   : {oie['bars_held'].mean():.1f}")
+#     print(f"Avg mfe_r       : {oie['mfe_r'].mean():.3f}R")
+#     print(f"Avg pnl_r       : {oie['pnl_r'].mean():.3f}R")
+
+#     in_profit = oie[oie['pnl_r'] > 0]
+#     in_loss   = oie[oie['pnl_r'] <= 0]
+#     print(f"\nFired while in profit : {len(in_profit)}  avg R={in_profit['pnl_r'].mean():.3f}" if not in_profit.empty else "\nFired while in profit : 0")
+#     print(f"Fired while in loss   : {len(in_loss)}  avg R={in_loss['pnl_r'].mean():.3f}"   if not in_loss.empty   else "Fired while in loss   : 0")
+
+#     early = oie[oie['bars_held'] <= 6]
+#     late  = oie[oie['bars_held'] >  6]
+#     print(f"\nEarly OIE (≤6 bars)  : {len(early)}  avg R={early['pnl_r'].mean():.3f}" if not early.empty else "\nEarly OIE (≤6 bars)  : 0")
+#     print(f"Late  OIE (>6 bars)  : {len(late)}   avg R={late['pnl_r'].mean():.3f}"  if not late.empty  else "Late  OIE (>6 bars)  : 0")
+
+#     # mfe_r buckets at time of exit
+#     print("\n--- mfe_r at time of OIE exit ---")
+#     buckets = [(0.0, 0.3, "0–0.3R (no progress)"),
+#                (0.3, 0.7, "0.3–0.7R (small gain)"),
+#                (0.7, 1.5, "0.7–1.5R (solid gain)"),
+#                (1.5, 99,  ">1.5R (large winner)")]
+#     for lo, hi, label in buckets:
+#         subset = oie[(oie['mfe_r'] >= lo) & (oie['mfe_r'] < hi)]
+#         if not subset.empty:
+#             print(f"  {label:30s} : n={len(subset):>3}  avg_pnl_r={subset['pnl_r'].mean():>6.3f}")
+
+#     print("\n--- Verdict ---")
+#     early_loss_rate = (early['pnl_r'] < 0).mean() if not early.empty else 0
+#     if early_loss_rate > 0.5:
+#         print("  OIE is firing early AND mostly on losers — it may be reacting to noise.")
+#         print("  Consider raising the body size threshold (atr * 1.2 → atr * 1.5).")
+#     elif oie['mfe_r'].mean() > 0.5:
+#         print("  OIE is firing on trades that had real MFE — it's cutting winners.")
+#         print("  Consider adding a minimum mfe_r guard (e.g. only fire OIE if mfe_r < 0.5).")
+#     else:
+#         print("  OIE appears to be firing appropriately — exits are on low-MFE trades.")
+
+# oie_firing_analysis(trade_log)
+
+# # ==========================================================
+# # HTF QUALITY DIAGNOSTIC — last 30 hours
+# # ==========================================================
+# print("\n=== HTF QUALITY (last 30 bars) ===")
+# print(f"{'timestamp':>25} {'HTF_DIR':>8} {'HTF_QUAL':>10} {'signal':>8} {'final_sig':>10}")
+# print("-" * 65)
+
+# diag_cols = ["HTF_DIRECTION", "HTF_QUALITY", "signal", "final_signal"]
+# available = [c for c in diag_cols if c in ltf_df.columns]
+
+# now_utc = pd.Timestamp.now(tz="UTC")
+# last_closed_1h = now_utc.floor("h") - pd.Timedelta(hours=1)
+# hours_into_4h = last_closed_1h.hour % 4
+# last_closed_4h_boundary = last_closed_1h - pd.Timedelta(hours=hours_into_4h)
+# diag = ltf_df[available][ltf_df.index <= last_closed_1h].tail(30)
+
+# for ts, row in diag.iterrows():
+#     htf_dir  = int(row["HTF_DIRECTION"])  if "HTF_DIRECTION"  in row.index else "N/A"
+#     htf_qual = f"{row['HTF_QUALITY']:.4f}" if "HTF_QUALITY"    in row.index else "N/A"
+#     sig      = int(row["signal"])          if "signal"          in row.index else "N/A"
+#     fsig     = int(row["final_signal"])    if "final_signal"    in row.index else "N/A"
+
+#     import pytz
+#     WAT = pytz.timezone("Africa/Lagos")
+#     ts_wat = ts.tz_convert(WAT).strftime("%Y-%m-%d %H:%M WAT")
+
+#     blocked = " ← NO HTF DATA" if (htf_qual == "nan" or htf_qual == "N/A") else (" ← BLOCKED" if float(htf_qual) <= 0.45 else "")
+#     print(f"{ts_wat:>25} {str(htf_dir):>8} {htf_qual:>10} {str(sig):>8} {str(fsig):>10}{blocked}")
+
+# print(f"\nHTF threshold: 0.45")
+# print(f"Last HTF_DIRECTION : {int(ltf_df['HTF_DIRECTION'].iloc[-1])}")
+# print(f"Last HTF_QUALITY   : {ltf_df['HTF_QUALITY'].iloc[-1]:.4f}")
+# print(f"Last final_signal  : {int(ltf_df['final_signal'].iloc[-1])}")
+
+# # Add this to your backtest script after computing scores
+# from indicators.indicators import compute_htf_scores
+# scores = compute_htf_scores(htf_df)
+# print("Backtest HTF last 5 bars:")
+# print(scores.tail(5))
+# print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
+
+# print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
+# for _ts, _row in htf_df.tail(3).iterrows():
+#     print(f"[DEBUG HTF BAR] {_ts} | open={_row['open']:.4f} close={_row['close']:.4f} volume={_row['volume']:.2f}")
+
+# # # ── 5m candle dump per trade ────────────────────────────────
+# # print("\n=== 5M CANDLES PER TRADE ===")
+# # for _, t in trade_log.iterrows():
+# #     entry_time = backtester.lltf_df.index[int(t["entry_idx"])]
+# #     exit_time  = backtester.lltf_df.index[int(t["exit_idx"])]
+# #     window     = backtester.lltf_df.loc[entry_time:exit_time].copy()
+# #     R          = abs(t["entry_price"] - t["stop_loss"])
+# #     print(f"\n{'='*60}")
+# #     print(f"{t['direction']} | entry={t['entry_price']:.4f} stop={t['stop_loss']:.4f} R={R:.4f}")
+# #     print(f"{'time':>8} {'open':>8} {'high':>8} {'low':>8} {'close':>8} {'vol':>12} {'body/atr':>9} {'stop_r':>7} {'pnl_r':>7}")
+# #     for ts, row in window.iterrows():
+# #         body    = abs(row["close"] - row["open"])
+# #         atr_5m  = row.get("ATR_5M", float("nan"))
+# #         if pd.isna(atr_5m) or atr_5m <= 0:
+# #             atr_5m = row.get("ATR", float("nan")) * 0.20
+# #         body_atr = body / atr_5m if atr_5m and not pd.isna(atr_5m) and atr_5m > 0 else float("nan")
+# #         if t["side"] == 1:
+# #             stop_r = (row["close"] - t["stop_loss"]) / R if R > 0 else float("nan")
+# #             pnl_r  = (row["close"] - t["entry_price"]) / R if R > 0 else float("nan")
+# #         else:
+# #             stop_r = (t["stop_loss"] - row["close"]) / R if R > 0 else float("nan")
+# #             pnl_r  = (t["entry_price"] - row["close"]) / R if R > 0 else float("nan")
+# #         wat_ts = (ts + pd.Timedelta(hours=1)).strftime("%H:%M")
+# #         print(f"{wat_ts:>8} {row['open']:>8.4f} {row['high']:>8.4f} {row['low']:>8.4f} {row['close']:>8.4f} {row['volume']:>12.2f} {body_atr:>9.2f} {stop_r:>7.2f} {pnl_r:>7.2f}")
