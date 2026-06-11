@@ -4,14 +4,17 @@ from datetime import datetime, timezone
 import time
 
 import os as _os
-_PROXY_BASE = _os.getenv("PROXY_URL", "").rstrip("/")
+_PROXY_URL    = _os.getenv("PROXY_URL", "").strip()
 _BINANCE_BASE = "https://api.binance.com"
-_API_ROOT = _PROXY_BASE if _PROXY_BASE else _BINANCE_BASE
-BASE_URL = f"{_API_ROOT}/api/v3/klines"
-PING_URL = f"{_API_ROOT}/api/v3/ping"
-from data_pipeline.rate_limiter import rate_limiter
+BASE_URL = f"{_BINANCE_BASE}/api/v3/klines"
+PING_URL = f"{_BINANCE_BASE}/api/v3/ping"
 
-print(f"[FETCHER] Using {'proxy: ' + _PROXY_BASE if _PROXY_BASE else 'direct Binance connection'}")
+# Build a proxies dict if PROXY_URL is set.
+# requests handles user:pass@host:port auth correctly this way.
+_PROXIES = {"http": _PROXY_URL, "https": _PROXY_URL} if _PROXY_URL else None
+
+print(f"[FETCHER] Using {'proxy: ' + _PROXY_URL if _PROXY_URL else 'direct Binance connection'}")
+from data_pipeline.rate_limiter import rate_limiter
 
 def check_current_weight() -> int:
     """
@@ -19,7 +22,7 @@ def check_current_weight() -> int:
     Returns current weight, or -1 if banned/unreachable.
     """
     try:
-        r = requests.get(PING_URL, timeout=5)
+        r = requests.get(PING_URL, timeout=5, proxies=_PROXIES)
         if r.status_code == 418:
             retry_after = r.headers.get("Retry-After")
             retry_after_int = int(retry_after) if retry_after else None
@@ -75,7 +78,7 @@ def fetch_ohlcv(
             _request_counter[0] += 1
             req_num = _request_counter[0]
 
-            r = requests.get(BASE_URL, params=params, timeout=10)
+            r = requests.get(BASE_URL, params=params, timeout=10, proxies=_PROXIES)
 
             used_weight_raw = r.headers.get("X-MBX-USED-WEIGHT-1M", "0")
             used_weight = int(used_weight_raw) if used_weight_raw.isdigit() else 0
