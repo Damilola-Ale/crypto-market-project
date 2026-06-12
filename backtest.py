@@ -256,16 +256,28 @@ class SignalBacktester:
         mfe_r = trade.get("mfe_r", 0.0)
         mae_r = abs(trade.get("_price_mae", 0.0)) / R
 
-        # Mode 1: immediate rejection — 15 minutes in, no positive movement,
-        # price already more than 60% of the way to the stop
-        if bars_in_trade == 3:
-            if mfe_r == 0.0 and mae_r > 0.6:
-                return True
+        # If the trailing stop has activated (mfe_r >= 0.3), that mechanism
+        # owns this trade. Stall exit only applies to trades that never moved.
+        if mfe_r >= 0.30:
+            return False
 
-        # Mode 2: prolonged stall — 90 minutes in, barely any progress
-        if bars_in_trade == self.VALIDATION_BARS:
-            if mfe_r < 0.2 and mae_r > 0.4:
-                return True
+        mae_dominates = mae_r > mfe_r * 2.0
+
+        # Bar 3 (15 min): price went wrong way twice as fast as right way
+        if bars_in_trade == 3 and mfe_r < 0.10 and mae_dominates:
+            return True
+
+        # Bar 6 (30 min): same condition, slightly wider MFE tolerance
+        if bars_in_trade == 6 and mfe_r < 0.15 and mae_dominates:
+            return True
+
+        # Bar 12 (60 min): an hour with no trail activation and MAE building
+        if bars_in_trade == 12 and mfe_r < 0.20 and mae_r > 0.25:
+            return True
+
+        # Bar 18 (90 min): final check — only fires if trail never activated
+        if bars_in_trade == self.VALIDATION_BARS and mfe_r < 0.25 and mae_r > 0.20:
+            return True
 
         return False
     
@@ -620,10 +632,10 @@ class SignalBacktester:
         self.update_dynamic_stop(trade, current_price, atr)
 
         # ── STALL EXIT — catches slow bleed trades OIE never sees ──
-        bars_in_trade = trade.get("bars_in_trade", 0)
-        if self.stall_exit(trade, bars_in_trade):
-            self._exit(current_price, idx, "stall_exit")
-            return
+        # bars_in_trade = trade.get("bars_in_trade", 0)
+        # if self.stall_exit(trade, bars_in_trade):
+        #     self._exit(current_price, idx, "stall_exit")
+        #     return
 
         # ── OPPOSITE IMPULSE EXIT (matches lifecycle.py exactly) 
         if self.opposite_impulse_exit(window_5m, side, trade=trade):

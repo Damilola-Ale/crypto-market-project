@@ -97,12 +97,12 @@ def fetch_binance(symbol, interval, limit):
 # CONFIG 
 # ==========================================================
 # SYMBOLS = [
-#     "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "LDOUSDT", "VICUSDT",
+#     "SOLUSDT", "ICXUSDT", "RUNEUSDT", "ZILUSDT", "OPUSDT", "LDOUSDT", "ICPUSDT"
 #     "ADAUSDT", "APTUSDT", "LINKUSDT", "AAVEUSDT", "GMXUSDT", "LSKUSDT",
 #     "AXLUSDT", "SANDUSDT", "VETUSDT", "ORDIUSDT", "TRBUSDT", "LTCUSDT",
-#     "IDUSDT", "INJUSDT", "PENDLEUSDT", "ZECUSDT", "IOUSDT", "DEXEUSDT",
+#     "IDUSDT", "VICUSDT", "PENDLEUSDT", "ZECUSDT", "IOUSDT", "DEXEUSDT",
 # ] 
-SYMBOL = "ENSOUSDT"
+SYMBOL = "XVSUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"

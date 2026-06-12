@@ -91,23 +91,15 @@ def diagnose_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
     # ==========================================================
     # EXIT TYPE CLASSIFICATION
     # ==========================================================
-    df["exit_type"] = np.select(
-        [
-            df["exit_reason"] == "take_profit",
-            df["exit_reason"] == "stop_loss",
-            df["exit_reason"] == "break_even",
-            df["exit_reason"] == "signal_flip",
-            df["exit_reason"] == "end_of_data",
-        ],
-        [
-            "TARGET HIT",
-            "STOP HIT",
-            "BREAKEVEN",
-            "SIGNAL EXIT",
-            "FORCED EXIT"
-        ],
-        default="OTHER"
-    )
+    df["exit_type"] = df["exit_reason"].str.upper().replace({
+            "TAKE_PROFIT":       "TARGET HIT",
+            "STOP_LOSS":         "STOP HIT",
+            "BREAK_EVEN":        "BREAKEVEN",
+            "SIGNAL_FLIP":       "SIGNAL EXIT",
+            "END_OF_DATA":       "FORCED EXIT",
+            "STALL_EXIT":        "STALL EXIT",
+            "OPPOSITE_IMPULSE":  "OIE",
+        })
 
     # ==========================================================
     # PER TRADE REPORT
@@ -174,5 +166,13 @@ def diagnose_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
 
     print("\n--- Structure ---")
     print(f"Instant exits: {(df['instant_exit']).mean()*100:.2f}%")
+
+    print("\n--- Exit reason breakdown by duration ---")
+    if "exit_reason" in df.columns and "duration_bars" in df.columns:
+        short_trades = df[df["duration_bars"] <= 3]
+        if not short_trades.empty:
+            print(f"Bar 1-3 exits ({len(short_trades)} trades):")
+            for reason, group in short_trades.groupby("exit_reason"):
+                print(f"  {reason:25s} n={len(group):3d}  avg_R={group['R'].mean():+.3f}  avg_capture={group['capture_efficiency'].mean():+.2f}")
 
     return df

@@ -283,19 +283,6 @@ class PositionManager:
                 # if self._momentum_decay_exit(position):
                 #     try_exit("momentum_decay", current_price)
 
-                # ── STALL EXIT ──────────────────────────────────────────
-                _R     = abs(position["entry_price"] - position["initial_stop"])
-                _mfe_r = position.get("mfe_r", 0.0)
-                _mae_r = abs(position.get("MAE", 0.0)) / _R if _R > 0 else 0.0
-                _bars  = position.get("bars_in_trade", 0)
-
-                if _R > 0:
-                    if _bars == 3 and _mfe_r == 0.0 and _mae_r > 0.6:
-                        try_exit("stall_exit", current_price)
-                    elif _bars == self.VALIDATION_BARS and _mfe_r < 0.2 and _mae_r > 0.4:
-                        try_exit("stall_exit", current_price)
-                # ────────────────────────────────────────────────────────
-
                 if self._opposite_impulse_exit(window_5m, side, position):
                     try_exit("opposite_impulse", current_price)
 
