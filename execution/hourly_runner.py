@@ -321,38 +321,10 @@ def run_hourly():
             indent=2
         )
 
-    # Post-ban stagger — if we just came out of a ban, cold caches across
-    # all 16 symbols will trigger full fetches simultaneously, spiking weight
-    # and potentially re-triggering the ban immediately. Space them out.
-    _post_ban_file = "data/last_ban_end.json"
-    _post_ban_stagger = 0
-    if os.path.exists(_post_ban_file):
-        try:
-            with open(_post_ban_file) as f:
-                _ban_ended_at = datetime.fromisoformat(json.load(f).get("ended_at", ""))
-                if _ban_ended_at.tzinfo is None:
-                    _ban_ended_at = _ban_ended_at.replace(tzinfo=timezone.utc)
-            _seconds_since_ban = (datetime.now(timezone.utc) - _ban_ended_at).total_seconds()
-            if _seconds_since_ban < 300:  # within 5 minutes of ban ending
-                _post_ban_stagger = 3  # 3s between symbols = ~48s total for 16 symbols
-                print(f"[POST-BAN STAGGER] {_seconds_since_ban:.0f}s since ban ended — staggering symbol fetches by {_post_ban_stagger}s")
-                TelegramNotifier().send_text(
-                    f"⚠️ *POST-BAN STAGGER ACTIVE*\n"
-                    f"Ban ended `{_seconds_since_ban:.0f}s` ago\n"
-                    f"Spacing symbol fetches by `{_post_ban_stagger}s` to avoid re-ban"
-                )
-        except Exception:
-            pass
-
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
     for symbol in SYMBOLS:
-        if _post_ban_stagger:
-            time.sleep(_post_ban_stagger)
-        # Weight gate: check before touching Binance for this symbol.
-        # Uses 3 timeframes × 2 pages as a conservative warm-cache estimate.
-        # updater.py will apply tighter per-timeframe gates with exact page counts.
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
         try:
