@@ -51,6 +51,31 @@ print(
     f"base={BASE_URL} leverage={DEFAULT_LEVERAGE}"
 )
 
+# ──────────────────────────────────────────────────────────────────
+# TIME SYNC
+# ──────────────────────────────────────────────────────────────────
+
+_time_offset_ms: int = 0
+
+def _sync_binance_time() -> None:
+    global _time_offset_ms
+    try:
+        _proxy_url = os.getenv("PROXY_URL")
+        _proxies = {"http": _proxy_url, "https": _proxy_url} if _proxy_url else None
+        r = requests.get(f"{BASE_URL}/fapi/v1/time", timeout=5, proxies=_proxies)
+        server_time = r.json()["serverTime"]
+        local_time  = int(time.time() * 1000)
+        _time_offset_ms = server_time - local_time
+        print(f"[TIME SYNC] offset={_time_offset_ms}ms")
+    except Exception as e:
+        print(f"[TIME SYNC FAILED] {e} — using local time")
+        _time_offset_ms = 0
+
+def _get_binance_time() -> int:
+    return int(time.time() * 1000) + _time_offset_ms
+
+_sync_binance_time()
+
 
 # ──────────────────────────────────────────────────────────────────
 # EXCEPTIONS
@@ -95,7 +120,7 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
 
     params = params or {}
     if signed:
-        params["timestamp"]  = int(time.time() * 1000)
+        params["timestamp"]  = _get_binance_time()
         params["recvWindow"] = RECV_WINDOW
         params["signature"]  = _sign(params)
 
@@ -142,6 +167,8 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
         body = r.text
 
     if r.status_code != 200:
+        if isinstance(body, dict) and body.get("code") == -1021:
+            _sync_binance_time()
         raise BinanceExecutionError(
             f"Binance HTTP {r.status_code} [{method} {path}]: {body}"
         )
