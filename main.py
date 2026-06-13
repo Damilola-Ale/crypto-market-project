@@ -223,6 +223,27 @@ def load_or_fetch(symbol, interval, limit, now_utc):
         else:
             print(f"[CACHE] {symbol} {interval} — cache current at {last_ts}")
 
+        # ── STEP 2.5: REVALIDATE last few closed bars ──
+        # Binance can finalize a bar's close/volume after it closes, and a
+        # previous run may have cached it mid-formation. Refetch the last
+        # few bars and overwrite with current values.
+        REVALIDATE_BARS = 3
+        revalidate_end   = cached.index[-1]
+        revalidate_start = revalidate_end - (REVALIDATE_BARS - 1) * interval_td
+
+        revalidated = fetch_binance_range(symbol, interval, revalidate_start, revalidate_end)
+        if not revalidated.empty:
+            before = cached.loc[cached.index.isin(revalidated.index)]
+            for ts in revalidated.index:
+                if ts in before.index:
+                    old_close = before.loc[ts, "close"]
+                    new_close = revalidated.loc[ts, "close"]
+                    if abs(old_close - new_close) > 1e-12:
+                        print(f"[REVALIDATE] {symbol} {interval} {ts} close corrected {old_close} → {new_close}")
+            cached = pd.concat([cached, revalidated])
+            cached = cached[~cached.index.duplicated(keep="last")]
+            cached = cached.sort_index()
+
         # ── STEP 3: save the FULL cache (never trim to limit) ──
         # Trimming to limit is what caused the 2-month test to destroy
         # the 2-year cache. Save everything, slice on return only.

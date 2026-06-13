@@ -601,8 +601,8 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     # Above 0.55 = consistently closing in upper half = long bias
     # Below 0.45 = consistently closing in lower half = short bias
     # Between 0.45-0.55 = genuinely ambiguous, no trade
-    flow_bias_long  = close_location_bias > 0.5
-    flow_bias_short = close_location_bias < 0.5
+    flow_bias_long  = close_location_bias > 0.52
+    flow_bias_short = close_location_bias < 0.48
 
     df['VALID_BREAK_LONG'] = (
         df['EARLY_EXPANSION'] &
@@ -616,21 +616,6 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
         displacement_short_ok &
         flow_bias_short 
         # df['MICRO_BREAK_SHORT']
-    )
-
-    _l = df.iloc[-1]
-    print(
-        f"[SIGNAL GATE] "
-        f"EARLY_EXPANSION={int(_l['EARLY_EXPANSION'])} "
-        f"(FLOW_STRENGTH={_l['FLOW_STRENGTH']:.4f}) | "
-        f"volume_confirmed={int(_l['VOL_RATIO'] > vol_baseline.iloc[-1] * 1.15)} "
-        f"(VOL_RATIO={_l['VOL_RATIO']:.4f} baseline={vol_baseline.iloc[-1]:.4f}) | "
-        f"MICRO_BREAK_LONG={int(_l['MICRO_BREAK_LONG'])} "
-        f"MICRO_BREAK_SHORT={int(_l['MICRO_BREAK_SHORT'])} | "
-        f"close_location_bias={close_location_bias.iloc[-1]:.3f} "
-        f"(flow_bias_long={int(flow_bias_long.iloc[-1])} flow_bias_short={int(flow_bias_short.iloc[-1])}) | "
-        f"VALID_BREAK_LONG={int(_l['VALID_BREAK_LONG'])} "
-        f"VALID_BREAK_SHORT={int(_l['VALID_BREAK_SHORT'])}"
     )
 
     df['BARS_SINCE_LONG_BREAK']  = bars_since_event(df['VALID_BREAK_LONG'])
@@ -1865,6 +1850,23 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
         df['final_signal'] = df['signal'].fillna(0).astype(int)
     else:
         df['final_signal'] = df['signal'].shift(1).fillna(0).astype(int)
+
+    _l = df.iloc[-1]
+    print(
+        f"[SIGNAL GATE] {symbol} | "
+        f"EARLY_EXPANSION={int(_l['EARLY_EXPANSION'])} (FLOW_STRENGTH={_l['FLOW_STRENGTH']:.4f}) | "
+        f"VOL_RATIO={_l['VOL_RATIO']:.4f} | "
+        f"MICRO_BREAK_LONG={int(_l['MICRO_BREAK_LONG'])} MICRO_BREAK_SHORT={int(_l['MICRO_BREAK_SHORT'])} | "
+        f"close_location_bias={_l.get('close_location_bias', float('nan')):.3f} | "
+        f"VALID_BREAK_LONG={int(_l['VALID_BREAK_LONG'])} VALID_BREAK_SHORT={int(_l['VALID_BREAK_SHORT'])} | "
+        f"HTF_QUALITY={_l['HTF_QUALITY']:.4f} HTF_DIRECTION={int(_l['HTF_DIRECTION'])} "
+        f"htf_quality_th={htf_quality_th.iloc[-1]:.4f} | "
+        f"HTF_COMPRESSED={int(htf_compressed_aligned.iloc[-1])} | "
+        f"HTF_OK={int(HTF_OK.iloc[-1])} | "
+        f"COMPRESSION_OK={int(_l['COMPRESSION_OK'])} (score={_l['COMPRESSION_SCORE']:.4f}) | "
+        f"LONG_CONDITION={int(LONG_CONDITION.iloc[-1])} SHORT_CONDITION={int(SHORT_CONDITION.iloc[-1])} | "
+        f"signal={int(_l['signal'])} final_signal={int(_l['final_signal'])}"
+    )
 
     # =========================
     # DIAGNOSTICS
