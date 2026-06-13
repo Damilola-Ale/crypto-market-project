@@ -580,6 +580,8 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     displacement_short_ok = (
         df['BREAK_SUPPORT'] & (df['DISPLACEMENT_SCORE'] > 0.4)
     )
+    df['displacement_long_ok']  = displacement_long_ok
+    df['displacement_short_ok'] = displacement_short_ok
     # Close location bias during compression
     # Where is price closing within the local compression range?
     # Consistently high closes = buyers winning inside the box = long bias
@@ -1856,6 +1858,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
         f"[SIGNAL GATE] {symbol} | "
         f"EARLY_EXPANSION={int(_l['EARLY_EXPANSION'])} (FLOW_STRENGTH={_l['FLOW_STRENGTH']:.4f}) | "
         f"VOL_RATIO={_l['VOL_RATIO']:.4f} | "
+        f"DISPLACEMENT_SCORE={_l['DISPLACEMENT_SCORE']:.4f} | "
+        f"displacement_long_ok={int(_l['displacement_long_ok'])} displacement_short_ok={int(_l['displacement_short_ok'])} | "
         f"MICRO_BREAK_LONG={int(_l['MICRO_BREAK_LONG'])} MICRO_BREAK_SHORT={int(_l['MICRO_BREAK_SHORT'])} | "
         f"close_location_bias={_l.get('close_location_bias', float('nan')):.3f} | "
         f"VALID_BREAK_LONG={int(_l['VALID_BREAK_LONG'])} VALID_BREAK_SHORT={int(_l['VALID_BREAK_SHORT'])} | "
