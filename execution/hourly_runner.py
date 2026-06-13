@@ -724,8 +724,17 @@ def run_hourly_for_symbol(
         # -------------------
         # GENERATE & MAP SIGNALS
         # -------------------
-        latest_bar_close = f"{df['close'].iloc[-1]:.8f}"
-        latest_hour_ts = f"{df.index[-1].isoformat()}_{latest_bar_close}"
+        latest_bar_close  = f"{df['close'].iloc[-1]:.8f}"
+        latest_bar_high   = f"{df['high'].iloc[-1]:.8f}"
+        latest_bar_low    = f"{df['low'].iloc[-1]:.8f}"
+        latest_bar_volume = f"{df['volume'].iloc[-1]:.2f}"
+        latest_hour_ts = (
+            f"{df.index[-1].isoformat()}_"
+            f"{latest_bar_close}_"
+            f"{latest_bar_high}_"
+            f"{latest_bar_low}_"
+            f"{latest_bar_volume}"
+        )
         df = _get_signal_df(symbol, df, htf_df, is_live, htf_scores, latest_hour_ts)
 
         _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
