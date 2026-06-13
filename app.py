@@ -661,6 +661,39 @@ def debug_cursor_health():
 
     return {"server_time_utc": now.isoformat(), "cursors": results}, 200
 
+@app.route("/debug/candle-dump")
+def debug_candle_dump():
+    if request.args.get("key") != os.getenv("RUN_KEY", "local"):
+        abort(403)
+
+    import pandas as pd
+
+    symbol = request.args.get("symbol", "ICXUSDT").upper()
+    tf     = request.args.get("tf", "1h")
+    start  = request.args.get("start", "2026-06-12 17:00:00")
+    end    = request.args.get("end",   "2026-06-13 02:00:00")
+
+    path = f"data/cache/{symbol}_{tf}.parquet"
+    if not os.path.exists(path):
+        return {"exists": False, "path": path}, 404
+
+    df = pd.read_parquet(path)
+    df.index = pd.to_datetime(df.index, utc=True)
+
+    start_ts = pd.Timestamp(start, tz="UTC")
+    end_ts   = pd.Timestamp(end, tz="UTC")
+
+    window = df.loc[start_ts:end_ts, ["open", "high", "low", "close", "volume"]]
+
+    return {
+        "symbol": symbol,
+        "tf": tf,
+        "rows": len(window),
+        "data": {
+            str(ts): row.to_dict() for ts, row in window.iterrows()
+        }
+    }, 200
+
 # ==================================================
 # ENTRYPOINT
 # ==================================================
