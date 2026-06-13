@@ -596,7 +596,7 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
 
     # Smooth it — we want the drift over the compression, not a single bar
     close_location_bias = close_location.rolling(comp_lookback).mean()
-    print(f"[CLB DEBUG] df_len={len(df)} last_ts={df.index[-1]} close_location_bias={close_location_bias.iloc[-1]:.4f}")
+    df['close_location_bias'] = close_location_bias
 
     # Above 0.55 = consistently closing in upper half = long bias
     # Below 0.45 = consistently closing in lower half = short bias
