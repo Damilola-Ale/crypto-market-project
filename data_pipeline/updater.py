@@ -79,6 +79,21 @@ def update_symbol(symbol: str):
 
     _ensure_cache_dir()
 
+    # --------------------------------------------------
+    # ONE-TIME PURGE — wipe stale caches built before the
+    # revalidation fix existed. Runs once per symbol via sentinel.
+    # --------------------------------------------------
+    _purge_sentinel = os.path.join(CACHE_DIR, f"{symbol}_revalidate_purge.done")
+    if not os.path.exists(_purge_sentinel):
+        for _tf in (LTF_INTERVAL, HTF_INTERVAL, LLTF_INTERVAL, "htf_scores"):
+            _p = _cache_path(symbol, _tf)
+            if os.path.exists(_p):
+                os.remove(_p)
+                print(f"[ONE-TIME PURGE] {symbol} — removed {_p}")
+        with open(_purge_sentinel, "w") as f:
+            f.write("done")
+        print(f"[ONE-TIME PURGE] {symbol} — complete, will rebuild from scratch")
+
     path_ltf  = _cache_path(symbol, LTF_INTERVAL)
     path_htf  = _cache_path(symbol, HTF_INTERVAL)
     path_lltf = _cache_path(symbol, LLTF_INTERVAL)
@@ -231,9 +246,42 @@ def update_symbol(symbol: str):
 
             df = pd.concat([df, new_data]) if df is not None else new_data
             df = df[~df.index.duplicated(keep="last")]
-    
+
     if df is None or df.empty:
         raise RuntimeError(f"[{symbol}] No LTF data available after fetch")
+
+    # --------------------------------------------------
+    # REVALIDATE LAST CLOSED BARS — Binance can revise/finalize
+    # a bar's close/volume shortly after it closes, and a previous
+    # cron tick may have cached it mid-formation. Always refetch
+    # the last few closed bars and overwrite the cache copies.
+    # --------------------------------------------------
+    REVALIDATE_BARS = 3
+    revalidate_start = (now_hour - timedelta(hours=1)) - timedelta(hours=REVALIDATE_BARS - 1)
+    revalidate_end   = now_hour - timedelta(hours=1)
+
+    if revalidate_start in df.index or revalidate_end in df.index:
+        from data_pipeline.rate_limiter import rate_limiter
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/1h_revalidate",
+            n_timeframes = 1,
+            pages_per_tf = 1,
+        )
+        revalidated = _fetch_all(symbol, LTF_INTERVAL, revalidate_start, revalidate_end)
+        if not revalidated.empty:
+            before = df.loc[df.index.isin(revalidated.index)]
+            changed = []
+            for ts in revalidated.index:
+                if ts in before.index:
+                    old_close = before.loc[ts, "close"]
+                    new_close = revalidated.loc[ts, "close"]
+                    if abs(old_close - new_close) > 1e-12:
+                        changed.append((ts, old_close, new_close))
+            df = pd.concat([df, revalidated])
+            df = df[~df.index.duplicated(keep="last")]
+            if changed:
+                for ts, old_c, new_c in changed:
+                    print(f"[REVALIDATE] {symbol} {ts} close corrected {old_c} → {new_c}")
 
     # --------------------------------------------------
     # FINAL CLEAN
