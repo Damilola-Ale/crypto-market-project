@@ -603,8 +603,8 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     # Above 0.55 = consistently closing in upper half = long bias
     # Below 0.45 = consistently closing in lower half = short bias
     # Between 0.45-0.55 = genuinely ambiguous, no trade
-    flow_bias_long  = close_location_bias > 0.52
-    flow_bias_short = close_location_bias < 0.48
+    flow_bias_long  = close_location_bias > 0.5
+    flow_bias_short = close_location_bias < 0.5
 
     df['VALID_BREAK_LONG'] = (
         df['EARLY_EXPANSION'] &

@@ -593,7 +593,9 @@ def run_hourly_for_symbol(
             is_5m_boundary = now_check.minute % 5 == 0
 
             if forced_time is None and not replay:
-                if is_5m_boundary or not os.path.exists(_cache_path(symbol, "5m")):
+                _now_utc_c = datetime.now(timezone.utc)
+                _is_new_hour = _now_utc_c.minute < 5  # first 5 minutes of the hour
+                if is_5m_boundary or _is_new_hour or not os.path.exists(_cache_path(symbol, "5m")):
                     df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
                 else:
                     # between 5m boundaries — serve 1H/4H from cache.
