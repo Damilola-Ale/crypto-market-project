@@ -1760,7 +1760,14 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
 
     df = pd.concat([df, htf_stack], axis=1)
 
-    htf_quality_baseline = df['HTF_QUALITY'].ewm(span=2000, adjust=False).mean()
+    # Seed the baseline EWM with the series' own mean instead of its first
+    # value — removes cold-start bias so short (live) and long (backtest)
+    # windows converge to similar thresholds for the same symbol.
+    _hq = df['HTF_QUALITY']
+    _seed = _hq.mean()
+    _hq_seeded = pd.concat([pd.Series([_seed]), _hq]).reset_index(drop=True)
+    htf_quality_baseline = _hq_seeded.ewm(span=200, adjust=False).mean().iloc[1:]
+    htf_quality_baseline.index = df.index
     htf_quality_th       = (htf_quality_baseline * 1.05).clip(lower=0.30)
 
     # ── HTF COMPRESSION GATE ──────────────────────────────────────────
