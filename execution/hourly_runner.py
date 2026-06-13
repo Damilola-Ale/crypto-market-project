@@ -433,6 +433,17 @@ def run_hourly():
 
 SIGNAL_CACHE_DIR = "data/signal_cache"
 
+def _wipe_signal_cache():
+    if os.path.exists(SIGNAL_CACHE_DIR):
+        import glob
+        for f in glob.glob(os.path.join(SIGNAL_CACHE_DIR, "*.parquet")):
+            os.remove(f)
+        for f in glob.glob(os.path.join(SIGNAL_CACHE_DIR, "*.json")):
+            os.remove(f)
+        print("[SIGNAL CACHE] wiped on restart")
+
+_wipe_signal_cache()
+
 def _get_signal_df(symbol, df, htf_df, is_live, htf_scores, latest_hour_ts):
     os.makedirs(SIGNAL_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(SIGNAL_CACHE_DIR, f"{symbol}_signals.parquet")
