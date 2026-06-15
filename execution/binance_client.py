@@ -279,25 +279,34 @@ def _place_stop_market_order(
     client_order_id: str = None,
 ) -> dict:
     params = {
-        "symbol":    symbol,
-        "side":      side,
-        "type":      "STOP_MARKET",
-        "stopPrice": _fmt_price(symbol, stop_price),
-        "quantity":  _fmt_qty(symbol, quantity),
-        "reduceOnly": "true" if reduce_only else "false",
+        "symbol":      symbol,
+        "side":        side,
+        "stopPrice":   _fmt_price(symbol, stop_price),
+        "quantity":    _fmt_qty(symbol, quantity),
+        "reduceOnly":  "true" if reduce_only else "false",
+        "workingType": "CONTRACT_PRICE",
     }
     if client_order_id:
         params["newClientOrderId"] = client_order_id[:36]
 
-    return _request("POST", "/fapi/v1/order", params)
+    return _request("POST", "/fapi/v1/order/algo/stop", params)
 
 
 def _cancel_order(symbol: str, order_id: int) -> dict:
-    """Cancel a single order by its Binance order ID."""
-    return _request("DELETE", "/fapi/v1/order", {
-        "symbol":  symbol,
-        "orderId": order_id,
-    })
+    """Cancel a single order — tries algo endpoint first, falls back to regular."""
+    try:
+        return _request("DELETE", "/fapi/v1/order/algo", {
+            "symbol":  symbol,
+            "algoId":  order_id,
+        })
+    except BinanceExecutionError as e:
+        if "400" in str(e) or "-4120" in str(e) or "algoId" in str(e).lower():
+            # Not an algo order — cancel via regular endpoint
+            return _request("DELETE", "/fapi/v1/order", {
+                "symbol":  symbol,
+                "orderId": order_id,
+            })
+        raise
 
 
 def _cancel_all_open_orders(symbol: str) -> dict:
@@ -380,10 +389,7 @@ def open_position(
             f"qty={quantity} orderId={stop_order.get('orderId')}"
         )
     except BinanceExecutionError as e:
-        if "-4120" in str(e) or "Algo Order" in str(e):
-            print(f"[BINANCE STOP SKIPPED] {symbol} — demo env does not support STOP_MARKET, stop will be software-managed")
-        else:
-            raise  # re-raise anything unexpected
+        raise  # stop placement failure is always fatal — no silent fallback
 
     return {
         "entry_order": entry_order,
