@@ -102,7 +102,7 @@ def update_symbol(symbol: str):
     if os.path.exists(_old_meta_path):
         try:
             with open(_old_meta_path) as _f:
-                _old_meta = json.load(_f)
+                _old_meta = _json.load(_f)
             if "last_close" in _old_meta and "checksum" not in _old_meta:
                 os.remove(_old_meta_path)
                 print(f"[MIGRATE] {symbol} — deleted old htf_scores_meta (last_close format)")
