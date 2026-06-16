@@ -94,6 +94,23 @@ def update_symbol(symbol: str):
             f.write("done")
         print(f"[ONE-TIME PURGE] {symbol} — complete, will rebuild from scratch")
 
+    # --------------------------------------------------
+    # ONE-TIME PURGE v2 — wipe stale htf_scores and 5m caches
+    # built before the align_htf_scores lookahead fix and the
+    # 5m incomplete-bar fix. Sentinel version bumped to v2 so
+    # this runs once even on symbols that already ran v1.
+    # --------------------------------------------------
+    _purge_sentinel_v2 = os.path.join(CACHE_DIR, f"{symbol}_htf_align_purge_v2.done")
+    if not os.path.exists(_purge_sentinel_v2):
+        for _tf in ("htf_scores", "htf_scores_boundary", LLTF_INTERVAL):
+            _p = _cache_path(symbol, _tf)
+            if os.path.exists(_p):
+                os.remove(_p)
+                print(f"[ONE-TIME PURGE v2] {symbol} — removed {_p}")
+        with open(_purge_sentinel_v2, "w") as f:
+            f.write("done")
+        print(f"[ONE-TIME PURGE v2] {symbol} — htf_scores and 5m cache wiped, will recompute")
+
     path_ltf  = _cache_path(symbol, LTF_INTERVAL)
     path_htf  = _cache_path(symbol, HTF_INTERVAL)
     path_lltf = _cache_path(symbol, LLTF_INTERVAL)

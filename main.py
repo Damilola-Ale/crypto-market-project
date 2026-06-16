@@ -347,7 +347,7 @@ htf_df = load_or_fetch(SYMBOL, HTF_INTERVAL, HTF_LIMIT, now_utc)
 
 # Drop current incomplete 1H bar
 current_1h_boundary = now_utc.floor("h")
-ltf_df = ltf_df[ltf_df.index <= current_1h_boundary - pd.Timedelta(hours=1)].copy()
+ltf_df = ltf_df[ltf_df.index < current_1h_boundary].copy()
 
 current_4h_open = now_utc.floor("4h")
 htf_df = htf_df[htf_df.index < current_4h_open].copy()
@@ -357,16 +357,41 @@ print(f"[DEBUG] now_utc={now_utc.strftime('%Y-%m-%d %H:%M UTC')} | current_4h_op
 ltf_df.index = pd.to_datetime(ltf_df.index, utc=True)
 htf_df.index = pd.to_datetime(htf_df.index, utc=True)
 
-# ltf_df.index = pd.to_datetime(ltf_df.index, utc=True)
-# target = pd.Timestamp("2026-05-06 06:00:00", tz="UTC")
-# print(f"Target in index: {target in ltf_df.index}")
-# print(ltf_df.loc["2026-05-06 04:00":"2026-05-06 09:00"])
-
 # ==========================================================
 # SIGNAL GENERATION
 # ==========================================================
 
-ltf_df = generate_signal(ltf_df, htf_df)
+# Inject a placeholder row at current_1h_boundary so align_htf_scores
+# has a landing spot for any 4H score that closed at or before this
+# timestamp. The placeholder copies OHLC from the last real bar so
+# indicator math doesn't crash. After generate_signal runs, the HTF
+# columns are copied back onto the real last bar and the placeholder
+# is discarded — it never reaches the backtest or position manager.
+_placeholder = pd.DataFrame(
+    [ltf_df.iloc[-1].values],
+    columns=ltf_df.columns,
+    index=[current_1h_boundary]
+)
+_ltf_with_placeholder = pd.concat([ltf_df, _placeholder])
+_ltf_with_placeholder = generate_signal(_ltf_with_placeholder, htf_df)
+
+# Copy HTF columns from placeholder back onto every real bar via bfill.
+# The placeholder is the last row, so bfill pulls its values backward
+# onto all preceding rows that still carry the stale score.
+_htf_cols = ["HTF_DIRECTION", "HTF_QUALITY"]
+for _col in _htf_cols:
+    if _col in _ltf_with_placeholder.columns:
+        # Only backfill if the placeholder actually received a new score
+        _placeholder_val = _ltf_with_placeholder.loc[current_1h_boundary, _col]
+        _ltf_with_placeholder[_col] = _ltf_with_placeholder[_col].where(
+            _ltf_with_placeholder.index != current_1h_boundary,
+            _placeholder_val
+        )
+        # Propagate the new score backward to all bars in the same 4H period
+        _ltf_with_placeholder[_col] = _ltf_with_placeholder[_col].bfill()
+
+# Discard the placeholder
+ltf_df = _ltf_with_placeholder[_ltf_with_placeholder.index < current_1h_boundary].copy()
 
 # ==========================================================
 # BACKTEST
