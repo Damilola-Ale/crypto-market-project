@@ -441,7 +441,7 @@ def update_symbol(symbol: str):
     if os.path.exists(_scores_meta_path):
         try:
             with open(_scores_meta_path) as f:
-                _scores_meta = json.load(f)
+                _scores_meta = _json.load(f)
         except Exception:
             pass
 
