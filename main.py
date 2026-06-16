@@ -375,6 +375,11 @@ _placeholder = pd.DataFrame(
 _ltf_with_placeholder = pd.concat([ltf_df, _placeholder])
 _ltf_with_placeholder = generate_signal(_ltf_with_placeholder, htf_df)
 
+# ← move here, and use _ltf_with_placeholder not ltf_df
+print(_ltf_with_placeholder[["FLOW_STRENGTH", "COMPRESSION_OK", "EARLY_EXPANSION", "signal"]].tail(50))
+print(f"[DEBUG] _ltf_with_placeholder shape: {_ltf_with_placeholder.shape}")
+print(f"[DEBUG] ltf_df shape going in: {len(ltf_df)} rows, first={ltf_df.index[0]}, last={ltf_df.index[-1]}")
+
 # Copy HTF columns from placeholder back onto every real bar via bfill.
 # The placeholder is the last row, so bfill pulls its values backward
 # onto all preceding rows that still carry the stale score.
