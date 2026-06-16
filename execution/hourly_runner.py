@@ -764,7 +764,6 @@ def run_hourly_for_symbol(
                 f"unique HTF_QUALITY values={[round(float(v),4) for v in _hq_in_4h]}"
             )
             print("\n".join(_audit_lines))
-            notifier.debug("\n".join(_audit_lines))
         except Exception as _audit_err:
             print(f"[HTF AUDIT FAILED] {symbol} — {_audit_err}")
 
