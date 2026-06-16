@@ -170,10 +170,28 @@ def update_symbol(symbol: str):
                 # Load HTF scores cache for fast-exit path
                 _htf_scores = None
                 _path_htf_scores = _cache_path(symbol, "htf_scores")
+                _scores_meta_path = _cache_path(symbol, "htf_scores_meta")
                 if os.path.exists(_path_htf_scores):
                     try:
                         _htf_scores = pd.read_parquet(_path_htf_scores)
                         _htf_scores.index = pd.to_datetime(_htf_scores.index, utc=True)
+
+                        # validate checksum — stale scores from a different htf_df must not be served
+                        import hashlib, json as _json
+                        _htf_checksum = hashlib.md5(
+                            df_htf['close'].round(8).values.tobytes()
+                        ).hexdigest()
+                        _scores_meta = {}
+                        if os.path.exists(_scores_meta_path):
+                            try:
+                                with open(_scores_meta_path) as _f:
+                                    _scores_meta = _json.load(_f)
+                            except Exception:
+                                pass
+                        if _scores_meta.get("checksum") != _htf_checksum:
+                            print(f"[FAST EXIT] {symbol} — htf_scores checksum mismatch, forcing full fetch")
+                            raise Exception("htf_scores stale — force full fetch")
+
                     except Exception:
                         _htf_scores = None
 
