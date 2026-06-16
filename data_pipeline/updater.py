@@ -94,6 +94,21 @@ def update_symbol(symbol: str):
             f.write("done")
         print(f"[ONE-TIME PURGE] {symbol} — complete, will rebuild from scratch")
 
+    # --------------------------------------------------
+    # MIGRATE — delete old last_close meta format so the
+    # new checksum format takes over cleanly on first run
+    # --------------------------------------------------
+    _old_meta_path = _cache_path(symbol, "htf_scores_meta")
+    if os.path.exists(_old_meta_path):
+        try:
+            with open(_old_meta_path) as _f:
+                _old_meta = json.load(_f)
+            if "last_close" in _old_meta and "checksum" not in _old_meta:
+                os.remove(_old_meta_path)
+                print(f"[MIGRATE] {symbol} — deleted old htf_scores_meta (last_close format)")
+        except Exception:
+            pass
+
     path_ltf  = _cache_path(symbol, LTF_INTERVAL)
     path_htf  = _cache_path(symbol, HTF_INTERVAL)
     path_lltf = _cache_path(symbol, LLTF_INTERVAL)
@@ -412,18 +427,49 @@ def update_symbol(symbol: str):
             htf_scores = None
             last_scores_ts = None
 
+    import json as _json
+    import hashlib
+
     htf_last_ts = df_htf.index[-1]
 
-    if last_scores_ts is None or last_scores_ts < htf_last_ts:
-        print(f"[HTF SCORES] recomputing — scores_last={last_scores_ts} htf_last={htf_last_ts}")
+    _htf_checksum = hashlib.md5(
+        df_htf['close'].round(8).values.tobytes()
+    ).hexdigest()
+
+    _scores_meta_path = _cache_path(symbol, "htf_scores_meta")
+    _scores_meta = {}
+    if os.path.exists(_scores_meta_path):
+        try:
+            with open(_scores_meta_path) as f:
+                _scores_meta = json.load(f)
+        except Exception:
+            pass
+
+    _cached_checksum = _scores_meta.get("checksum")
+    _ts_changed      = last_scores_ts is None or str(last_scores_ts) != str(htf_last_ts)
+    _data_changed    = _cached_checksum != _htf_checksum
+
+    if _ts_changed or _data_changed:
+        print(
+            f"[HTF SCORES] recomputing — ts_changed={_ts_changed} "
+            f"data_changed={_data_changed} checksum={_htf_checksum[:8]}"
+        )
         htf_scores = compute_htf_scores(df_htf)
 
         tmp_scores = path_htf_scores + ".tmp"
         htf_scores.to_parquet(tmp_scores)
         os.replace(tmp_scores, path_htf_scores)
+
+        with open(_scores_meta_path + ".tmp", "w") as f:
+            _json.dump({
+                "last_ts":  str(htf_last_ts),
+                "checksum": _htf_checksum,
+            }, f)
+        os.replace(_scores_meta_path + ".tmp", _scores_meta_path)
+
         print(f"[HTF SCORES] saved — {len(htf_scores)} bars, last={htf_scores.index[-1]}")
     else:
-        print(f"[HTF SCORES] cache current — last={last_scores_ts}")
+        print(f"[HTF SCORES] cache current — last={last_scores_ts} checksum={_htf_checksum[:8]}")
 
     # --------------------------------------------------
     # SAVE ATOMIC
