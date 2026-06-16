@@ -152,9 +152,32 @@ def update_symbol(symbol: str):
                 _current_4h_open = _last_closed_4h + timedelta(hours=4)
                 df_htf = df_htf[df_htf.index < _current_4h_open]
 
-                # Load HTF scores cache for fast-exit path
+                # Load HTF scores cache for fast-exit path.
+                # If the 4H boundary has changed since the cache was written,
+                # fall through to a full fetch — the cache may contain scores
+                # computed from a partially-formed bar.
                 _htf_scores = None
                 _path_htf_scores = _cache_path(symbol, "htf_scores")
+                _path_htf_scores_boundary = _cache_path(symbol, "htf_scores_boundary")
+
+                _fast_exit_boundary_ok = False
+                if os.path.exists(_path_htf_scores_boundary):
+                    try:
+                        _stored_b = pd.read_parquet(_path_htf_scores_boundary).index[0]
+                        if _stored_b.tzinfo is None:
+                            _stored_b = _stored_b.tz_localize("UTC")
+                        else:
+                            _stored_b = _stored_b.tz_convert("UTC")
+                        _fast_exit_boundary_ok = (_stored_b == current_4h_open)
+                    except Exception:
+                        _fast_exit_boundary_ok = False
+                else:
+                    _fast_exit_boundary_ok = False
+
+                if not _fast_exit_boundary_ok:
+                    print(f"[FAST EXIT BYPASS] {symbol} — 4H boundary mismatch, falling through to full fetch")
+                    raise Exception("htf_scores boundary mismatch — force full fetch")
+
                 if os.path.exists(_path_htf_scores):
                     try:
                         _htf_scores = pd.read_parquet(_path_htf_scores)
@@ -414,14 +437,38 @@ def update_symbol(symbol: str):
 
     htf_last_ts = df_htf.index[-1]
 
-    if last_scores_ts is None or last_scores_ts < htf_last_ts:
-        print(f"[HTF SCORES] recomputing — scores_last={last_scores_ts} htf_last={htf_last_ts}")
+    _cache_boundary_file = _cache_path(symbol, "htf_scores_boundary")
+    _stored_boundary = None
+    if os.path.exists(_cache_boundary_file):
+        try:
+            _stored_boundary = pd.read_parquet(_cache_boundary_file).index[0]
+            if _stored_boundary.tzinfo is None:
+                _stored_boundary = _stored_boundary.tz_localize("UTC")
+            else:
+                _stored_boundary = _stored_boundary.tz_convert("UTC")
+        except Exception:
+            _stored_boundary = None
+
+    _boundary_changed = _stored_boundary != current_4h_open
+    _scores_stale = last_scores_ts is None or last_scores_ts < htf_last_ts
+
+    if _scores_stale or _boundary_changed:
+        if _boundary_changed:
+            print(f"[HTF SCORES] 4H boundary changed {_stored_boundary} → {current_4h_open}, recomputing")
+        else:
+            print(f"[HTF SCORES] recomputing — scores_last={last_scores_ts} htf_last={htf_last_ts}")
         htf_scores = compute_htf_scores(df_htf)
 
         tmp_scores = path_htf_scores + ".tmp"
         htf_scores.to_parquet(tmp_scores)
         os.replace(tmp_scores, path_htf_scores)
-        print(f"[HTF SCORES] saved — {len(htf_scores)} bars, last={htf_scores.index[-1]}")
+
+        _boundary_df = pd.DataFrame(index=[current_4h_open])
+        _boundary_df.index = pd.DatetimeIndex(_boundary_df.index, tz="UTC")
+        _boundary_df.to_parquet(_cache_boundary_file + ".tmp")
+        os.replace(_cache_boundary_file + ".tmp", _cache_boundary_file)
+
+        print(f"[HTF SCORES] saved — {len(htf_scores)} bars, last={htf_scores.index[-1]}, boundary={current_4h_open}")
     else:
         print(f"[HTF SCORES] cache current — last={last_scores_ts}")
 
@@ -488,6 +535,16 @@ def update_symbol(symbol: str):
 
     df_lltf = df_lltf.sort_index()
     df_lltf = df_lltf[df_lltf.index >= start_required]
+
+    # Exclude the currently-forming 5m bar — its OHLC is not final.
+    # The candle guard in hourly_runner must never be the only protection
+    # because it has an early-entry path that deliberately includes it.
+    _minutes_floored = (now_full.minute // 5) * 5
+    _current_5m_open = now_full.replace(
+        minute=_minutes_floored, second=0, microsecond=0, tzinfo=timezone.utc
+    )
+    df_lltf = df_lltf[df_lltf.index < _current_5m_open]
+
     df_lltf = df_lltf.iloc[-(HOURS_LOOKBACK * 12):]
     try:
         validate_ohlcv(df_lltf, symbol, freq=LLTF_INTERVAL)

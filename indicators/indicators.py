@@ -1790,6 +1790,7 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
         _htf['HTF_COMPRESSED']
         .shift(1)
         .reindex(df.index, method='ffill')
+        .infer_objects(copy=False)
         .fillna(False)
         .astype(bool)
     )

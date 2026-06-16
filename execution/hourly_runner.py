@@ -807,7 +807,11 @@ def run_hourly_for_symbol(
                     continue
                 origin = ltf_opens[idx]
                 origin_end = origin + pd.Timedelta(hours=1)
-                if origin <= ts < origin_end:
+                # Block bars strictly INSIDE the originating 1H bar.
+                # The bar AT origin is the first valid entry bar after the
+                # prior 1H bar closes — it must keep its signal to match
+                # backtest, which explicitly assigns the signal to that bar.
+                if origin < ts < origin_end:
                     block_mask[ts] = True
             
             lltf_df.loc[block_mask, 'final_signal'] = 0
