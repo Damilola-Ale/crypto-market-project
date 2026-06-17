@@ -103,7 +103,7 @@ def fetch_binance(symbol, interval, limit):
 #     "IDUSDT", "VICUSDT", "ETHUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "GRTUSDT",
 #     "RENDERUSDT", "PAXGUSDT", "IOSTUSDT", "KNCUSDT", "KAVAUSDT", "RLCUSDT", "BELUSDT"
 # ] IOST KNC KAVA RLC | KSM BEL
-SYMBOL = "AAVEUSDT"
+SYMBOL = "BELUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -723,10 +723,6 @@ scores = compute_htf_scores(htf_df)
 print("Backtest HTF last 5 bars:")
 print(scores.tail(5))
 print("HTF_QUALITY last value:", scores['HTF_QUALITY'].iloc[-1])
-print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
-print(f"[DEBUG] backtest htf_df FIRST={htf_df.index[0]}")  # ADD THIS
-for _ts, _row in htf_df.iterrows():                         # ADD THIS
-    print(f"[DEBUG HTF ALL] {_ts} | close={_row['close']:.4f}")  # ADD THIS
 
 print(f"[DEBUG] backtest htf_df last={htf_df.index[-1]} len={len(htf_df)}")
 for _ts, _row in htf_df.tail(3).iterrows():
