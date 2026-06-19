@@ -223,6 +223,15 @@ def _price_precision(symbol: str) -> int:
     return 4  # safe fallback
 
 
+def _max_qty(symbol: str) -> float:
+    """Return the maximum order quantity allowed for a symbol."""
+    info = _get_symbol_info(symbol)
+    for f in info.get("filters", []):
+        if f["filterType"] == "LOT_SIZE":
+            return float(f["maxQty"])
+    return float("inf")  # no cap found — don't block
+
+
 def _fmt_qty(symbol: str, qty: float) -> str:
     prec = _qty_precision(symbol)
     return f"{qty:.{prec}f}"
@@ -278,20 +287,27 @@ def _place_stop_market_order(
     reduce_only: bool = True,
     client_order_id: str = None,
 ) -> dict:
+    # Binance migrated all conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET,
+    # etc.) to the Algo Order API effective 2025-12-09. The old /fapi/v1/order
+    # endpoint now rejects these with -4120 STOP_ORDER_SWITCH_ALGO.
+    # New endpoint: POST /fapi/v1/algoOrder
+    # Field renamed: stopPrice -> triggerPrice
+    # Response field renamed: orderId -> algoId (handled by callers)
     params = {
+        "algoType":    "CONDITIONAL",
         "symbol":      symbol,
         "side":        side,
         "type":        "STOP_MARKET",
-        "stopPrice":   _fmt_price(symbol, stop_price),
+        "triggerPrice": _fmt_price(symbol, stop_price),
         "quantity":    _fmt_qty(symbol, quantity),
         "workingType": "CONTRACT_PRICE",
     }
     if reduce_only:
         params["reduceOnly"] = "true"
     if client_order_id:
-        params["newClientOrderId"] = client_order_id[:36]
+        params["clientAlgoId"] = client_order_id[:36]
 
-    return _request("POST", "/fapi/v1/order", params)
+    return _request("POST", "/fapi/v1/algoOrder", params)
 
 
 def _cancel_order(symbol: str, order_id: int) -> dict:
@@ -299,6 +315,14 @@ def _cancel_order(symbol: str, order_id: int) -> dict:
     return _request("DELETE", "/fapi/v1/order", {
         "symbol":  symbol,
         "orderId": order_id,
+    })
+
+
+def _cancel_algo_order(algo_id: int) -> dict:
+    """Cancel a conditional (algo) order — e.g. a STOP_MARKET stop-loss,
+    placed via the new Algo Order API (mandatory since 2025-12-09)."""
+    return _request("DELETE", "/fapi/v1/algoOrder", {
+        "algoId": algo_id,
     })
 
 
@@ -377,9 +401,10 @@ def open_position(
             reduce_only=True,
             client_order_id=stop_cid,
         )
+        # Algo Order API returns "algoId", not "orderId"
         print(
             f"[BINANCE STOP] {symbol} {stop_side} stop={stop_price} "
-            f"qty={quantity} orderId={stop_order.get('orderId')}"
+            f"qty={quantity} algoId={stop_order.get('algoId')}"
         )
     except BinanceExecutionError as e:
         # Stop failed — the position is now naked on Binance. Don't leave
@@ -423,14 +448,16 @@ def amend_stop(
     """
     Cancel the existing stop and place a new STOP_MARKET at new_stop_price.
     Binance Futures does not support in-place stop amendment.
+    Stops are now Algo Orders (mandatory since 2025-12-09) — cancel via
+    /fapi/v1/algoOrder using algoId, not the legacy orderId-based cancel.
 
     Returns the new stop order dict.
     """
     # Cancel old stop first (ignore errors — it may have already been hit)
     if existing_stop_order_id:
         try:
-            _cancel_order(symbol, existing_stop_order_id)
-            print(f"[BINANCE AMEND STOP] cancelled old stop orderId={existing_stop_order_id}")
+            _cancel_algo_order(existing_stop_order_id)
+            print(f"[BINANCE AMEND STOP] cancelled old stop algoId={existing_stop_order_id}")
         except BinanceExecutionError as e:
             print(f"[BINANCE AMEND STOP] cancel failed (may already be filled): {e}")
 
@@ -448,7 +475,7 @@ def amend_stop(
 
     print(
         f"[BINANCE AMEND STOP] {symbol} new stop={new_stop_price} "
-        f"orderId={new_stop.get('orderId')}"
+        f"algoId={new_stop.get('algoId')}"
     )
 
     return new_stop
@@ -467,11 +494,12 @@ def close_position(
 
     Returns the close order dict.
     """
-    # Cancel stop first to avoid double-close
+    # Cancel stop first to avoid double-close.
+    # The stop is now an Algo Order — cancel via algoId, not the legacy order cancel.
     if stop_order_id:
         try:
-            _cancel_order(symbol, stop_order_id)
-            print(f"[BINANCE CLOSE] cancelled stop orderId={stop_order_id}")
+            _cancel_algo_order(stop_order_id)
+            print(f"[BINANCE CLOSE] cancelled stop algoId={stop_order_id}")
         except BinanceExecutionError as e:
             print(f"[BINANCE CLOSE] stop cancel failed (may be already hit): {e}")
 
@@ -530,6 +558,14 @@ def get_open_positions() -> dict[str, dict]:
 def get_open_orders(symbol: str) -> list[dict]:
     """Return all open orders for a symbol."""
     return _request("GET", "/fapi/v1/openOrders", {"symbol": symbol})
+
+
+def get_open_algo_orders(symbol: str) -> list[dict]:
+    """Return all open algo (conditional) orders for a symbol — this is
+    where STOP_MARKET/TAKE_PROFIT_MARKET orders now live, since Binance's
+    2025-12-09 migration moved them off the regular open-orders endpoint
+    (GET /fapi/v1/openOrders no longer returns them)."""
+    return _request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol})
 
 
 def get_account_balance() -> dict:

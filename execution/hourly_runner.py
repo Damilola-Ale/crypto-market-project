@@ -134,7 +134,7 @@ def run_hourly():
         return
 
     if os.getenv("BINANCE_API_KEY") and os.getenv("BINANCE_API_SECRET"):
-        from execution.binance_client import reconcile_positions, get_open_positions, get_open_orders, get_account_balance
+        from execution.binance_client import reconcile_positions, get_open_positions, get_open_orders, get_open_algo_orders, get_account_balance
         from strategy.account_state import account_state as _account_state
 
         # Sync equity from Binance — gated to same 5m boundary as recon
@@ -242,14 +242,16 @@ def run_hourly():
                             stop_price = None
                             stop_order_id = None
                             try:
-                                open_orders = get_open_orders(symbol)
-                                for o in open_orders:
-                                    if o.get("type") == "STOP_MARKET" and o.get("reduceOnly"):
-                                        stop_price = float(o["stopPrice"])
-                                        stop_order_id = o.get("orderId")
+                                # Stops are now Algo Orders (mandatory since 2025-12-09) —
+                                # GET /fapi/v1/openOrders no longer returns them at all.
+                                open_algo_orders = get_open_algo_orders(symbol)
+                                for o in open_algo_orders:
+                                    if o.get("orderType") == "STOP_MARKET" and o.get("reduceOnly"):
+                                        stop_price = float(o["triggerPrice"])
+                                        stop_order_id = o.get("algoId")
                                         break
                             except Exception as oe:
-                                _tg_debug(f"[RECON] Could not fetch open orders for {symbol}: {oe}")
+                                _tg_debug(f"[RECON] Could not fetch open algo orders for {symbol}: {oe}")
 
                             entry_price = live["entry_price"]
                             direction = live["side"]

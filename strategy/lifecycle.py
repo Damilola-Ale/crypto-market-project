@@ -710,7 +710,7 @@ class PositionManager:
                         existing_stop_order_id=position.get("binance_stop_order_id"),
                         trade_id=position.get("trade_id"),
                     )
-                    position["binance_stop_order_id"] = new_stop_order.get("orderId")
+                    position["binance_stop_order_id"] = new_stop_order.get("algoId")
                 except BinanceExecutionError as e:
                     _tg_debug(f"[BINANCE STOP AMEND FAILED] {position['symbol']} — {e}")
             # ────────────────────────────────────────────────────────
@@ -748,9 +748,17 @@ class PositionManager:
         stop_pct = stop_dist / price if price > 0 else 0
         risk_usd = round(position_value * stop_pct, 4)
         if _EXECUTION_ENABLED:
-            from execution.binance_client import _fmt_qty, _qty_precision
+            from execution.binance_client import _fmt_qty, _qty_precision, _max_qty
             raw_qty = position_value / price if price > 0 else 0
             quantity = float(_fmt_qty(symbol, raw_qty))
+
+            _cap = _max_qty(symbol)
+            if quantity > _cap:
+                _tg_debug(
+                    f"[QTY CLAMPED] {symbol} raw_qty={quantity} exceeds max_qty={_cap}, "
+                    f"clamping down"
+                )
+                quantity = float(_fmt_qty(symbol, _cap))
         else:
             quantity = round(position_value / price, 4) if price > 0 else 0
 
@@ -819,8 +827,9 @@ class PositionManager:
                     stop_price=stop,
                     trade_id=position["trade_id"],
                 )
-                # store Binance order IDs so we can cancel/amend later
-                position["binance_stop_order_id"] = result["stop_order"].get("orderId")
+                # store Binance order IDs so we can cancel/amend later.
+                # The stop is now an Algo Order — its ID field is "algoId", not "orderId".
+                position["binance_stop_order_id"] = result["stop_order"].get("algoId")
                 position["binance_entry_order_id"] = result["entry_order"].get("orderId")
                 # use actual fill price if Binance returned one
                 if result.get("fill_price"):
