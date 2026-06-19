@@ -284,10 +284,10 @@ def _place_stop_market_order(
         "type":        "STOP_MARKET",
         "stopPrice":   _fmt_price(symbol, stop_price),
         "quantity":    _fmt_qty(symbol, quantity),
-        "reduceOnly":  "true" if reduce_only else "false",
         "workingType": "CONTRACT_PRICE",
-        "closePosition": "false",
     }
+    if reduce_only:
+        params["reduceOnly"] = "true"
     if client_order_id:
         params["newClientOrderId"] = client_order_id[:36]
 
@@ -382,7 +382,28 @@ def open_position(
             f"qty={quantity} orderId={stop_order.get('orderId')}"
         )
     except BinanceExecutionError as e:
-        raise  # stop placement failure is always fatal — no silent fallback
+        # Stop failed — the position is now naked on Binance. Don't leave
+        # it there silently waiting for the next reconcile cycle to notice:
+        # immediately flatten the entry we just filled.
+        print(f"[BINANCE STOP FAILED — FLATTENING ENTRY] {symbol}: {e}")
+        try:
+            _place_market_order(
+                symbol=symbol,
+                side=stop_side,        # opposite of entry side = flattening order
+                quantity=quantity,
+                reduce_only=True,
+                client_order_id=f"emerg_{trade_id}"[:36] if trade_id else None,
+            )
+            print(f"[BINANCE EMERGENCY FLATTEN OK] {symbol}")
+        except BinanceExecutionError as flatten_err:
+            # Flattening also failed — worst case: naked, unprotected
+            # position with no automatic recovery. Raise loudly.
+            raise BinanceExecutionError(
+                f"STOP FAILED AND EMERGENCY FLATTEN ALSO FAILED for {symbol}. "
+                f"Stop error: {e}. Flatten error: {flatten_err}. "
+                f"MANUAL INTERVENTION REQUIRED — position is naked on Binance."
+            ) from flatten_err
+        raise  # re-raise original stop error so lifecycle.py's existing handling still fires
 
     return {
         "entry_order": entry_order,

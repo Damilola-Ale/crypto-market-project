@@ -908,9 +908,10 @@ class PositionManager:
         # 2. Actual Dollar PnL (Price Diff * Quantity)
         pnl_usd = price_diff * qty
 
-        # 3. R-Multiple
+        # 3. R-Multiple — guard against degenerate near-zero R producing
+        # absurd multiples (e.g. recovered positions with a placeholder stop).
         R = pos.get("R", None)
-        pnl_r = price_diff / R if R and R > 0 else 0.0
+        pnl_r = price_diff / R if R and R > 1e-6 else 0.0
 
         pos["state"] = "CLOSED"
         pos["exit"]  = {

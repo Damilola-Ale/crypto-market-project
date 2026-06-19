@@ -256,8 +256,30 @@ def run_hourly():
                             qty = live["qty"]
 
                             if stop_price is None:
-                                _tg_debug(f"[RECON] No stop order found for {symbol} — stop will be reconstructed on next bar")
-                                stop_price = entry_price
+                                # Don't fall back to stop_price = entry_price — that collapses
+                                # R to ~0 downstream and produces nonsense PnL-in-R multiples.
+                                # Use an ATR-based estimate instead so R stays meaningful.
+                                _fallback_atr = None
+                                try:
+                                    import pandas as _pd
+                                    from indicators.indicators import atr_ema
+                                    _cached_1h = _pd.read_parquet(f"data/cache/{symbol}_1h.parquet")
+                                    _fallback_atr = float(atr_ema(_cached_1h).iloc[-1])
+                                except Exception as _atr_err:
+                                    _tg_debug(f"[RECON] ATR fallback failed for {symbol}: {_atr_err}")
+
+                                if not _fallback_atr or _fallback_atr <= 0:
+                                    _fallback_atr = entry_price * 0.01  # last-resort 1% fallback
+
+                                stop_price = (
+                                    entry_price - 1.5 * _fallback_atr if direction == 1
+                                    else entry_price + 1.5 * _fallback_atr
+                                )
+                                _tg_debug(
+                                    f"[RECON] No stop order found for {symbol} — "
+                                    f"using ATR-based fallback stop={stop_price:.6f} "
+                                    f"(atr={_fallback_atr:.6f}), will be reconstructed on next bar"
+                                )
 
                             recovered = {
                                 "symbol":           symbol,
