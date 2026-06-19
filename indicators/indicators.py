@@ -206,7 +206,15 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # --------------------------------------------------
     vol_baseline       = df['volume'].ewm(span=vol_lookback, adjust=False).mean()
     vol_spike          = df['volume'] / (vol_baseline + 1e-9)
-    vol_spike_baseline = vol_spike.ewm(span=500, adjust=False).mean()
+
+    # Seed the span=500 baseline with the series' own mean instead of
+    # cold-starting at bar 0 — same fix as HTF_QUALITY's EWM seed, so
+    # short (live) windows converge toward the same baseline as long
+    # (backtest) windows for the same symbol.
+    _vs_seed = vol_spike.mean()
+    _vs_seeded = pd.concat([pd.Series([_vs_seed]), vol_spike]).reset_index(drop=True)
+    vol_spike_baseline = _vs_seeded.ewm(span=500, adjust=False).mean().iloc[1:]
+    vol_spike_baseline.index = df.index
 
     # Peak volume within a 3-bar causal window
     vol_window    = vol_spike.rolling(3).max()
@@ -348,7 +356,17 @@ def participation_state(df, lookback=20, threshold=0.5):
     df['FLOW'] = df['volume'] * (df['close'] - df['open'])
 
     # ── 2. Recursive flow normalization ──────────────────────────
-    df['FLOW_Z'] = _ewma_zscore_series(df['FLOW'], alpha=0.05, min_periods=20)
+    # Seeded with the series' own mean/variance instead of cold-starting
+    # at bar 0 — same fix applied to HTF_QUALITY's EWM baseline, so
+    # short (live, ~1000-bar) windows converge toward the same
+    # normalization as long (backtest) windows for the same symbol.
+    df['FLOW_Z'] = _ewma_zscore_series(
+        df['FLOW'],
+        alpha=0.05,
+        min_periods=20,
+        seed_mean=df['FLOW'].mean(),
+        seed_var=df['FLOW'].var(ddof=0),
+    )
 
     # ── 3. Capital accumulation — EWM instead of rolling mean ────
     df['FLOW_ROLL'] = df['FLOW_Z'].ewm(span=lookback, adjust=False).mean()
@@ -1368,7 +1386,9 @@ _EWMA_LOCK = threading.Lock()
 def _ewma_zscore_series(series: pd.Series,
                         alpha: float = 0.05,
                         min_periods: int = 30,
-                        adaptive: bool = True) -> pd.Series:
+                        adaptive: bool = True,
+                        seed_mean: float = None,
+                        seed_var: float = None) -> pd.Series:
     """
     Adaptive recursive online z-score.
 
@@ -1380,17 +1400,23 @@ def _ewma_zscore_series(series: pd.Series,
     alpha range: [alpha * 0.5, alpha * 3.0]
     — floor prevents memory from becoming infinite
     — ceiling prevents alpha from exploding in shock regimes
+
+    seed_mean / seed_var: optional warm-start values. When provided,
+    skips the cold-start-on-first-value behavior so short (live) windows
+    converge to similar normalization as long (backtest) windows —
+    same fix as the HTF_QUALITY EWM seed, applied to the recursive
+    z-score estimator.
     """
     values = series.to_numpy(dtype=float)
     n = len(values)
     out = np.empty(n)
     out[:] = np.nan
 
-    mu  = np.nan
-    var = np.nan
+    mu  = seed_mean if seed_mean is not None else np.nan
+    var = seed_var if seed_var is not None else np.nan
 
     # short-term variance tracker for adaptive alpha
-    recent_var = np.nan
+    recent_var = var
     alpha_fast = alpha * 4.0  # faster EWM for recent vol estimate
 
     for i, x in enumerate(values):

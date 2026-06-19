@@ -722,8 +722,6 @@ def run_hourly_for_symbol(
             now_utc.replace(minute=minutes_floored, second=0, microsecond=0)
         ).tz_convert("UTC")
 
-        now_utc_ts = pd.Timestamp(now_utc).tz_convert("UTC")
-
         # generate_signal hasn't run yet here — check after it runs below
         # (split the guard: include decision is made after signal gen)
         lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
