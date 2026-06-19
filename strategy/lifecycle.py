@@ -54,8 +54,8 @@ class PositionManager:
     # TRADE LIFECYCLE SETTINGS (mirrors SignalBacktester exactly)
     # ==========================================================
     POSITION_VALUE_USDT  = 10    # floor — never go below this
-    RISK_PCT_OF_ACCOUNT  = 0.20  # 20% of account per trade
-    ACCOUNT_THRESHOLD    = 50.0  # only scale above this balance
+    RISK_PCT_OF_ACCOUNT  = 0.40  # 20% of account per trade
+    ACCOUNT_THRESHOLD    = 25.0  # only scale above this balance
     MAX_SIMULTANEOUS     = 2     # hard cap on open trades
     INCUBATION_BARS = 6        # 30 minutes (6×5m)
     VALIDATION_BARS = 18       # 90 minutes total
@@ -744,12 +744,18 @@ class PositionManager:
         # Never go below floor
         position_value = max(position_value, self.POSITION_VALUE_USDT)
 
+        LEVERAGE = 1  # ← set your leverage here (1 = no leverage, 10 = 10x, etc.)
+
         stop_dist = abs(price - stop)
         stop_pct = stop_dist / price if price > 0 else 0
         risk_usd = round(position_value * stop_pct, 4)
+
+        # Notional value is leveraged; margin posted is position_value
+        notional_value = position_value * LEVERAGE
+
         if _EXECUTION_ENABLED:
             from execution.binance_client import _fmt_qty, _qty_precision, _max_qty
-            raw_qty = position_value / price if price > 0 else 0
+            raw_qty = notional_value / price if price > 0 else 0
             quantity = float(_fmt_qty(symbol, raw_qty))
 
             _cap = _max_qty(symbol)
@@ -760,7 +766,7 @@ class PositionManager:
                 )
                 quantity = float(_fmt_qty(symbol, _cap))
         else:
-            quantity = round(position_value / price, 4) if price > 0 else 0
+            quantity = round(notional_value / price, 4) if price > 0 else 0
 
         position = {
             "symbol":        symbol,

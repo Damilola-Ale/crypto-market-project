@@ -1811,8 +1811,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     df = momentum_continuity(df)
     df = post_breakout_entry(df)
     
-    # LONG_CONDITION = (df['VALID_BREAK_LONG'])
-    # SHORT_CONDITION = (df['VALID_BREAK_SHORT'])
+    LONG_CONDITION = (df['VALID_BREAK_LONG'])
+    SHORT_CONDITION = (df['VALID_BREAK_SHORT'])
 
     df['ENTRY_LONG'] = (
         # df['ENTRY_LONG'] 
@@ -1827,8 +1827,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # LONG_CONDITION &= df['ENTRY_LONG']
     # SHORT_CONDITION &= df['ENTRY_SHORT']
 
-    LONG_CONDITION = HTF_OK
-    SHORT_CONDITION = HTF_OK
+    LONG_CONDITION &= HTF_OK
+    SHORT_CONDITION &= HTF_OK
 
     # LONG_CONDITION  &= df['LOCATION_LONG_OK']
     # SHORT_CONDITION &= df['LOCATION_SHORT_OK']
