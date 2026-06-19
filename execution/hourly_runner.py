@@ -723,22 +723,11 @@ def run_hourly_for_symbol(
         ).tz_convert("UTC")
 
         now_utc_ts = pd.Timestamp(now_utc).tz_convert("UTC")
-        seconds_elapsed = (now_utc_ts - current_5m_boundary).total_seconds()
-        boundary_in_data = current_5m_boundary in lltf_df.index
-        boundary_is_hour_open = current_5m_boundary.minute == 0
 
         # generate_signal hasn't run yet here — check after it runs below
         # (split the guard: include decision is made after signal gen)
-        _early_entry_eligible = (
-            is_live
-            and boundary_in_data
-        )
-
-        if _early_entry_eligible:
-            lltf_df = lltf_df[lltf_df.index <= current_5m_boundary].copy()
-            print(f"[EARLY ENTRY GUARD] {symbol} — boundary bar {current_5m_boundary} included ({seconds_elapsed:.0f}s elapsed)")
-        else:
-            lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
+        lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
+        print(f"[CANDLE GUARD] {symbol} — lltf trimmed to < {current_5m_boundary} (last={lltf_df.index[-1] if not lltf_df.empty else 'EMPTY'})")
 
         # notifier.debug(
         #     f"[CANDLE GUARD] {symbol}\n"
