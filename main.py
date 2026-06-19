@@ -103,7 +103,7 @@ def fetch_binance(symbol, interval, limit):
 #     "IDUSDT", "VICUSDT", "ETHUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "GRTUSDT",
 #     "RENDERUSDT", "PAXGUSDT", "IOSTUSDT", "KNCUSDT", "KAVAUSDT", "RLCUSDT", "BELUSDT"
 # ] IOST KNC KAVA RLC | KSM BEL
-SYMBOL = "BELUSDT"
+SYMBOL = "PAXGUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -144,9 +144,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 1000   # ~30 days of 1h candles
 # HTF_LIMIT = 250   # ~120 days of 4h candles
 
-LLTF_LIMIT = 6000
-LTF_LIMIT = 500   # ~30 days of 1h candles
-HTF_LIMIT = 125   # ~120 days of 4h candles
+LLTF_LIMIT = 9600
+LTF_LIMIT = 800   # ~30 days of 1h candles
+HTF_LIMIT = 200   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
@@ -228,7 +228,7 @@ def load_or_fetch(symbol, interval, limit, now_utc):
         # previous run may have cached it mid-formation. Refetch the last
         # few bars and overwrite with current values.
         REVALIDATE_BARS = 3
-        revalidate_end   = cached.index[-1]
+        revalidate_end   = last_ts
         revalidate_start = revalidate_end - (REVALIDATE_BARS - 1) * interval_td
 
         revalidated = fetch_binance_range(symbol, interval, revalidate_start, revalidate_end)

@@ -787,6 +787,30 @@ class PositionManager:
 
         # ── BINANCE EXECUTION ──────────────────────────────────────
         if _EXECUTION_ENABLED and self._is_live:
+            # Gate on available margin before placing order
+            try:
+                from execution.binance_client import get_account_balance
+                _bal = get_account_balance()
+                _available = _bal["available"]
+                if position_value > _available * 0.90:
+                    _tg_debug(
+                        f"[ENTRY BLOCKED — MARGIN] {symbol}\n"
+                        f"position_value={position_value:.2f} "
+                        f"available={_available:.2f}"
+                    )
+                    self.notifier.send_text(
+                        f"⛔ *ENTRY BLOCKED — MARGIN*\n"
+                        f"`{symbol}` dir={direction}\n"
+                        f"need=${position_value:.2f} available=${_available:.2f}"
+                    )
+                    self.positions.pop(symbol, None)
+                    if self.USE_ACCOUNT_GATES:
+                        account_state.on_position_close(0)
+                    self._save()
+                    return None
+            except BinanceExecutionError as e:
+                _tg_debug(f"[MARGIN CHECK FAILED] {symbol} — {e}, proceeding anyway")
+
             try:
                 result = _binance_open(
                     symbol=symbol,

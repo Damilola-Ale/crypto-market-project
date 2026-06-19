@@ -281,32 +281,25 @@ def _place_stop_market_order(
     params = {
         "symbol":      symbol,
         "side":        side,
+        "type":        "STOP_MARKET",
         "stopPrice":   _fmt_price(symbol, stop_price),
         "quantity":    _fmt_qty(symbol, quantity),
         "reduceOnly":  "true" if reduce_only else "false",
         "workingType": "CONTRACT_PRICE",
+        "closePosition": "false",
     }
     if client_order_id:
         params["newClientOrderId"] = client_order_id[:36]
 
-    return _request("POST", "/fapi/v1/order/algo/stop", params)
+    return _request("POST", "/fapi/v1/order", params)
 
 
 def _cancel_order(symbol: str, order_id: int) -> dict:
-    """Cancel a single order — tries algo endpoint first, falls back to regular."""
-    try:
-        return _request("DELETE", "/fapi/v1/order/algo", {
-            "symbol":  symbol,
-            "algoId":  order_id,
-        })
-    except BinanceExecutionError as e:
-        if "400" in str(e) or "-4120" in str(e) or "algoId" in str(e).lower():
-            # Not an algo order — cancel via regular endpoint
-            return _request("DELETE", "/fapi/v1/order", {
-                "symbol":  symbol,
-                "orderId": order_id,
-            })
-        raise
+    """Cancel a single order via standard USDT-M Futures endpoint."""
+    return _request("DELETE", "/fapi/v1/order", {
+        "symbol":  symbol,
+        "orderId": order_id,
+    })
 
 
 def _cancel_all_open_orders(symbol: str) -> dict:
