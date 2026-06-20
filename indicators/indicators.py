@@ -1638,7 +1638,7 @@ def expansion_maturity(df, lookback=20):
     # FLOW_STRENGTH is already computed in participation_state().
     # Read it directly — no re-smoothing, no re-compositing.
     # --------------------------------------------------
-    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.6
+    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.5
 
     # --------------------------------------------------
     # 3. EARLY_EXPANSION DEFINITION
