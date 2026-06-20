@@ -363,6 +363,7 @@ def participation_state(df, lookback=20, threshold=0.5):
         df['FLOW'],
         alpha=0.05,
         min_periods=20,
+        adaptive=False,
         seed_mean=0.0,
         seed_var=df['FLOW'].var(ddof=0),
     )
