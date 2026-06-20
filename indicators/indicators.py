@@ -211,7 +211,7 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # cold-starting at bar 0 — same fix as HTF_QUALITY's EWM seed, so
     # short (live) windows converge toward the same baseline as long
     # (backtest) windows for the same symbol.
-    _vs_seeded = pd.concat([pd.Series([1.0]), vol_spike]).reset_index(drop=True)
+    _vs_seeded = pd.concat([pd.Series([vol_spike.mean()]), vol_spike]).reset_index(drop=True)
     vol_spike_baseline = _vs_seeded.ewm(span=500, adjust=True).mean().iloc[1:]
     vol_spike_baseline.index = df.index
 

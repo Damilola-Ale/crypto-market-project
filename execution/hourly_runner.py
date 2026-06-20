@@ -673,18 +673,25 @@ def run_hourly_for_symbol(
 
                         htf_df = pd.read_parquet(_cache_path(symbol, "4h"))
                         htf_df.index = pd.to_datetime(htf_df.index, utc=True)
+
+                        # Load scores FIRST under a fresh name, then trim htf_df —
+                        # avoids the UnboundLocalError from reading and reassigning
+                        # `htf_scores` in the same block (Python treats any name
+                        # assigned anywhere in a scope as local for the whole scope).
+                        _loaded_htf_scores = None
+                        _path_htf_scores = _cache_path(symbol, "htf_scores")
+                        if os.path.exists(_path_htf_scores):
+                            _loaded_htf_scores = pd.read_parquet(_path_htf_scores)
+                            _loaded_htf_scores.index = pd.to_datetime(_loaded_htf_scores.index, utc=True)
+
                         # use htf_scores index as the authoritative trim boundary —
                         # never include any bar beyond what the scores cache was computed from
-                        if htf_scores is not None:
-                            htf_df = htf_df[htf_df.index <= htf_scores.index[-1]]
+                        if _loaded_htf_scores is not None:
+                            htf_df = htf_df[htf_df.index <= _loaded_htf_scores.index[-1]]
                         else:
                             htf_df = htf_df[htf_df.index < current_4h_open_c]
 
-                        htf_scores = None
-                        _path_htf_scores = _cache_path(symbol, "htf_scores")
-                        if os.path.exists(_path_htf_scores):
-                            htf_scores = pd.read_parquet(_path_htf_scores)
-                            htf_scores.index = pd.to_datetime(htf_scores.index, utc=True)
+                        htf_scores = _loaded_htf_scores
 
                         # Only hit Binance if 5m cache is genuinely behind the
                         # current boundary — not on every cron tick.
