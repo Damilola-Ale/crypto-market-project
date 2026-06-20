@@ -345,10 +345,25 @@ def run_hourly():
             indent=2
         )
 
+    # Load open positions once — symbols with open trades run first
+    # so exit checks are never delayed by unrelated symbol processing.
+    try:
+        _pm_peek = PositionManager(persist=True, notify=False)
+        _open_symbols = set(_pm_peek.positions.keys())
+    except Exception:
+        _open_symbols = set()
+
+    _priority   = [s for s in SYMBOLS if s in _open_symbols]
+    _normal     = [s for s in SYMBOLS if s not in _open_symbols]
+    _run_order  = _priority + _normal
+
+    if _priority:
+        print(f"[RUN ORDER] priority symbols (open positions): {_priority}")
+
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
-    for symbol in SYMBOLS:
+    for symbol in _run_order:
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
         try:

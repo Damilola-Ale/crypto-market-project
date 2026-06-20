@@ -211,8 +211,7 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # cold-starting at bar 0 — same fix as HTF_QUALITY's EWM seed, so
     # short (live) windows converge toward the same baseline as long
     # (backtest) windows for the same symbol.
-    _vs_seed = vol_spike.mean()
-    _vs_seeded = pd.concat([pd.Series([_vs_seed]), vol_spike]).reset_index(drop=True)
+    _vs_seeded = pd.concat([pd.Series([1.0]), vol_spike]).reset_index(drop=True)
     vol_spike_baseline = _vs_seeded.ewm(span=500, adjust=False).mean().iloc[1:]
     vol_spike_baseline.index = df.index
 
@@ -364,7 +363,7 @@ def participation_state(df, lookback=20, threshold=0.5):
         df['FLOW'],
         alpha=0.05,
         min_periods=20,
-        seed_mean=df['FLOW'].mean(),
+        seed_mean=0.0,
         seed_var=df['FLOW'].var(ddof=0),
     )
 
@@ -588,7 +587,9 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
 
     compression_ok = df['COMPRESSION_BARS'] >= 3
 
-    vol_baseline     = df['VOL_RATIO'].ewm(span=500, adjust=False).mean()
+    _vb_seeded = pd.concat([pd.Series([1.0]), df['VOL_RATIO']]).reset_index(drop=True)
+    vol_baseline = _vb_seeded.ewm(span=500, adjust=False).mean().iloc[1:]
+    vol_baseline.index = df.index
     volume_confirmed = df['VOL_RATIO'] > vol_baseline * 1.15
     
     displacement_ok = df['DISPLACEMENT_SCORE'] > 0.15
