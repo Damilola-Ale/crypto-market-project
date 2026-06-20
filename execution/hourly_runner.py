@@ -722,10 +722,44 @@ def run_hourly_for_symbol(
             now_utc.replace(minute=minutes_floored, second=0, microsecond=0)
         ).tz_convert("UTC")
 
-        # generate_signal hasn't run yet here — check after it runs below
-        # (split the guard: include decision is made after signal gen)
+        # Keep all fully closed bars
         lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
-        print(f"[CANDLE GUARD] {symbol} — lltf trimmed to < {current_5m_boundary} (last={lltf_df.index[-1] if not lltf_df.empty else 'EMPTY'})")
+
+        # PLACEHOLDER FORMING BAR — carries only `open`, so entries can fire
+        # immediately when a new bar starts rather than waiting up to 5min
+        # for it to close. high/low/close pinned to open so it can never
+        # trigger a stop/OIE exit on phantom intrabar movement. The real
+        # bar overwrites this placeholder automatically on the next fetch
+        # via the existing index-dedup merge in update_symbol/_fetch_all.
+        try:
+            from data_pipeline.fetcher import fetch_ohlcv
+            forming = fetch_ohlcv(
+                symbol=symbol,
+                interval="5m",
+                start=current_5m_boundary,
+                end=current_5m_boundary,
+                limit=1,
+                verbose=False,
+            )
+            if not forming.empty and current_5m_boundary in forming.index:
+                forming_open = float(forming.loc[current_5m_boundary, "open"])
+                placeholder = pd.DataFrame(
+                    [{
+                        "open":  forming_open,
+                        "high":  forming_open,
+                        "low":   forming_open,
+                        "close": forming_open,
+                        "volume": 0.0,
+                        "taker_buy_base": 0.0,
+                    }],
+                    index=pd.DatetimeIndex([current_5m_boundary], tz="UTC"),
+                )
+                lltf_df = pd.concat([lltf_df, placeholder])
+                print(f"[PLACEHOLDER 5M] {symbol} — injected forming bar @ {current_5m_boundary} open={forming_open}")
+        except Exception as e:
+            print(f"[PLACEHOLDER 5M FAILED] {symbol} — {e}, proceeding without it")
+
+        print(f"[CANDLE GUARD] {symbol} — lltf last={lltf_df.index[-1] if not lltf_df.empty else 'EMPTY'}")
 
         # notifier.debug(
         #     f"[CANDLE GUARD] {symbol}\n"
