@@ -173,10 +173,15 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
             f"Binance HTTP {r.status_code} [{method} {path}]: {body}"
         )
 
-    if isinstance(body, dict) and "code" in body and body["code"] != 200:
-        raise BinanceExecutionError(
-            f"Binance API error [{method} {path}]: code={body['code']} msg={body.get('msg')}"
-        )
+    if isinstance(body, dict) and "code" in body:
+        try:
+            _code = int(body["code"])
+        except (TypeError, ValueError):
+            _code = body["code"]  # non-numeric — fall through to comparison below
+        if _code != 200:
+            raise BinanceExecutionError(
+                f"Binance API error [{method} {path}]: code={body['code']} msg={body.get('msg')}"
+            )
 
     return body
 

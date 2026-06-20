@@ -234,6 +234,26 @@ def run_hourly():
                 for w in recon_warnings:
                     print(f"[RECONCILE] {w}")
                     notifier.send_text(f"⚠️ *RECONCILE WARNING*\n`{w}`")
+                    # Ghost position — exists locally but not on Binance.
+                    # Force-close it locally so the system stops managing
+                    # a position that no longer exists on the exchange.
+                    if w.startswith("GHOST POSITION:"):
+                        try:
+                            ghost_sym = w.split("GHOST POSITION:")[1].split("exists")[0].strip()
+                            if ghost_sym in pm_check.positions:
+                                ghost_pos = pm_check.positions[ghost_sym]
+                                ghost_entry = ghost_pos.get("entry_price", 0)
+                                pm_check.positions.pop(ghost_sym, None)
+                                pm_check._dirty = True
+                                pm_check.flush()
+                                notifier.send_text(
+                                    f"🧹 *GHOST CLEANED*\n"
+                                    f"`{ghost_sym}` removed from local tracking\n"
+                                    f"Binance had already closed it."
+                                )
+                                print(f"[GHOST CLEANUP] {ghost_sym} — removed from local positions")
+                        except Exception as _ghost_err:
+                            print(f"[GHOST CLEANUP FAILED] {_ghost_err}")
 
                 # Orphan adopt — reuse live_positions already fetched above
                 try:
@@ -1013,6 +1033,20 @@ def run_hourly_for_symbol(
                     f"No open position — minimal recovery (2 bars)"
                 )
 
+        # When a position is open, rewind cursor by one bar so the
+        # previously-placeholder bar gets reprocessed with its real
+        # closed OHLC values. This catches stop triggers that were
+        # invisible when the bar was a placeholder (high=low=open).
+        # Re-entry is impossible: staleness gate blocks bars >300s old,
+        # and _executed_signals blocks the same signal_id regardless.
+        if symbol in pm.positions and last_seen is not None:
+            _bars_up_to_last = lltf_frozen[lltf_frozen.index <= last_seen]
+            if len(_bars_up_to_last) >= 2:
+                # rewind to the bar BEFORE last_seen so last_seen itself
+                # is included in new_bars with its real values
+                last_seen = _bars_up_to_last.index[-2]
+                print(f"[CURSOR REWIND] {symbol} — rewound by 1 bar to {last_seen} for real OHLC recheck")
+
         new_bars = (
             lltf_frozen if last_seen is None
             else lltf_frozen[lltf_frozen.index > last_seen]
@@ -1119,14 +1153,22 @@ def run_hourly_for_symbol(
 
         if not replay and replay_cursor is None:
             if not new_bars.empty:
-                current_1h_open = pd.Timestamp(datetime.now(timezone.utc)).floor("h")
                 has_open_position = symbol in pm.positions
 
                 if has_open_position:
-                    last_clean_ts = new_bars.index[-1]
+                    # Save cursor one bar BEHIND the latest bar so the
+                    # next tick reprocesses it with real closed OHLC.
+                    # This catches stop triggers on bars that were
+                    # placeholders when first processed.
+                    if len(new_bars) >= 2:
+                        last_clean_ts = new_bars.index[-2]
+                    else:
+                        # Only one new bar — rewind into lltf_frozen
+                        _prior = lltf_frozen[lltf_frozen.index < new_bars.index[0]]
+                        last_clean_ts = _prior.index[-1] if not _prior.empty else new_bars.index[0]
+                    print(f"[CURSOR HELD] {symbol} — position open, cursor held at {last_clean_ts} (not {new_bars.index[-1]})")
                 else:
-                    # advance cursor fully — candle guard in update_symbol
-                    # already prevents incomplete bars from leaking in
+                    # No position — advance cursor fully
                     last_clean_ts = new_bars.index[-1]
 
                 if last_clean_ts is not None:

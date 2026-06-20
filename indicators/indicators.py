@@ -212,7 +212,7 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # short (live) windows converge toward the same baseline as long
     # (backtest) windows for the same symbol.
     _vs_seeded = pd.concat([pd.Series([1.0]), vol_spike]).reset_index(drop=True)
-    vol_spike_baseline = _vs_seeded.ewm(span=500, adjust=False).mean().iloc[1:]
+    vol_spike_baseline = _vs_seeded.ewm(span=500, adjust=True).mean().iloc[1:]
     vol_spike_baseline.index = df.index
 
     # Peak volume within a 3-bar causal window
@@ -589,7 +589,7 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     compression_ok = df['COMPRESSION_BARS'] >= 3
 
     _vb_seeded = pd.concat([pd.Series([1.0]), df['VOL_RATIO']]).reset_index(drop=True)
-    vol_baseline = _vb_seeded.ewm(span=500, adjust=False).mean().iloc[1:]
+    vol_baseline = _vb_seeded.ewm(span=500, adjust=True).mean().iloc[1:]
     vol_baseline.index = df.index
     volume_confirmed = df['VOL_RATIO'] > vol_baseline * 1.15
     
@@ -1421,6 +1421,14 @@ def _ewma_zscore_series(series: pd.Series,
     recent_var = var
     alpha_fast = alpha * 4.0  # faster EWM for recent vol estimate
 
+    # bias-correction weight accumulator — adjust=True analog for a
+    # hand-rolled recursion. Starts at 1.0 when a seed is supplied (the
+    # seed counts as one pseudo-observation), so early real bars aren't
+    # held hostage to a seed that a short (live) window never accumulates
+    # enough weight to outweigh, while a long (backtest) window does.
+    # This is the piece the seed alone didn't fix.
+    weight = 1.0 if seed_mean is not None else 0.0
+
     for i, x in enumerate(values):
         if np.isnan(x):
             continue
@@ -1429,6 +1437,7 @@ def _ewma_zscore_series(series: pd.Series,
             mu  = x
             var = 0.0
             recent_var = 0.0
+            weight = 1.0
             continue
 
         # ── adaptive alpha ────────────────────────────────────
@@ -1440,9 +1449,15 @@ def _ewma_zscore_series(series: pd.Series,
         else:
             effective_alpha = alpha
 
-        # ── update long-run state ─────────────────────────────
-        mu  = mu  + effective_alpha * (x - mu)
-        var = (1.0 - effective_alpha) * var + effective_alpha * (x - mu) ** 2
+        # ── update long-run state (bias-corrected, adjust=True analog) ─
+        # weight accumulates toward 1/effective_alpha as more bars arrive;
+        # 1/weight starts large (trust real data fast, discount the seed)
+        # and decays to effective_alpha at steady state — same shape as
+        # pandas' adjust=True correction, just applied to a manual seed.
+        weight = (1.0 - effective_alpha) * weight + 1.0
+        bias_corrected_alpha = min(1.0 / weight, 1.0)
+        mu  = mu  + bias_corrected_alpha * (x - mu)
+        var = (1.0 - bias_corrected_alpha) * var + bias_corrected_alpha * (x - mu) ** 2
 
         # ── update short-run variance (for next bar's alpha) ──
         recent_var = (1.0 - alpha_fast) * recent_var + alpha_fast * (x - mu) ** 2
@@ -1794,7 +1809,7 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     _hq = df['HTF_QUALITY']
     _seed = _hq.mean()
     _hq_seeded = pd.concat([pd.Series([_seed]), _hq]).reset_index(drop=True)
-    htf_quality_baseline = _hq_seeded.ewm(span=200, adjust=False).mean().iloc[1:]
+    htf_quality_baseline = _hq_seeded.ewm(span=200, adjust=True).mean().iloc[1:]
     htf_quality_baseline.index = df.index
     htf_quality_th       = (htf_quality_baseline * 1.05).clip(lower=0.30)
 

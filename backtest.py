@@ -294,7 +294,7 @@ class SignalBacktester:
 
         # Activate at 0.3R — gives one to two 5m bars of breathing room
         # before locking in, while still catching the bar-3 peak.
-        if mfe_r < 0.3:
+        if mfe_r < 0.5:
             return
 
         bars = trade.get('bars_in_trade', 0)
