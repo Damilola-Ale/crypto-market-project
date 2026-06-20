@@ -21,7 +21,7 @@ def _tg_debug(msg: str) -> None:
 
 SYMBOLS = [
     "ICXUSDT", "RUNEUSDT", "LDOUSDT", "SUIUSDT", "ADAUSDT", "APTUSDT",
-    "LTCUSDT", "NMRUSDT", "SSVUSDT", "THETAUSDT", "YGGUSDT", "UNIUSDT",
+    "LTCUSDT", "NMRUSDT", "SSVUSDT", "YGGUSDT", "UNIUSDT",
     "SANDUSDT", "TRBUSDT", "LTCUSDT", "LUMIAUSDT", "IDUSDT", "ETHUSDT",
     "TONUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT",
     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT",
@@ -1040,19 +1040,23 @@ def run_hourly_for_symbol(
                     f"No open position — minimal recovery (2 bars)"
                 )
 
-        # When a position is open, rewind cursor by one bar so the
-        # previously-placeholder bar gets reprocessed with its real
-        # closed OHLC values. This catches stop triggers that were
-        # invisible when the bar was a placeholder (high=low=open).
-        # Re-entry is impossible: staleness gate blocks bars >300s old,
-        # and _executed_signals blocks the same signal_id regardless.
+        # When a position is open, rewind the cursor ONLY if the bar
+        # at last_seen is still a placeholder (volume==0, flat OHLC) —
+        # i.e. it hasn't been revalidated with real closed data yet.
+        # This catches stop triggers invisible on a placeholder bar
+        # without re-rewinding forever once the real bar has landed.
         if symbol in pm.positions and last_seen is not None:
-            _bars_up_to_last = lltf_frozen[lltf_frozen.index <= last_seen]
-            if len(_bars_up_to_last) >= 2:
-                # rewind to the bar BEFORE last_seen so last_seen itself
-                # is included in new_bars with its real values
-                last_seen = _bars_up_to_last.index[-2]
-                print(f"[CURSOR REWIND] {symbol} — rewound by 1 bar to {last_seen} for real OHLC recheck")
+            if last_seen in lltf_frozen.index:
+                _last_seen_row = lltf_frozen.loc[last_seen]
+                _was_placeholder = (
+                    _last_seen_row.get("volume", 0) == 0
+                    and _last_seen_row["high"] == _last_seen_row["low"] == _last_seen_row["open"]
+                )
+                if _was_placeholder:
+                    _bars_up_to_last = lltf_frozen[lltf_frozen.index <= last_seen]
+                    if len(_bars_up_to_last) >= 2:
+                        last_seen = _bars_up_to_last.index[-2]
+                        print(f"[CURSOR REWIND] {symbol} — {last_seen} was placeholder, rewound for real OHLC recheck")
 
         new_bars = (
             lltf_frozen if last_seen is None
@@ -1163,17 +1167,20 @@ def run_hourly_for_symbol(
                 has_open_position = symbol in pm.positions
 
                 if has_open_position:
-                    # Save cursor one bar BEHIND the latest bar so the
-                    # next tick reprocesses it with real closed OHLC.
-                    # This catches stop triggers on bars that were
-                    # placeholders when first processed.
-                    if len(new_bars) >= 2:
+                    # Only hold the cursor back if the LATEST bar is still
+                    # a placeholder — meaning it hasn't been revalidated with
+                    # real OHLC yet. Otherwise advance fully like normal,
+                    # so the cursor doesn't get stuck reprocessing forever.
+                    _latest_row = lltf_frozen.loc[new_bars.index[-1]]
+                    _latest_is_placeholder = (
+                        _latest_row.get("volume", 0) == 0
+                        and _latest_row["high"] == _latest_row["low"] == _latest_row["open"]
+                    )
+                    if _latest_is_placeholder and len(new_bars) >= 2:
                         last_clean_ts = new_bars.index[-2]
+                        print(f"[CURSOR HELD] {symbol} — latest bar is placeholder, holding at {last_clean_ts}")
                     else:
-                        # Only one new bar — rewind into lltf_frozen
-                        _prior = lltf_frozen[lltf_frozen.index < new_bars.index[0]]
-                        last_clean_ts = _prior.index[-1] if not _prior.empty else new_bars.index[0]
-                    print(f"[CURSOR HELD] {symbol} — position open, cursor held at {last_clean_ts} (not {new_bars.index[-1]})")
+                        last_clean_ts = new_bars.index[-1]
                 else:
                     # No position — advance cursor fully
                     last_clean_ts = new_bars.index[-1]

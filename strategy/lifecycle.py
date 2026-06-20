@@ -660,7 +660,7 @@ class PositionManager:
 
         # Activate at 0.3R — early enough to catch the bar-3 peak,
         # late enough to survive normal 5m entry noise.
-        if mfe_r < 0.3: # change to 0.5
+        if mfe_r < 0.5: # change to 0.5
             return
 
         bars = position.get("bars_in_trade", 0)
