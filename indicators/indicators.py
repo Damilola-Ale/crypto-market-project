@@ -365,7 +365,7 @@ def participation_state(df, lookback=20, threshold=0.5):
         min_periods=20,
         adaptive=False,
         seed_mean=0.0,
-        seed_var=df['FLOW'].var(ddof=0),
+        seed_var=df['FLOW'].iloc[-1000:].var(ddof=0),
     )
 
     # ── 3. Capital accumulation — EWM instead of rolling mean ────
@@ -588,7 +588,7 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
 
     compression_ok = df['COMPRESSION_BARS'] >= 3
 
-    _vb_seeded = pd.concat([pd.Series([1.0]), df['VOL_RATIO']]).reset_index(drop=True)
+    _vb_seeded = pd.concat([pd.Series([df['VOL_RATIO'].iloc[-1000:].mean()]), df['VOL_RATIO']]).reset_index(drop=True)
     vol_baseline = _vb_seeded.ewm(span=500, adjust=True).mean().iloc[1:]
     vol_baseline.index = df.index
     volume_confirmed = df['VOL_RATIO'] > vol_baseline * 1.15
