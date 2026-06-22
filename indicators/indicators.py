@@ -190,7 +190,10 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # (causal: current and prior bar only, no lookahead).
     # --------------------------------------------------
     candle_size     = (df['high'] - df['low'])
-    avg_candle_size = candle_size.ewm(span=vol_lookback, adjust=False).mean()
+    _cs_seed = candle_size.mean()
+    _cs_seeded = pd.concat([pd.Series([_cs_seed]), candle_size]).reset_index(drop=True)
+    avg_candle_size = _cs_seeded.ewm(span=vol_lookback, adjust=True).mean().iloc[1:]
+    avg_candle_size.index = df.index
     candle_accel    = candle_size / (avg_candle_size + 1e-9)
 
     # Peak acceleration within a 2-bar causal window
@@ -204,7 +207,10 @@ def liquidity_displacement(df, vol_lookback=20, accel_threshold=1.4):
     # Institutional accumulation often builds across
     # multiple bars before structure gives way.
     # --------------------------------------------------
-    vol_baseline       = df['volume'].ewm(span=vol_lookback, adjust=False).mean()
+    _volb_seed = df['volume'].mean()
+    _volb_seeded = pd.concat([pd.Series([_volb_seed]), df['volume']]).reset_index(drop=True)
+    vol_baseline = _volb_seeded.ewm(span=vol_lookback, adjust=True).mean().iloc[1:]
+    vol_baseline.index = df.index
     vol_spike          = df['volume'] / (vol_baseline + 1e-9)
 
     # Seed the span=500 baseline with the series' own mean instead of
@@ -1017,27 +1023,29 @@ def compute_htf_scores(htf_df,
     ver = htf['HTF_ATR_FAST'] / (htf['HTF_ATR_SLOW'] + 1e-9)
     htf['VOL_SCORE'] = ((ver - 0.8) / 0.4).clip(0, 1)
 
-    # ── 3. PARTICIPATION SCORE ───────────────────────────────────
-    htf['HTF_VOL_EWM']   = htf['volume'].ewm(span=part_lookback, adjust=False, min_periods=5).mean()
+    # ── 3. PARTICIPATION SCORE — seeded EWM, so short (live) and
+    # long (backtest) windows converge to the same baseline ─────────
+    _vol_seed = htf['volume'].mean()
+    _vol_seeded = pd.concat([pd.Series([_vol_seed]), htf['volume']]).reset_index(drop=True)
+    htf['HTF_VOL_EWM'] = _vol_seeded.ewm(span=part_lookback, adjust=True, min_periods=5).mean().iloc[1:].values
     htf['HTF_VOL_RATIO'] = htf['volume'] / (htf['HTF_VOL_EWM'] + 1e-9)
     htf['PART_SCORE']    = ((htf['HTF_VOL_RATIO'] - 1) / 1).clip(0, 1)
 
-    # ── 4. REGIME PERSISTENCE — recursive directional memory ─────
-    # Replaces rolling(regime_window).apply(abs mean) — no hard window cliff
-    htf['REGIME_SCORE'] = (
-        htf['HTF_DIRECTION']
-        .ewm(span=regime_window, adjust=False, min_periods=3)
-        .mean()
-        .abs()
-        .clip(0, 1)
-    )
+    # ── 4. REGIME PERSISTENCE — seeded recursive directional memory ─
+    _dir_seed = htf['HTF_DIRECTION'].mean()
+    _dir_seeded = pd.concat([pd.Series([_dir_seed]), htf['HTF_DIRECTION']]).reset_index(drop=True)
+    _regime_raw = _dir_seeded.ewm(span=regime_window, adjust=True, min_periods=3).mean().iloc[1:]
+    _regime_raw.index = htf.index
+    htf['REGIME_SCORE'] = _regime_raw.abs().clip(0, 1)
 
-    # ── 5. STRUCTURE QUALITY — recursive efficiency ratio ─────────
+    # ── 5. STRUCTURE QUALITY — seeded path_length EWM ────────────────
     direction_move = (htf['close'] - htf['close'].shift(er_window)).abs()
-    path_length    = htf['close'].diff().abs().ewm(
-        span=er_window, adjust=False, min_periods=3
-    ).mean() * er_window
-    htf['HTF_ER']          = (direction_move / (path_length + 1e-9)).clip(0, 1)
+    _diff_abs = htf['close'].diff().abs()
+    _diff_seed = _diff_abs.mean()
+    _diff_seeded = pd.concat([pd.Series([_diff_seed]), _diff_abs]).reset_index(drop=True)
+    _path_length = _diff_seeded.ewm(span=er_window, adjust=True, min_periods=3).mean().iloc[1:] * er_window
+    _path_length.index = htf.index
+    htf['HTF_ER']          = (direction_move / (_path_length + 1e-9)).clip(0, 1)
     htf['STRUCTURE_SCORE'] = htf['HTF_ER']
 
     # ── 6. MOMENTUM SCORE (already EWM — unchanged) ───────────────
