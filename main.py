@@ -103,7 +103,7 @@ def fetch_binance(symbol, interval, limit):
 #     "TONUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT",
 #     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT",
 # ]
-SYMBOL = "YGGUSDT"
+SYMBOL = "THETAUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -140,9 +140,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 12000
-# LTF_LIMIT = 1000   # ~30 days of 1h candles
-# HTF_LIMIT = 250   # ~120 days of 4h candles
+LLTF_LIMIT = 12000
+LTF_LIMIT = 1000   # ~30 days of 1h candles
+HTF_LIMIT = 250   # ~120 days of 4h candles
 
 # LLTF_LIMIT = 9600
 # LTF_LIMIT = 800   # ~30 days of 1h candles
@@ -361,42 +361,23 @@ htf_df.index = pd.to_datetime(htf_df.index, utc=True)
 # SIGNAL GENERATION
 # ==========================================================
 
-# Inject a placeholder row at current_1h_boundary so align_htf_scores
-# has a landing spot for any 4H score that closed at or before this
-# timestamp. The placeholder copies OHLC from the last real bar so
-# indicator math doesn't crash. After generate_signal runs, the HTF
-# columns are copied back onto the real last bar and the placeholder
-# is discarded — it never reaches the backtest or position manager.
-_placeholder = pd.DataFrame(
-    [ltf_df.iloc[-1].values],
-    columns=ltf_df.columns,
-    index=[current_1h_boundary]
-)
-_ltf_with_placeholder = pd.concat([ltf_df, _placeholder])
-_ltf_with_placeholder = generate_signal(_ltf_with_placeholder, htf_df)
+# Run generate_signal on clean real bars only — no placeholder needed.
+# HTF alignment is patched afterward directly, so no ghost row
+# pollutes any EWM in the indicator pipeline.
+from indicators.indicators import compute_htf_scores, align_htf_scores
+ltf_df = generate_signal(ltf_df.copy(), htf_df, symbol=SYMBOL)
 
-# ← move here, and use _ltf_with_placeholder not ltf_df
-print(_ltf_with_placeholder[["FLOW_STRENGTH", "COMPRESSION_OK", "EARLY_EXPANSION", "signal"]].tail(50))
-print(f"[DEBUG] _ltf_with_placeholder shape: {_ltf_with_placeholder.shape}")
-print(f"[DEBUG] ltf_df shape going in: {len(ltf_df)} rows, first={ltf_df.index[0]}, last={ltf_df.index[-1]}")
+# Patch HTF columns on the real bars directly — same call that
+# generate_signal makes internally, repeated here so the last 1H
+# bar always carries the latest closed 4H score.
+_htf_scores = compute_htf_scores(htf_df)
+_aligned = align_htf_scores(_htf_scores, ltf_df)
+for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
+    if _col in _aligned.columns:
+        ltf_df[_col] = _aligned[_col]
 
-# Copy HTF columns from placeholder back onto every real bar via bfill.
-# The placeholder is the last row, so bfill pulls its values backward
-# onto all preceding rows that still carry the stale score.
-_htf_cols = ["HTF_DIRECTION", "HTF_QUALITY"]
-for _col in _htf_cols:
-    if _col in _ltf_with_placeholder.columns:
-        # Only backfill if the placeholder actually received a new score
-        _placeholder_val = _ltf_with_placeholder.loc[current_1h_boundary, _col]
-        _ltf_with_placeholder[_col] = _ltf_with_placeholder[_col].where(
-            _ltf_with_placeholder.index != current_1h_boundary,
-            _placeholder_val
-        )
-        # Propagate the new score backward to all bars in the same 4H period
-        _ltf_with_placeholder[_col] = _ltf_with_placeholder[_col].bfill()
-
-# Discard the placeholder
-ltf_df = _ltf_with_placeholder[_ltf_with_placeholder.index < current_1h_boundary].copy()
+print(ltf_df[["FLOW_STRENGTH", "COMPRESSION_OK", "EARLY_EXPANSION", "signal"]].tail(50))
+print(f"[DEBUG] ltf_df shape: {ltf_df.shape}, first={ltf_df.index[0]}, last={ltf_df.index[-1]}")
 
 # ==========================================================
 # BACKTEST

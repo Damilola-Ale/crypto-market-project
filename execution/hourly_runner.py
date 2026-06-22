@@ -27,6 +27,52 @@ SYMBOLS = [
     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT",
 ]
 
+# --------------------------------------------------------------
+# SYMBOL RUN-ORDER PRIORITY
+# --------------------------------------------------------------
+# Scores each symbol from its cached signal state (data/signal_cache/<symbol>_signals.parquet),
+# which is last-run output, not live. Fine for these — HTF quality, displacement, flow, and
+# close-location bias are all slow-moving — but a symbol that just flipped hot/cold won't
+# reflect that until its own next cycle.
+HTF_QUALITY_FLOOR = 0.30  # mirrors the .clip(lower=0.30) floor on htf_quality_th in generate_signal
+
+def _symbol_priority_score(symbol: str) -> float:
+    cache_path = os.path.join("data/signal_cache", f"{symbol}_signals.parquet")
+    if not os.path.exists(cache_path):
+        return 1.0  # no cache yet — neutral, ahead of HTF-gated-out symbols, behind scored ones
+
+    try:
+        row = pd.read_parquet(cache_path).iloc[-1]
+    except Exception:
+        return 1.0
+
+    htf_quality = float(row.get("HTF_QUALITY", 0.0))
+    if htf_quality <= HTF_QUALITY_FLOOR:
+        return 0.0  # HTF gate fails — no signal is possible regardless of anything else
+
+    score = 1.0  # base score for clearing the HTF gate
+
+    displacement = float(row.get("DISPLACEMENT_SCORE", 0.0))
+    if displacement > 0.15:
+        score += 10
+
+    htf_direction = row.get("HTF_DIRECTION", 0)
+    bias = row.get("close_location_bias", None)
+    if bias is not None:
+        bias = float(bias)
+        bias_agrees_with_htf = (
+            (htf_direction == 1 and bias > 0.5) or
+            (htf_direction == -1 and bias < 0.5)
+        )
+        if bias_agrees_with_htf:
+            score += 5
+
+    flow_strength = float(row.get("FLOW_STRENGTH", 0.0))
+    if abs(flow_strength) > 0.3:
+        score += 3
+
+    return score
+
 SIGNAL_STORE       = "data/signals.json"
 HOUR_MEMORY_FILE = "data/last_hour_seen.json"
 
@@ -373,9 +419,21 @@ def run_hourly():
     except Exception:
         _open_symbols = set()
 
-    _priority   = [s for s in SYMBOLS if s in _open_symbols]
-    _normal     = [s for s in SYMBOLS if s not in _open_symbols]
-    _run_order  = _priority + _normal
+    _priority = [s for s in SYMBOLS if s in _open_symbols]
+    _normal   = [s for s in SYMBOLS if s not in _open_symbols]
+
+    try:
+        _scores = {s: _symbol_priority_score(s) for s in _normal}
+        _normal_sorted = sorted(_normal, key=lambda s: _scores[s], reverse=True)
+        print(
+            "[RUN ORDER] scores: "
+            + ", ".join(f"{s}={_scores[s]:.0f}" for s in _normal_sorted)
+        )
+    except Exception as _score_err:
+        print(f"[RUN ORDER] scoring failed ({_score_err}) — falling back to declared order")
+        _normal_sorted = _normal
+
+    _run_order = _priority + _normal_sorted
 
     if _priority:
         print(f"[RUN ORDER] priority symbols (open positions): {_priority}")

@@ -169,6 +169,21 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
     if r.status_code != 200:
         if isinstance(body, dict) and body.get("code") == -1021:
             _sync_binance_time()
+            # Retry once with corrected timestamp
+            params["timestamp"] = _get_binance_time()
+            params["signature"] = _sign(params)
+            try:
+                if method == "GET":
+                    r = requests.get(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+                elif method == "POST":
+                    r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
+                elif method == "DELETE":
+                    r = requests.delete(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+                body = r.json()
+                if r.status_code == 200:
+                    return body
+            except Exception:
+                pass
         raise BinanceExecutionError(
             f"Binance HTTP {r.status_code} [{method} {path}]: {body}"
         )
