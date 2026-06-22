@@ -1820,6 +1820,7 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     htf_quality_baseline = _hq_seeded.ewm(span=200, adjust=True).mean().iloc[1:]
     htf_quality_baseline.index = df.index
     htf_quality_th       = (htf_quality_baseline * 1.05).clip(lower=0.30)
+    df['HTF_QUALITY_TH'] = htf_quality_th
 
     # ── HTF COMPRESSION GATE ──────────────────────────────────────────
     # Compute compression state on the 4H bars, then align to 1H index.

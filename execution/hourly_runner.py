@@ -47,7 +47,8 @@ def _symbol_priority_score(symbol: str) -> float:
         return 1.0
 
     htf_quality = float(row.get("HTF_QUALITY", 0.0))
-    if htf_quality <= HTF_QUALITY_FLOOR:
+    htf_quality_th = float(row.get("HTF_QUALITY_TH", HTF_QUALITY_FLOOR))
+    if htf_quality <= htf_quality_th:
         return 0.0  # HTF gate fails — no signal is possible regardless of anything else
 
     score = 1.0  # base score for clearing the HTF gate

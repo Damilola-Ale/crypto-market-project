@@ -248,7 +248,12 @@ class PositionManager:
             # -------------------------------------------------------
             # BUILD 5M WINDOW (REAL ATR HISTORY — BACKTEST PARITY)
             # -------------------------------------------------------
-            window_5m = pd.DataFrame(self._bar_history[symbol])
+            _raw_history = self._bar_history[symbol]
+            _real_history = [b for b in _raw_history if not (
+                b.get("volume", 0) == 0 and
+                b.get("high") == b.get("low") == b.get("open") == b.get("close")
+            )]
+            window_5m = pd.DataFrame(_real_history if _real_history else _raw_history)
 
             # convert to R
             position["mfe_r"] = position["MFE"] / R
