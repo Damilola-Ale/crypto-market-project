@@ -378,10 +378,10 @@ def open_position(
         raise BinanceExecutionError("BINANCE_API_KEY / BINANCE_API_SECRET not set")
 
     try:
-        set_leverage(symbol)
+        lev_result = set_leverage(symbol)
+        print(f"[BINANCE] leverage confirmed: {symbol} → {lev_result}")
     except BinanceExecutionError as e:
-        # Non-fatal — leverage may already be set correctly
-        print(f"[BINANCE] set_leverage warning for {symbol}: {e}")
+        raise BinanceExecutionError(f"[BINANCE] set_leverage failed for {symbol}, aborting entry: {e}")
 
     entry_side = "BUY" if direction == 1 else "SELL"
     stop_side  = "SELL" if direction == 1 else "BUY"
