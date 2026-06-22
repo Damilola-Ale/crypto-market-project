@@ -749,7 +749,7 @@ class PositionManager:
         # Never go below floor
         position_value = max(position_value, self.POSITION_VALUE_USDT)
 
-        LEVERAGE = 1  # ← set your leverage here (1 = no leverage, 10 = 10x, etc.)
+        LEVERAGE = 8  # ← set your leverage here (1 = no leverage, 10 = 10x, etc.)
 
         stop_dist = abs(price - stop)
         stop_pct = stop_dist / price if price > 0 else 0

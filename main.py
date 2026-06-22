@@ -97,13 +97,14 @@ def fetch_binance(symbol, interval, limit):
 # CONFIG 
 # ==========================================================
 # SYMBOLS = [
-#     "ICXUSDT", "RUNEUSDT", "LDOUSDT", "SUIUSDT", "ADAUSDT", "APTUSDT",
-#     "LTCUSDT", "NMRUSDT", "SSVUSDT", "THETAUSDT", "YGGUSDT", "UNIUSDT",
-#     "SANDUSDT", "TRBUSDT", "LTCUSDT", "LUMIAUSDT", "IDUSDT", "ETHUSDT",
-#     "TONUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT",
-#     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT",
+#     "ICXUSDT", "RUNEUSDT", "LDOUSDT", "SUIUSDT", "ADAUSDT", "APTUSDT", "LSKUSDT",
+#     "LTCUSDT", "NMRUSDT", "SSVUSDT", "THETAUSDT", "YGGUSDT", "UNIUSDT", "VETUSDT",
+#     "SANDUSDT", "TRBUSDT", "LTCUSDT", "LUMIAUSDT", "IDUSDT", "ETHUSDT", "ORDIUSDT",
+#     "TONUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT", "RPLUSDT",
+#     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT", "GRTUSDT",
+#     "RENDERUSDT", "PAXGUSDT", "CKBUSDT", "JUPUSDT", "NFPUSDT",
 # ]
-SYMBOL = "SOLUSDT"
+SYMBOL = "LSKUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -140,9 +141,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-LLTF_LIMIT = 12000
-LTF_LIMIT = 1000   # ~30 days of 1h candles
-HTF_LIMIT = 250   # ~120 days of 4h candles
+# LLTF_LIMIT = 12000
+# LTF_LIMIT = 1000   # ~30 days of 1h candles
+# HTF_LIMIT = 250   # ~120 days of 4h candles
 
 # LLTF_LIMIT = 9600
 # LTF_LIMIT = 800   # ~30 days of 1h candles
