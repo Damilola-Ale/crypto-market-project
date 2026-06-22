@@ -439,12 +439,32 @@ def run_hourly():
     if _priority:
         print(f"[RUN ORDER] priority symbols (open positions): {_priority}")
 
+    def _read_5m_cursor(symbol: str):
+        cf = _last_5m_file(symbol, True)
+        if not os.path.exists(cf):
+            return None
+        try:
+            with open(cf, "r") as f:
+                raw = json.load(f)
+            return raw if isinstance(raw, str) else None
+        except Exception:
+            return None
+
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
+    _priority_resynced = (not _priority)
+
     for symbol in _run_order:
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
+
+        _cursor_before = (
+            _read_5m_cursor(symbol)
+            if (not _priority_resynced and symbol not in _priority)
+            else None
+        )
+
         try:
             result = run_hourly_for_symbol(symbol)
             if isinstance(result, tuple):
@@ -455,7 +475,6 @@ def run_hourly():
         except Exception as sym_err:
             err_str = str(sym_err)
             if "IP_BANNED" in err_str:
-                # extract wait time for the summary notification
                 import re
                 match = re.search(r"wait (\d+)s", err_str)
                 if match and ip_ban_wait is None:
@@ -473,6 +492,34 @@ def run_hourly():
                     f"Traceback:\n`{tb[:600]}`"
                 )
                 symbol_summaries.append((symbol, None))
+
+        if not _priority_resynced and symbol not in _priority:
+            _cursor_after = _read_5m_cursor(symbol)
+            if _cursor_after and _cursor_after != _cursor_before:
+                print(
+                    f"[OPEN RESYNC] {symbol} discovered new 5m bar "
+                    f"({_cursor_before} → {_cursor_after}) — "
+                    f"reprocessing open positions: {_priority}"
+                )
+                for open_symbol in _priority:
+                    _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
+                    try:
+                        resync_result = run_hourly_for_symbol(open_symbol)
+                        resync_summary = (
+                            resync_result[0] if isinstance(resync_result, tuple)
+                            else resync_result
+                        )
+                        for i, (s, _old) in enumerate(symbol_summaries):
+                            if s == open_symbol:
+                                symbol_summaries[i] = (open_symbol, resync_summary)
+                                break
+                    except Exception as resync_err:
+                        notifier.send_text(
+                            f"💥 *OPEN RESYNC FAILED*\n"
+                            f"`{open_symbol}`\n"
+                            f"Error: `{str(resync_err)[:300]}`"
+                        )
+                _priority_resynced = True
 
     if ip_ban_wait is not None:
         ban_notif_file = "data/last_ban_notif.json"
