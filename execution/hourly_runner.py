@@ -40,56 +40,53 @@ HTF_QUALITY_FLOOR = 0.30  # mirrors the .clip(lower=0.30) floor on htf_quality_t
 def _symbol_priority_score(symbol: str) -> float:
     cache_path = os.path.join("data/signal_cache", f"{symbol}_signals.parquet")
     if not os.path.exists(cache_path):
-        return 1.0  # no cache yet — neutral, ahead of HTF-gated-out symbols, behind scored ones
+        return 1.0
 
     try:
         row = pd.read_parquet(cache_path).iloc[-1]
     except Exception:
         return 1.0
 
-    htf_quality = float(row.get("HTF_QUALITY", 0.0))
+    htf_quality    = float(row.get("HTF_QUALITY", 0.0))
     htf_quality_th = float(row.get("HTF_QUALITY_TH", HTF_QUALITY_FLOOR))
     htf_gate_passes = htf_quality > htf_quality_th
 
-    # Pre-close window: the hour immediately before a 4H boundary.
-    # A symbol that currently fails its HTF gate may cross it on the
-    # next 4H close. If the other filters look strong, promote it
-    # above dead-last so it runs early enough to catch the entry bar.
+    # In the last hour of the 4H candle, HTF quality may flip on the next close.
+    # Don't zero out failing symbols — let the other filters decide their rank.
     now_utc = datetime.now(timezone.utc)
-    hours_into_4h = now_utc.hour % 4
-    minutes_into_hour = now_utc.minute
-    _in_pre_close_window = (hours_into_4h == 3 and minutes_into_hour >= 30)
+    _in_last_4h_hour = (now_utc.hour % 4 == 3)
 
-    if not htf_gate_passes and not _in_pre_close_window:
-        return 0.0  # HTF gate fails outside pre-close window — dead last
+    if not htf_gate_passes and not _in_last_4h_hour:
+        return 0.0
 
-    score = 1.0  # base score for clearing the HTF gate (or being in pre-close window)
-
-    if not htf_gate_passes:
-        # In pre-close window but currently below threshold.
-        # Score the other filters normally so strong setups bubble up,
-        # but cap below any symbol that actually passes the HTF gate
-        # (those start at 1.0; we start at 0.5 here as a soft penalty).
-        score = 0.5
+    score = 1.0 if htf_gate_passes else 0.5
 
     displacement = float(row.get("DISPLACEMENT_SCORE", 0.0))
     if displacement > 0.15:
         score += 10
 
-    htf_direction = row.get("HTF_DIRECTION", 0)
+    htf_direction = int(row.get("HTF_DIRECTION", 0))
     bias = row.get("close_location_bias", None)
     if bias is not None:
         bias = float(bias)
         bias_agrees_with_htf = (
-            (htf_direction == 1 and bias > 0.5) or
+            (htf_direction == 1  and bias > 0.5) or
             (htf_direction == -1 and bias < 0.5)
         )
         if bias_agrees_with_htf:
             score += 5
 
     flow_strength = float(row.get("FLOW_STRENGTH", 0.0))
-    if abs(flow_strength) > 0.3:
-        score += 3
+    if htf_gate_passes:
+        if abs(flow_strength) > 0.3:
+            score += 3
+    else:
+        flow_agrees = (
+            (htf_direction == 1  and flow_strength >  0.3) or
+            (htf_direction == -1 and flow_strength < -0.3)
+        )
+        if flow_agrees:
+            score += 3
 
     return score
 
@@ -469,6 +466,23 @@ def run_hourly():
         except Exception:
             return None
 
+    def _read_5m_cursor(symbol: str):
+        cf = _last_5m_file(symbol, True)
+        if not os.path.exists(cf):
+            return None
+        try:
+            with open(cf, "r") as f:
+                raw = json.load(f)
+            return raw if isinstance(raw, str) else None
+        except Exception:
+            return None
+
+    # Snapshot 5m cursors for priority symbols at tick start.
+    # Used to detect whether they've already seen the bar that triggers
+    # a resync — if their cursor advanced during their own priority pass,
+    # they don't need resyncing.
+    _priority_cursors_at_start = {s: _read_5m_cursor(s) for s in _priority}
+
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
@@ -515,29 +529,44 @@ def run_hourly():
         if not _priority_resynced and symbol not in _priority:
             _cursor_after = _read_5m_cursor(symbol)
             if _cursor_after and _cursor_after != _cursor_before:
-                print(
-                    f"[OPEN RESYNC] {symbol} discovered new 5m bar "
-                    f"({_cursor_before} → {_cursor_after}) — "
-                    f"reprocessing open positions: {_priority}"
-                )
-                for open_symbol in _priority:
-                    _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
-                    try:
-                        resync_result = run_hourly_for_symbol(open_symbol)
-                        resync_summary = (
-                            resync_result[0] if isinstance(resync_result, tuple)
-                            else resync_result
-                        )
-                        for i, (s, _old) in enumerate(symbol_summaries):
-                            if s == open_symbol:
-                                symbol_summaries[i] = (open_symbol, resync_summary)
-                                break
-                    except Exception as resync_err:
-                        notifier.send_text(
-                            f"💥 *OPEN RESYNC FAILED*\n"
-                            f"`{open_symbol}`\n"
-                            f"Error: `{str(resync_err)[:300]}`"
-                        )
+                # This normal symbol just processed a new 5m bar.
+                # Resync priority symbols whose cursor hasn't advanced
+                # past where it was at tick start — meaning they haven't
+                # seen this bar yet and need it before the next normal
+                # symbol runs.
+                _needs_resync = [
+                    s for s in _priority
+                    if _read_5m_cursor(s) == _priority_cursors_at_start[s]
+                ]
+                if _needs_resync:
+                    print(
+                        f"[OPEN RESYNC] {symbol} processed new 5m bar "
+                        f"({_cursor_before} → {_cursor_after}) — "
+                        f"reprocessing before next normal symbol: {_needs_resync}"
+                    )
+                    for open_symbol in _needs_resync:
+                        _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
+                        try:
+                            resync_result = run_hourly_for_symbol(open_symbol)
+                            resync_summary = (
+                                resync_result[0] if isinstance(resync_result, tuple)
+                                else resync_result
+                            )
+                            for i, (s, _old) in enumerate(symbol_summaries):
+                                if s == open_symbol:
+                                    symbol_summaries[i] = (open_symbol, resync_summary)
+                                    break
+                        except Exception as resync_err:
+                            notifier.send_text(
+                                f"💥 *OPEN RESYNC FAILED*\n"
+                                f"`{open_symbol}`\n"
+                                f"Error: `{str(resync_err)[:300]}`"
+                            )
+                else:
+                    print(
+                        f"[OPEN RESYNC SUPPRESSED] {symbol} found new 5m bar "
+                        f"but all priority symbols already current — no resync needed"
+                    )
                 _priority_resynced = True
 
     if ip_ban_wait is not None:
@@ -718,8 +747,6 @@ def run_hourly_for_symbol(
                     )
                     os.remove(cursor_file)
                 elif last_seen_ts >= current_5m_boundary:
-                    # Cursor is current — but only skip if we also have no open position.
-                    # If a position is open we must keep running exit checks every bar.
                     pm_check = PositionManager(persist=True, notify=False)
                     if symbol not in pm_check.positions:
                         print(
@@ -728,10 +755,15 @@ def run_hourly_for_symbol(
                         )
                         return None
                     else:
+                        # Position is open but cursor is already at this bar —
+                        # exit checks already ran in the normal priority pass.
+                        # The resync path must not re-run them or it duplicates
+                        # Telegram messages and double-increments bars_in_trade.
                         print(
-                            f"[FAST GATE BYPASS] {symbol} — cursor current but "
-                            f"position open, proceeding for exit checks"
+                            f"[FAST GATE] {symbol} — cursor current, position open "
+                            f"but already processed this bar, skipping"
                         )
+                        return None
                 else:
                     print(
                         f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < "
