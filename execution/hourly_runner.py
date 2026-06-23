@@ -49,10 +49,28 @@ def _symbol_priority_score(symbol: str) -> float:
 
     htf_quality = float(row.get("HTF_QUALITY", 0.0))
     htf_quality_th = float(row.get("HTF_QUALITY_TH", HTF_QUALITY_FLOOR))
-    if htf_quality <= htf_quality_th:
-        return 0.0  # HTF gate fails — no signal is possible regardless of anything else
+    htf_gate_passes = htf_quality > htf_quality_th
 
-    score = 1.0  # base score for clearing the HTF gate
+    # Pre-close window: the hour immediately before a 4H boundary.
+    # A symbol that currently fails its HTF gate may cross it on the
+    # next 4H close. If the other filters look strong, promote it
+    # above dead-last so it runs early enough to catch the entry bar.
+    now_utc = datetime.now(timezone.utc)
+    hours_into_4h = now_utc.hour % 4
+    minutes_into_hour = now_utc.minute
+    _in_pre_close_window = (hours_into_4h == 3 and minutes_into_hour >= 30)
+
+    if not htf_gate_passes and not _in_pre_close_window:
+        return 0.0  # HTF gate fails outside pre-close window — dead last
+
+    score = 1.0  # base score for clearing the HTF gate (or being in pre-close window)
+
+    if not htf_gate_passes:
+        # In pre-close window but currently below threshold.
+        # Score the other filters normally so strong setups bubble up,
+        # but cap below any symbol that actually passes the HTF gate
+        # (those start at 1.0; we start at 0.5 here as a soft penalty).
+        score = 0.5
 
     displacement = float(row.get("DISPLACEMENT_SCORE", 0.0))
     if displacement > 0.15:

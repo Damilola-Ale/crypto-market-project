@@ -10,7 +10,7 @@ from execution.notifier import TelegramNotifier
 
 CACHE_DIR = "data/cache"
 
-HOURS_LOOKBACK = 1000
+HOURS_LOOKBACK = 800
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
