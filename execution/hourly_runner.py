@@ -488,7 +488,8 @@ def run_hourly():
         if _advanced:
             _needs_resync = [
                 s for s in _priority
-                if _read_5m_cursor(s) == _priority_cursors_at_start[s]
+                if _priority_cursors_at_start[s] is None
+                or _read_5m_cursor(s) == _priority_cursors_at_start[s]
             ]
             if _needs_resync:
                 print(
@@ -569,7 +570,8 @@ def run_hourly():
                 # symbol runs.
                 _needs_resync = [
                     s for s in _priority
-                    if _read_5m_cursor(s) == _priority_cursors_at_start[s]
+                    if _priority_cursors_at_start[s] is None
+                    or _read_5m_cursor(s) == _priority_cursors_at_start[s]
                 ]
                 if _needs_resync:
                     print(
