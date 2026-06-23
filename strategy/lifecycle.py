@@ -56,7 +56,7 @@ class PositionManager:
     POSITION_VALUE_USDT  = 10    # floor — never go below this
     RISK_PCT_OF_ACCOUNT  = 0.40  # 20% of account per trade
     ACCOUNT_THRESHOLD    = 25.0  # only scale above this balance
-    MAX_SIMULTANEOUS     = 4    # hard cap on open trades
+    MAX_SIMULTANEOUS     = 2    # hard cap on open trades
     INCUBATION_BARS = 6        # 30 minutes (6×5m)
     VALIDATION_BARS = 18       # 90 minutes total
     PRESSURE_BARS   = 6        # stop proximity exit
