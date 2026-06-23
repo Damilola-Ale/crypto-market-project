@@ -466,17 +466,6 @@ def run_hourly():
         except Exception:
             return None
 
-    def _read_5m_cursor(symbol: str):
-        cf = _last_5m_file(symbol, True)
-        if not os.path.exists(cf):
-            return None
-        try:
-            with open(cf, "r") as f:
-                raw = json.load(f)
-            return raw if isinstance(raw, str) else None
-        except Exception:
-            return None
-
     # Snapshot 5m cursors for priority symbols at tick start.
     # Used to detect whether they've already seen the bar that triggers
     # a resync — if their cursor advanced during their own priority pass,
@@ -487,6 +476,50 @@ def run_hourly():
     failed_symbols = []
     ip_ban_wait = None
     _priority_resynced = (not _priority)
+
+    # Check immediately after the priority pass whether any priority symbol
+    # already advanced its cursor during its own run — if so, resync the
+    # ones that are still behind before any normal symbol runs.
+    if _priority and not _priority_resynced:
+        _advanced = [
+            s for s in _priority
+            if _read_5m_cursor(s) != _priority_cursors_at_start[s]
+        ]
+        if _advanced:
+            _needs_resync = [
+                s for s in _priority
+                if _read_5m_cursor(s) == _priority_cursors_at_start[s]
+            ]
+            if _needs_resync:
+                print(
+                    f"[PRIORITY RESYNC] {_advanced} advanced cursor during priority pass — "
+                    f"resyncing before normal symbols: {_needs_resync}"
+                )
+                from data_pipeline.rate_limiter import rate_limiter as _rl
+                for open_symbol in _needs_resync:
+                    _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
+                    try:
+                        resync_result = run_hourly_for_symbol(open_symbol)
+                        resync_summary = (
+                            resync_result[0] if isinstance(resync_result, tuple)
+                            else resync_result
+                        )
+                        for i, (s, _old) in enumerate(symbol_summaries):
+                            if s == open_symbol:
+                                symbol_summaries[i] = (open_symbol, resync_summary)
+                                break
+                    except Exception as resync_err:
+                        notifier.send_text(
+                            f"💥 *PRIORITY RESYNC FAILED*\n"
+                            f"`{open_symbol}`\n"
+                            f"Error: `{str(resync_err)[:300]}`"
+                        )
+                _priority_resynced = True
+            else:
+                print(
+                    f"[PRIORITY RESYNC SUPPRESSED] all priority symbols already current"
+                )
+                _priority_resynced = True
 
     for symbol in _run_order:
         from data_pipeline.rate_limiter import rate_limiter as _rl
@@ -747,23 +780,15 @@ def run_hourly_for_symbol(
                     )
                     os.remove(cursor_file)
                 elif last_seen_ts >= current_5m_boundary:
-                    pm_check = PositionManager(persist=True, notify=False)
-                    if symbol not in pm_check.positions:
-                        print(
-                            f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= "
-                            f"boundary {current_5m_boundary}, no open position, skipping"
-                        )
-                        return None
-                    else:
-                        # Position is open but cursor is already at this bar —
-                        # exit checks already ran in the normal priority pass.
-                        # The resync path must not re-run them or it duplicates
-                        # Telegram messages and double-increments bars_in_trade.
-                        print(
-                            f"[FAST GATE] {symbol} — cursor current, position open "
-                            f"but already processed this bar, skipping"
-                        )
-                        return None
+                    # Cursor is current — skip regardless of position state.
+                    # If a position is open, exit checks already ran when this
+                    # symbol processed this bar in its normal pass. Running again
+                    # duplicates Telegram messages and double-increments bars_in_trade.
+                    print(
+                        f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= "
+                        f"boundary {current_5m_boundary}, already current, skipping"
+                    )
+                    return None
                 else:
                     print(
                         f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < "
