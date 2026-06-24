@@ -466,71 +466,65 @@ def run_hourly():
         except Exception:
             return None
 
-    # Snapshot 5m cursors for priority symbols at tick start.
-    # Used to detect whether they've already seen the bar that triggers
-    # a resync — if their cursor advanced during their own priority pass,
-    # they don't need resyncing.
-    _priority_cursors_at_start = {s: _read_5m_cursor(s) for s in _priority}
+    def _cursor_ts(raw):
+        if not raw:
+            return None
+        try:
+            ts = pd.Timestamp(raw)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            return ts
+        except Exception:
+            return None
 
     symbol_summaries = []
     failed_symbols = []
     ip_ban_wait = None
-    _priority_resynced = (not _priority)
 
-    # Check immediately after the priority pass whether any priority symbol
-    # already advanced its cursor during its own run — if so, resync the
-    # ones that are still behind before any normal symbol runs.
-    if _priority and not _priority_resynced:
-        _advanced = [
-            s for s in _priority
-            if _read_5m_cursor(s) != _priority_cursors_at_start[s]
-        ]
-        if _advanced:
-            _needs_resync = [
-                s for s in _priority
-                if _priority_cursors_at_start[s] is None
-                or _read_5m_cursor(s) == _priority_cursors_at_start[s]
-            ]
-            if _needs_resync:
-                print(
-                    f"[PRIORITY RESYNC] {_advanced} advanced cursor during priority pass — "
-                    f"resyncing before normal symbols: {_needs_resync}"
+    # Newest 5m bar timestamp ANY symbol has confirmed processing so far
+    # this tick. This — not "cursor at tick start" — is the correct basis
+    # for "is a priority symbol behind." A priority symbol can advance once
+    # during its own (first) pass and then fall behind again later in the
+    # SAME tick once a normal symbol discovers an even newer bar.
+    _max_cursor_seen = None
+    for _s in _priority:
+        _ts = _cursor_ts(_read_5m_cursor(_s))
+        if _ts is not None and (_max_cursor_seen is None or _ts > _max_cursor_seen):
+            _max_cursor_seen = _ts
+
+    def _resync_lagging_priority():
+        """Reprocess every priority symbol whose on-disk cursor is behind
+        _max_cursor_seen. Mutates symbol_summaries in place."""
+        nonlocal _max_cursor_seen
+        from data_pipeline.rate_limiter import rate_limiter as _rl
+        for open_symbol in _priority:
+            cur_ts = _cursor_ts(_read_5m_cursor(open_symbol))
+            if cur_ts is not None and _max_cursor_seen is not None and cur_ts >= _max_cursor_seen:
+                continue  # already caught up
+            _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
+            try:
+                resync_result = run_hourly_for_symbol(open_symbol)
+                resync_summary = (
+                    resync_result[0] if isinstance(resync_result, tuple)
+                    else resync_result
                 )
-                from data_pipeline.rate_limiter import rate_limiter as _rl
-                for open_symbol in _needs_resync:
-                    _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
-                    try:
-                        resync_result = run_hourly_for_symbol(open_symbol)
-                        resync_summary = (
-                            resync_result[0] if isinstance(resync_result, tuple)
-                            else resync_result
-                        )
-                        for i, (s, _old) in enumerate(symbol_summaries):
-                            if s == open_symbol:
-                                symbol_summaries[i] = (open_symbol, resync_summary)
-                                break
-                    except Exception as resync_err:
-                        notifier.send_text(
-                            f"💥 *PRIORITY RESYNC FAILED*\n"
-                            f"`{open_symbol}`\n"
-                            f"Error: `{str(resync_err)[:300]}`"
-                        )
-                _priority_resynced = True
-            else:
-                print(
-                    f"[PRIORITY RESYNC SUPPRESSED] all priority symbols already current"
+                for i, (s2, _old) in enumerate(symbol_summaries):
+                    if s2 == open_symbol:
+                        symbol_summaries[i] = (open_symbol, resync_summary)
+                        break
+                new_ts = _cursor_ts(_read_5m_cursor(open_symbol))
+                if new_ts is not None and (_max_cursor_seen is None or new_ts > _max_cursor_seen):
+                    _max_cursor_seen = new_ts
+            except Exception as resync_err:
+                notifier.send_text(
+                    f"💥 *OPEN RESYNC FAILED*\n"
+                    f"`{open_symbol}`\n"
+                    f"Error: `{str(resync_err)[:300]}`"
                 )
-                _priority_resynced = True
 
     for symbol in _run_order:
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
-
-        _cursor_before = (
-            _read_5m_cursor(symbol)
-            if (not _priority_resynced and symbol not in _priority)
-            else None
-        )
 
         try:
             result = run_hourly_for_symbol(symbol)
@@ -560,49 +554,26 @@ def run_hourly():
                 )
                 symbol_summaries.append((symbol, None))
 
-        if not _priority_resynced and symbol not in _priority:
-            _cursor_after = _read_5m_cursor(symbol)
-            if _cursor_after and _cursor_after != _cursor_before:
-                # This normal symbol just processed a new 5m bar.
-                # Resync priority symbols whose cursor hasn't advanced
-                # past where it was at tick start — meaning they haven't
-                # seen this bar yet and need it before the next normal
-                # symbol runs.
+        _this_cursor = _cursor_ts(_read_5m_cursor(symbol))
+        if (
+            _priority
+            and _this_cursor is not None
+            and (_max_cursor_seen is None or _this_cursor > _max_cursor_seen)
+        ):
+            _max_cursor_seen = _this_cursor
+
+            if symbol not in _priority:
                 _needs_resync = [
                     s for s in _priority
-                    if _priority_cursors_at_start[s] is None
-                    or _read_5m_cursor(s) == _priority_cursors_at_start[s]
+                    if (lambda t: t is None or t < _max_cursor_seen)(_cursor_ts(_read_5m_cursor(s)))
                 ]
                 if _needs_resync:
                     print(
-                        f"[OPEN RESYNC] {symbol} processed new 5m bar "
-                        f"({_cursor_before} → {_cursor_after}) — "
-                        f"reprocessing before next normal symbol: {_needs_resync}"
+                        f"[OPEN RESYNC] {symbol} confirmed newer bar "
+                        f"({_max_cursor_seen}) — reprocessing lagging "
+                        f"open positions: {_needs_resync}"
                     )
-                    for open_symbol in _needs_resync:
-                        _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
-                        try:
-                            resync_result = run_hourly_for_symbol(open_symbol)
-                            resync_summary = (
-                                resync_result[0] if isinstance(resync_result, tuple)
-                                else resync_result
-                            )
-                            for i, (s, _old) in enumerate(symbol_summaries):
-                                if s == open_symbol:
-                                    symbol_summaries[i] = (open_symbol, resync_summary)
-                                    break
-                        except Exception as resync_err:
-                            notifier.send_text(
-                                f"💥 *OPEN RESYNC FAILED*\n"
-                                f"`{open_symbol}`\n"
-                                f"Error: `{str(resync_err)[:300]}`"
-                            )
-                else:
-                    print(
-                        f"[OPEN RESYNC SUPPRESSED] {symbol} found new 5m bar "
-                        f"but all priority symbols already current — no resync needed"
-                    )
-                _priority_resynced = True
+                    _resync_lagging_priority()
 
     if ip_ban_wait is not None:
         ban_notif_file = "data/last_ban_notif.json"
