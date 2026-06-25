@@ -54,9 +54,9 @@ class PositionManager:
     # TRADE LIFECYCLE SETTINGS (mirrors SignalBacktester exactly)
     # ==========================================================
     POSITION_VALUE_USDT  = 10    # floor — never go below this
-    RISK_PCT_OF_ACCOUNT  = 0.40  # 20% of account per trade
+    RISK_PCT_OF_ACCOUNT  = 0.30  # 20% of account per trade
     ACCOUNT_THRESHOLD    = 25.0  # only scale above this balance
-    MAX_SIMULTANEOUS     = 2    # hard cap on open trades
+    MAX_SIMULTANEOUS     = 3    # hard cap on open trades
     INCUBATION_BARS = 6        # 30 minutes (6×5m)
     VALIDATION_BARS = 18       # 90 minutes total
     PRESSURE_BARS   = 6        # stop proximity exit
@@ -287,6 +287,12 @@ class PositionManager:
 
                 # if self._momentum_decay_exit(position):
                 #     try_exit("momentum_decay", current_price)
+
+                # ── ZERO MFE EXIT ────────────────────────────────────
+                _bars = position.get("bars_in_trade", 0)
+                _mae_r = abs(position.get("MAE", 0.0)) / R if R > 0 else 0.0
+                if _bars == 3 and position.get("mfe_r", 0.0) == 0.0 and _mae_r > 0.3:
+                    try_exit("zero_mfe_exit", current_price)
 
                 if self._opposite_impulse_exit(window_5m, side, position):
                     try_exit("opposite_impulse", current_price)
@@ -583,7 +589,8 @@ class PositionManager:
         # 2. BODY SIZE
         # ══════════════════════════════════════════
         body = abs(last["close"] - last["open"])
-        big_candle = body > atr * 1.2
+        two_bar_move = abs(window.iloc[-1]["close"] - window.iloc[-2]["close"]) if len(window) >= 2 else 0
+        big_candle = (body > atr * 1.2) or (two_bar_move > atr * 1.5 and body > atr * 0.6)
 
         # ══════════════════════════════════════════
         # 3. DIRECTION CHECK

@@ -637,6 +637,16 @@ class SignalBacktester:
         #     self._exit(current_price, idx, "stall_exit")
         #     return
 
+        # ── ZERO MFE EXIT ───────────────────────────────────────────
+        # Bar 3 (15 min): if price never moved our way at all AND
+        # is already moving against us beyond 0.3R, cut it.
+        # By bar 6 the damage is already -0.5R+ and too late.
+        _bars = trade.get("bars_in_trade", 0)
+        _mae_r = abs(trade.get("_price_mae", 0.0)) / R if R > 0 else 0.0
+        if _bars == 3 and mfe_r == 0.0 and _mae_r > 0.3:
+            self._exit(current_price, idx, "zero_mfe_exit")
+            return
+
         # ── OPPOSITE IMPULSE EXIT (matches lifecycle.py exactly) 
         if self.opposite_impulse_exit(window_5m, side, trade=trade):
             self._exit(current_price, idx, "opposite_impulse")
