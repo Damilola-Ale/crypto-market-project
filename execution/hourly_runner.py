@@ -32,11 +32,7 @@ SYMBOLS = [
 # --------------------------------------------------------------
 # SYMBOL RUN-ORDER PRIORITY
 # --------------------------------------------------------------
-# Scores each symbol from its cached signal state (data/signal_cache/<symbol>_signals.parquet),
-# which is last-run output, not live. Fine for these — HTF quality, displacement, flow, and
-# close-location bias are all slow-moving — but a symbol that just flipped hot/cold won't
-# reflect that until its own next cycle.
-HTF_QUALITY_FLOOR = 0.30  # mirrors the .clip(lower=0.30) floor on htf_quality_th in generate_signal
+# Scores each symbol from its cached signal state (data/signal_cache/<symbol>_signals.parquet)
 
 def _symbol_priority_score(symbol: str) -> float:
     cache_path = os.path.join("data/signal_cache", f"{symbol}_signals.parquet")
@@ -48,46 +44,23 @@ def _symbol_priority_score(symbol: str) -> float:
     except Exception:
         return 1.0
 
-    htf_quality    = float(row.get("HTF_QUALITY", 0.0))
-    htf_quality_th = float(row.get("HTF_QUALITY_TH", HTF_QUALITY_FLOOR))
-    htf_gate_passes = htf_quality > htf_quality_th
-
-    # In the last hour of the 4H candle, HTF quality may flip on the next close.
-    # Don't zero out failing symbols — let the other filters decide their rank.
-    now_utc = datetime.now(timezone.utc)
-    _in_last_4h_hour = (now_utc.hour % 4 == 3)
-
-    if not htf_gate_passes and not _in_last_4h_hour:
-        return 0.0
-
-    score = 1.0 if htf_gate_passes else 0.5
+    score = 1.0
 
     displacement = float(row.get("DISPLACEMENT_SCORE", 0.0))
     if displacement > 0.15:
         score += 10
 
-    htf_direction = int(row.get("HTF_DIRECTION", 0))
     bias = row.get("close_location_bias", None)
     if bias is not None:
         bias = float(bias)
-        bias_agrees_with_htf = (
-            (htf_direction == 1  and bias > 0.5) or
-            (htf_direction == -1 and bias < 0.5)
-        )
-        if bias_agrees_with_htf:
+
+        # Reward strong close-location positioning regardless of direction
+        if bias > 0.75 or bias < 0.25:
             score += 5
 
     flow_strength = float(row.get("FLOW_STRENGTH", 0.0))
-    if htf_gate_passes:
-        if abs(flow_strength) > 0.3:
-            score += 3
-    else:
-        flow_agrees = (
-            (htf_direction == 1  and flow_strength >  0.3) or
-            (htf_direction == -1 and flow_strength < -0.3)
-        )
-        if flow_agrees:
-            score += 3
+    if abs(flow_strength) > 0.3:
+        score += 3
 
     return score
 

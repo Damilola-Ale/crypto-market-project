@@ -703,7 +703,6 @@ class PositionManager:
             f"o={last['open']:.6f} c={last['close']:.6f} | "
             f"body={body:.6f} atr={atr:.6f} thr={atr*1.2:.6f} big={big_candle}\n"
             f"wrong_dir={wrong_direction} | "
-            f"csr={close_to_stop_r:.3f} loc_block={location_blocked} mfe_r={mfe_r:.3f}\n"
             f"vol: last={last_vol:.0f} avg={avg_vol:.0f} wlen={len(window)} vol_block={vol_blocked}"
         )
 
