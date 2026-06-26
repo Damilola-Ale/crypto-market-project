@@ -48,7 +48,7 @@ def _symbol_priority_score(symbol: str) -> float:
     score = 1.0
 
     displacement = float(row.get("DISPLACEMENT_SCORE", 0.0))
-    if displacement > 0.15:
+    if displacement > 0.3:
         score += 10
 
     bias = row.get("close_location_bias", None)
@@ -56,11 +56,11 @@ def _symbol_priority_score(symbol: str) -> float:
         bias = float(bias)
 
         # Reward strong close-location positioning regardless of direction
-        if bias > 0.75 or bias < 0.25:
+        if bias > 0.7 or bias < 0.3:
             score += 5
 
     flow_strength = float(row.get("FLOW_STRENGTH", 0.0))
-    if abs(flow_strength) > 0.3:
+    if abs(flow_strength) > 0.25:
         score += 3
 
     return score
