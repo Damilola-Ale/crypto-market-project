@@ -962,44 +962,44 @@ def run_hourly_for_symbol(
         df = _get_signal_df(symbol, df, htf_df, is_live, htf_scores, latest_hour_ts)
 
         # DEBUG — HTF_QUALITY alignment audit
-        try:
-            _hq_col = df['HTF_QUALITY']
-            _hd_col = df['HTF_DIRECTION']
-            _now_audit = datetime.now(timezone.utc)
-            _audit_lines = [
-                f"[HTF AUDIT] {symbol} @ {_now_audit.strftime('%H:%M UTC')}",
-                f"  htf_scores last={htf_scores.index[-1] if htf_scores is not None else 'NONE'}",
-                f"  htf_df last={htf_df.index[-1]}  len={len(htf_df)}",
-                f"  df last={df.index[-1]}  len={len(df)}",
-                f"  HTF_QUALITY last3={[round(float(v),4) for v in _hq_col.iloc[-3:].values]}",
-                f"  HTF_DIRECTION last3={[int(v) for v in _hd_col.iloc[-3:].values]}",
-                f"  htf_quality_th last3 — not yet computed here, see below",
-            ]
-            # check if all 1H bars in the current 4H candle share the same HTF_QUALITY
-            _now_hour = _now_audit.replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
-            _hours_into = _now_hour.hour % 4
-            _current_4h_open_audit = pd.Timestamp(_now_hour - timedelta(hours=_hours_into)).tz_localize("UTC") if _now_hour.tzinfo is None else pd.Timestamp(_now_hour - timedelta(hours=_hours_into))
-            _bars_in_current_4h = df[df.index >= _current_4h_open_audit]
-            _hq_in_4h = _bars_in_current_4h['HTF_QUALITY'].unique()
-            _audit_lines.append(
-                f"  bars in current 4H window ({_current_4h_open_audit})={len(_bars_in_current_4h)} "
-                f"unique HTF_QUALITY values={[round(float(v),4) for v in _hq_in_4h]}"
-            )
-            print("\n".join(_audit_lines))
-        except Exception as _audit_err:
-            print(f"[HTF AUDIT FAILED] {symbol} — {_audit_err}")
+        # try:
+        #     _hq_col = df['HTF_QUALITY']
+        #     _hd_col = df['HTF_DIRECTION']
+        #     _now_audit = datetime.now(timezone.utc)
+        #     _audit_lines = [
+        #         f"[HTF AUDIT] {symbol} @ {_now_audit.strftime('%H:%M UTC')}",
+        #         f"  htf_scores last={htf_scores.index[-1] if htf_scores is not None else 'NONE'}",
+        #         f"  htf_df last={htf_df.index[-1]}  len={len(htf_df)}",
+        #         f"  df last={df.index[-1]}  len={len(df)}",
+        #         f"  HTF_QUALITY last3={[round(float(v),4) for v in _hq_col.iloc[-3:].values]}",
+        #         f"  HTF_DIRECTION last3={[int(v) for v in _hd_col.iloc[-3:].values]}",
+        #         f"  htf_quality_th last3 — not yet computed here, see below",
+        #     ]
+        #     # check if all 1H bars in the current 4H candle share the same HTF_QUALITY
+        #     _now_hour = _now_audit.replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+        #     _hours_into = _now_hour.hour % 4
+        #     _current_4h_open_audit = pd.Timestamp(_now_hour - timedelta(hours=_hours_into)).tz_localize("UTC") if _now_hour.tzinfo is None else pd.Timestamp(_now_hour - timedelta(hours=_hours_into))
+        #     _bars_in_current_4h = df[df.index >= _current_4h_open_audit]
+        #     _hq_in_4h = _bars_in_current_4h['HTF_QUALITY'].unique()
+        #     _audit_lines.append(
+        #         f"  bars in current 4H window ({_current_4h_open_audit})={len(_bars_in_current_4h)} "
+        #         f"unique HTF_QUALITY values={[round(float(v),4) for v in _hq_in_4h]}"
+        #     )
+        #     print("\n".join(_audit_lines))
+        # except Exception as _audit_err:
+        #     print(f"[HTF AUDIT FAILED] {symbol} — {_audit_err}")
 
-        _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
-        _htf_direction = int(df['HTF_DIRECTION'].iloc[-1])
-        _signal_count  = int((df['final_signal'] != 0).sum())
+        # _htf_quality   = float(df['HTF_QUALITY'].iloc[-1])
+        # _htf_direction = int(df['HTF_DIRECTION'].iloc[-1])
+        # _signal_count  = int((df['final_signal'] != 0).sum())
 
-        print(
-            f"[HTF CHECK] {symbol} | "
-            f"HTF_QUALITY={_htf_quality:.4f} | "
-            f"HTF_DIRECTION={_htf_direction} | "
-            f"final_signal_last={df['final_signal'].iloc[-1]} | "
-            f"signals_total={_signal_count}"
-        )
+        # print(
+        #     f"[HTF CHECK] {symbol} | "
+        #     f"HTF_QUALITY={_htf_quality:.4f} | "
+        #     f"HTF_DIRECTION={_htf_direction} | "
+        #     f"final_signal_last={df['final_signal'].iloc[-1]} | "
+        #     f"signals_total={_signal_count}"
+        # )
 
         if 'final_signal' not in df.columns or len(df) < 2:
             notifier.debug(f"[SIGNAL GUARD] {symbol} — no final_signal or df too short")
