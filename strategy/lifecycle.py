@@ -288,34 +288,30 @@ class PositionManager:
                 # if self._momentum_decay_exit(position):
                 #     try_exit("momentum_decay", current_price)
 
-                # ── DOMINANCE EXIT ──────────────────────────────────
+                # ── DOMINANCE EXIT (was zero_mfe_exit) ──────────────
+                # Backtest uses mae_r > 0.50 and name "dominance_exit".
+                # Threshold and name aligned.
                 _bars = position.get("bars_in_trade", 0)
                 mfe_r_now = position.get("mfe_r", 0.0)
+                _price_mfe = position.get("MFE", 0.0) / position.get("units", 1) if position.get("units", 0) > 0 else position.get("MFE", 0.0)
                 _mae_r = abs(position.get("MAE", 0.0)) / R if R > 0 else 0.0
 
                 if _bars == 3 and mfe_r_now == 0.0 and _mae_r > 0.50:
-                    # Move Binance stop to current_price (best available exit).
-                    # If amend succeeds, exchange stop becomes the exit and we
-                    # close locally. If it fails, fall back to software exit.
-                    _dominance_stop = current_price
-                    _amended = self._try_amend_stop(position, _dominance_stop, side)
-                    if _amended:
-                        try_exit("dominance_exit", _dominance_stop)
-                    else:
-                        try_exit("dominance_exit", current_price)
+                    try_exit("dominance_exit", current_price)
 
                 # ── TRAP REJECTION EXIT ──────────────────────────────
+                # Fires in bars 1–2 when price gapped through the stop on
+                # a wick/spike (mae_r > 1.2) and adverse move is at least
+                # 4× the favorable move. Prevents holding blow-through bars.
                 if exit_reason is None and _bars <= 2 and _mae_r > 1.2:
                     _trap_ratio = _mae_r / max(mfe_r_now, 0.05)
                     if _trap_ratio > 4.0:
-                        _trap_stop = current_price
-                        _amended = self._try_amend_stop(position, _trap_stop, side)
-                        if _amended:
-                            try_exit("trap_rejection", _trap_stop)
-                        else:
-                            try_exit("trap_rejection", current_price)
+                        try_exit("trap_rejection", current_price)
 
                 # ── THESIS INVALIDATION EXIT ─────────────────────────
+                # Trade showed real but limited promise (0.15–0.5R MFE),
+                # is now meaningfully underwater, and is within 0.25R of
+                # the original stop. Exit before the stop confirms failure.
                 if exit_reason is None and 0.15 <= mfe_r_now < 0.5:
                     pnl_r_now = position.get("pnl_r", 0.0)
                     if side == 1:
@@ -324,16 +320,12 @@ class PositionManager:
                         stop_proximity_r = (position.get("initial_stop", position["stop_loss"]) - current_price) / R
                     drawdown_from_peak = mfe_r_now - pnl_r_now
                     if pnl_r_now < -0.10 and stop_proximity_r < 0.25 and drawdown_from_peak > 0.35:
-                        # Tightest defensible level: current price (already
-                        # close to original stop, no room to leave buffer).
-                        _thesis_stop = current_price
-                        _amended = self._try_amend_stop(position, _thesis_stop, side)
-                        if _amended:
-                            try_exit("thesis_invalidation_exit", _thesis_stop)
-                        else:
-                            try_exit("thesis_invalidation_exit", current_price)
+                        try_exit("thesis_invalidation_exit", current_price)
 
                 # ── STOP PROXIMITY EXIT ──────────────────────────────
+                # Trade (including mfe_r=0) is bleeding toward the stop
+                # without triggering OIE or dominance. Exit now rather
+                # than waiting for the hard stop to confirm failure.
                 if exit_reason is None and mfe_r_now < 0.5:
                     pnl_r_now = position.get("pnl_r", 0.0)
                     if pnl_r_now < -0.35:
@@ -342,14 +334,7 @@ class PositionManager:
                         else:
                             prox_r = (position.get("initial_stop", position["stop_loss"]) - current_price) / R
                         if prox_r < 0.20:
-                            # Move stop to current_price — we're within 0.20R
-                            # of original stop anyway, this just locks it in now.
-                            _prox_stop = current_price
-                            _amended = self._try_amend_stop(position, _prox_stop, side)
-                            if _amended:
-                                try_exit("stop_proximity_exit", _prox_stop)
-                            else:
-                                try_exit("stop_proximity_exit", current_price)
+                            try_exit("stop_proximity_exit", current_price)
 
                 if exit_reason is None and self._opposite_impulse_exit(window_5m, side, position):
                     try_exit("opposite_impulse", current_price)
@@ -784,61 +769,6 @@ class PositionManager:
                 except BinanceExecutionError as e:
                     _tg_debug(f"[BINANCE STOP AMEND FAILED] {position['symbol']} — {e}")
             # ────────────────────────────────────────────────────────
-
-    def _try_amend_stop(self, position: dict, new_stop_price: float, side: int) -> bool:
-        """
-        Moves the Binance stop to new_stop_price and updates position state.
-        Returns True if the amend succeeded (or execution is disabled),
-        False if Binance rejected it — caller should fall back to software exit.
-
-        For software-exit reasons (dominance, trap, thesis, proximity) the
-        'new_stop_price' is always current_price, so the stop becomes a
-        market-equivalent level. Binance will fill at or near that price
-        on the next tick, making it candle-independent.
-        """
-        # Always update local state — even if Binance is disabled,
-        # the local stop should reflect the tighter level so the
-        # hard-stop check below (_check_intrabar equivalent) fires correctly.
-        current_stop = position["stop_loss"]
-        if side == 1:
-            tighter = new_stop_price > current_stop
-        else:
-            tighter = new_stop_price < current_stop
-
-        if not tighter:
-            # Never loosen the stop via this path.
-            return False
-
-        position["stop_loss"] = new_stop_price
-
-        if not (_EXECUTION_ENABLED and self._is_live):
-            # Execution disabled (paper / replay) — local update is enough.
-            return True
-
-        try:
-            new_stop_order = _binance_amend_stop(
-                symbol=position["symbol"],
-                direction=side,
-                quantity=position.get("quantity", 0),
-                new_stop_price=new_stop_price,
-                existing_stop_order_id=position.get("binance_stop_order_id"),
-                trade_id=position.get("trade_id"),
-            )
-            position["binance_stop_order_id"] = new_stop_order.get("algoId")
-            _tg_debug(
-                f"[STOP AMENDED] {position['symbol']} "
-                f"new_stop={new_stop_price:.6f} "
-                f"side={'L' if side == 1 else 'S'} "
-                f"algoId={new_stop_order.get('algoId')}"
-            )
-            return True
-        except BinanceExecutionError as e:
-            _tg_debug(
-                f"[STOP AMEND FAILED] {position['symbol']} "
-                f"attempted_stop={new_stop_price:.6f} "
-                f"error={e}"
-            )
-            return False
 
     # --------------------------------------------------
     # OPEN / CLOSE
