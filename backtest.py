@@ -202,19 +202,43 @@ class SignalBacktester:
         if trade is not None:
             entry = trade["entry_price"]
             stop  = trade["stop_loss"]
+            initial_stop = trade.get("initial_stop", stop)
             # use initial_stop as R anchor — matches lifecycle.py exactly
-            R = abs(entry - trade.get("initial_stop", stop))
+            R = abs(entry - initial_stop)
             if R == 0:
                 R = abs(entry - stop)
 
             if R > 0:
-                if side == 1:
-                    close_to_stop_r = (last.close - stop) / R
-                else:
-                    close_to_stop_r = (stop - last.close) / R
+                    mfe_r = trade.get("mfe_r", 0.0)
+                    pnl_r_now = trade.get("pnl_r", 0.0)
 
-                mfe_r = trade.get("mfe_r", 0.0)
-                location_blocked = close_to_stop_r > 1.5 and mfe_r < 1.0
+                    # close_to_initial_stop_r: distance from the ORIGINAL
+                    # stop, not the live (trailing) stop_loss. Previously
+                    # this guard read trade["stop_loss"] directly, which
+                    # moves once update_dynamic_stop's trail activates
+                    # (mfe_r >= 0.5). As the trail tightens, that live
+                    # stop creeps toward price, shrinking close_to_stop_r
+                    # even though the trade's risk position relative to
+                    # its ORIGINAL stop hasn't changed at all — this let
+                    # OIE fire on healthy, well-protected winners purely
+                    # because the trail had moved, not because anything
+                    # about the trade changed. Anchoring to initial_stop
+                    # decouples OIE's guard from any future trailing-stop
+                    # tuning, so trail experiments can no longer silently
+                    # weaken this guard the way the 0.15-0.5R tier did.
+                    #
+                    # Since R = abs(entry - initial_stop), distance from
+                    # initial_stop in R-units is always pnl_r_now + 1.0
+                    # (true for both long and short, since pnl_r_now is
+                    # already side-corrected) — no separate close/stop
+                    # arithmetic needed.
+                    close_to_initial_stop_r = pnl_r_now + 1.0
+
+                    # Block OIE when the trade is comfortably above the
+                    # ORIGINAL stop AND has positive pnl. Same 0.75R
+                    # logic as before, just measured against a fixed
+                    # reference point instead of a moving one.
+                    location_blocked = (close_to_initial_stop_r > 1.75 and pnl_r_now > 0.0)
 
         # ══════════════════════════════════════════
         # 5. VOLUME CONFIRMATION
@@ -285,8 +309,13 @@ class SignalBacktester:
     # Trail activates at 0.3R — early enough to catch the peak,
     # late enough to survive normal entry noise on 5m bars.
     # Breakeven lock only at 0.5R+ to avoid instant stop-to-entry.
+    # NOTE: lowering this activation threshold to 0.2R was tried and
+    # reverted — it clipped a much larger population of normal winners
+    # that dip through 0.2-0.5R before continuing, costing far more
+    # than the bleed-back leak it fixed. See stall_exit in
+    # _check_intrabar for the narrower fix targeting that leak directly.
     ATR_AFTER_ENTRY   = 1.5   # standard trail before 0.5R
-    ATR_AFTER_HALF_R  = 0.7   # tighter once 0.5R secured
+    ATR_AFTER_HALF_R  = 0.55   # tighter once 0.5R secured
     ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
     def update_dynamic_stop(self, trade, current_price, atr):
@@ -388,6 +417,7 @@ class SignalBacktester:
             "MFE": 0.0,
             "bars_in_trade": 1,   # entry bar counts as bar 1, matching live
             "last_trail_bar": 0,
+            "mfe_peak_bar": 1,    # bar where _price_mfe last made a new high
             "mfe_r": 0.0,
             "pnl_r": 0.0,
         }
@@ -598,7 +628,11 @@ class SignalBacktester:
             price_mfe = trade["entry_price"] - low
             price_mae = trade["entry_price"] - high
 
-        trade["_price_mfe"] = max(trade.get("_price_mfe", 0.0), price_mfe)
+        _prior_price_mfe = trade.get("_price_mfe", 0.0)
+        _new_price_mfe   = max(_prior_price_mfe, price_mfe)
+        if _new_price_mfe > _prior_price_mfe:
+            trade["mfe_peak_bar"] = trade.get("bars_in_trade", 0)
+        trade["_price_mfe"] = _new_price_mfe
         trade["_price_mae"] = min(trade.get("_price_mae", 0.0), price_mae)
 
         # dollar excursions for diagnostics (used by _update_excursions output)
@@ -637,18 +671,142 @@ class SignalBacktester:
         #     self._exit(current_price, idx, "stall_exit")
         #     return
 
-        # ── ZERO MFE EXIT ───────────────────────────────────────────
-        # Bar 3 (15 min): if price never moved our way at all AND
-        # is already moving against us beyond 0.3R, cut it.
-        # By bar 6 the damage is already -0.5R+ and too late.
+        # ── DOMINANCE EXIT ──────────────────────────────────────────
+        # Fires when adverse movement is clearly dominating favorable
+        # movement — not just when MFE is exactly zero.
+        # Bar 3 (15 min): MAE > 0.30R and ratio > 3.0
+        #   → adverse is 3x the favorable move, trade hasn't proved itself
+        # Bar 6 (30 min): MAE > 0.40R and ratio > 2.5
+        #   → two full 1H candles held, still no evidence of edge
         _bars = trade.get("bars_in_trade", 0)
         _mae_r = abs(trade.get("_price_mae", 0.0)) / R if R > 0 else 0.0
-        if _bars == 3 and mfe_r == 0.0 and _mae_r > 0.3:
-            self._exit(current_price, idx, "zero_mfe_exit")
+        _pressure_ratio = _mae_r / max(mfe_r, 0.01)
+
+        if _bars == 3 and mfe_r == 0.0 and _mae_r > 0.50:
+            entry_time_str = trade.get("entry_time", "?")
+            print(f"[DOMINANCE_EXIT BAR3] {entry_time_str} | side={trade['side']} | "
+                  f"mfe_r={mfe_r:.3f} mae_r={_mae_r:.3f} ratio={_pressure_ratio:.2f} | "
+                  f"exit_price={current_price:.5f} | "
+                  f"stop_was={trade['stop_loss']:.5f} R={R:.5f}")
+            self._exit(current_price, idx, "dominance_exit")
             return
 
-        # ── OPPOSITE IMPULSE EXIT (matches lifecycle.py exactly) 
+        # ── TRAP REJECTION EXIT ──────────────────────────────────────
+        # Catches bars where the trade had some MFE (so dominance_exit
+        # doesn't fire) but the adverse move is so extreme relative to
+        # the favorable move that the candle is effectively a trap.
+        # Only fires in bars 1–2 to avoid interfering with normal
+        # multi-bar trades that dip before continuing.
+        #
+        # Conditions:
+        #   _mae_r > 1.2R  — adverse move is already larger than the
+        #                     original stop, meaning the bar blew through
+        #                     the stop on a wick (gap/spike scenario)
+        #   ratio > 4.0    — adverse is at least 4× the favorable move
+        #                     (protects volatile winners like MFE=1.5R /
+        #                      MAE=1.6R which have ratio ≈ 1.1 and survive)
+        #
+        # The ratio guard is the key discriminator:
+        #   MFE=0.23R MAE=2.80R → ratio=12.2 → FIRES   (pure rejection)
+        #   MFE=0.60R MAE=1.48R → ratio=2.47 → SURVIVES (had real move)
+        #   MFE=1.50R MAE=1.60R → ratio=1.07 → SURVIVES (volatile winner)
+        if _bars <= 2 and _mae_r > 1.2:
+            _trap_ratio = _mae_r / max(mfe_r, 0.05)
+            if _trap_ratio > 4.0:
+                entry_time_str = trade.get("entry_time", "?")
+                print(f"[TRAP_REJECTION] {entry_time_str} | side={trade['side']} | "
+                      f"bars={_bars} mfe_r={mfe_r:.3f} mae_r={_mae_r:.3f} "
+                      f"trap_ratio={_trap_ratio:.2f} | "
+                      f"exit_price={current_price:.5f} R={R:.5f}")
+                self._exit(current_price, idx, "trap_rejection")
+                return
+
+        # ── THESIS INVALIDATION EXIT ──────────────────────────────────
+        # Replaces time-based slow_bleed_exit with a price-structure exit.
+        #
+        # The old approach used bars_since_peak — a proxy for stagnation
+        # that fires at different points in a trade's life depending on
+        # symbol tempo (ICX reverses in 5 bars, LINK drifts 50-90 bars).
+        # That mismatch is why no single BARS threshold improved all symbols.
+        #
+        # This version asks the question directly:
+        #   "Is this trade underwater AND nearly at the stop?"
+        # which is symbol-agnostic and denominated in R.
+        #
+        # Three conditions must ALL be true:
+        #   1. mfe_r in 0.15–0.5: trade showed real but limited promise
+        #   2. pnl_r < -0.10:     trade is now meaningfully underwater
+        #   3. stop_proximity_r < 0.25: less than 0.25R remains before
+        #      the original stop — thesis is about to be formally proven
+        #      wrong; exit now rather than wait for the stop to confirm it
+        #
+        # Additionally requires drawdown_from_peak > 0.35 to ensure price
+        # has actually reversed from its high, not just entered from a
+        # low base. Prevents firing on trades that were always losing.
+        if 0.15 <= mfe_r < 0.5:
+            if side == 1:
+                stop_proximity_r = (current_price - trade.get("initial_stop", trade["stop_loss"])) / R
+            else:
+                stop_proximity_r = (trade.get("initial_stop", trade["stop_loss"]) - current_price) / R
+
+            drawdown_from_peak = mfe_r - pnl_r
+
+            if pnl_r < -0.10 and stop_proximity_r < 0.25 and drawdown_from_peak > 0.35:
+                entry_time_str = trade.get("entry_time", "?")
+                print(f"[THESIS_INVALID_EXIT] {entry_time_str} | side={trade['side']} | "
+                      f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
+                      f"stop_proximity_r={stop_proximity_r:.3f} drawdown_from_peak={drawdown_from_peak:.3f} | "
+                      f"exit_price={current_price:.5f} R={R:.5f}")
+                self._exit(current_price, idx, "thesis_invalidation_exit")
+                return
+
+        # ── STOP PROXIMITY EXIT ──────────────────────────────────────
+        # Fires when the trade is already substantially underwater AND
+        # within a small buffer of the original stop.
+        # Rationale: if pnl_r is already -0.35R and the stop is only
+        # 0.20R away, the stop will confirm the failure within 1-2 bars
+        # anyway — exit now at a marginally better price rather than
+        # waiting for the hard stop.
+        #
+        # Intentionally separate from THESIS_INVALID_EXIT:
+        #   - Thesis invalid targets 0.15–0.5R MFE trades specifically
+        #   - This targets any trade (including mfe_r=0) that is bleeding
+        #     toward the stop slowly without triggering OIE or dominance
+        #
+        # Guards that prevent firing on healthy trades:
+        #   pnl_r < -0.35   — trade must already be meaningfully wrong
+        #   proximity < 0.20 — within 0.20R of the original stop
+        #   mfe_r < 0.5     — trail hasn't activated; once trail is live
+        #                     it owns the trade, this exit steps aside
+        #
+        # Debug: [STOP_PROXIMITY_EXIT] lines show every fire with full
+        # state so you can audit if it's cutting anything it shouldn't.
+        if mfe_r < 0.5 and pnl_r < -0.35:
+            if side == 1:
+                prox_r = (current_price - trade.get("initial_stop", trade["stop_loss"])) / R
+            else:
+                prox_r = (trade.get("initial_stop", trade["stop_loss"]) - current_price) / R
+
+            if prox_r < 0.20:
+                entry_time_str = trade.get("entry_time", "?")
+                print(f"[STOP_PROXIMITY_EXIT] {entry_time_str} | side={trade['side']} | "
+                      f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} prox_r={prox_r:.3f} | "
+                      f"bars={_bars} exit_price={current_price:.5f} R={R:.5f}")
+                self._exit(current_price, idx, "stop_proximity_exit")
+                return
+
+        # ── OPPOSITE IMPULSE EXIT (matches lifecycle.py exactly)
         if self.opposite_impulse_exit(window_5m, side, trade=trade):
+            if side == 1:
+                oie_stop_proximity = (current_price - trade.get("initial_stop", trade["stop_loss"])) / R
+            else:
+                oie_stop_proximity = (trade.get("initial_stop", trade["stop_loss"]) - current_price) / R
+            oie_drawdown_from_peak = mfe_r - pnl_r
+            entry_time_str = trade.get("entry_time", "?")
+            print(f"[OIE_FIRE] {entry_time_str} | side={trade['side']} | "
+                  f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
+                  f"stop_proximity_r={oie_stop_proximity:.3f} drawdown_from_peak={oie_drawdown_from_peak:.3f} | "
+                  f"bars={_bars} exit_price={current_price:.5f}")
             self._exit(current_price, idx, "opposite_impulse")
             return
 
@@ -677,6 +835,20 @@ class SignalBacktester:
     # ------------------------
     # Run backtest
     # ------------------------
+
+    def _counterfactual_would_stop(self, trade, exec_df):
+        exit_idx = int(trade["exit_idx"])
+        stop     = trade["initial_stop"]
+        side     = trade["side"]
+        future   = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
+        if future.empty:
+            return False
+        if side == 1:
+            return (future["low"] <= stop).any()
+        else:
+            return (future["high"] >= stop).any()
+        
+    
     def run(self):
         df_5m = self.lltf_df if hasattr(self, 'lltf_df') else self.df
         equity = []
@@ -730,6 +902,273 @@ class SignalBacktester:
             trades_df["direction"] = trades_df["side"].map({1: "LONG", -1: "SHORT"})
             trades_df["pnl_pct"]   = trades_df["pnl"] / self.initial_balance * 100
             trades_df["truncated"] = trades_df["exit_reason"] == "end_of_data"
+
+            # ── DOMINANCE EXIT COUNTERFACTUAL ──────────────────────────
+            # For each dominance exit, look at what happened in the next
+            # 48 bars. Did price hit the original stop? Or did it recover?
+            exec_df = self.lltf_df if hasattr(self, 'lltf_df') else self.df
+            dom_exits = trades_df[trades_df["exit_reason"] == "dominance_exit"]
+            if not dom_exits.empty:
+                print("\n=== DOMINANCE EXIT COUNTERFACTUAL ===")
+                print(f"{'Date':>22} {'side':>5} {'exit_R':>7} {'would_stop':>10} {'max_recov_R':>12} {'verdict':>10}")
+                print("-" * 72)
+                for _, t in dom_exits.iterrows():
+                    exit_idx   = int(t["exit_idx"])
+                    entry      = t["entry_price"]
+                    stop       = t["initial_stop"]
+                    side       = t["side"]
+                    R_size     = abs(entry - stop)
+                    if R_size <= 0:
+                        continue
+
+                    future = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
+                    if future.empty:
+                        continue
+
+                    if side == 1:
+                        would_stop   = (future["low"] <= stop).any()
+                        max_recov_r  = (future["high"].max() - entry) / R_size
+                    else:
+                        would_stop   = (future["high"] >= stop).any()
+                        max_recov_r  = (entry - future["low"].min()) / R_size
+
+                    max_recov_r = max(max_recov_r, 0.0)
+                    verdict = "SAVED" if would_stop else ("WINNER" if max_recov_r > 0.3 else "FLATLINED")
+
+                    entry_time_str = str(t["entry_time"])[:16]
+                    print(f"{entry_time_str:>22} {'L' if side==1 else 'S':>5} "
+                          f"{t['pnl_r']:>7.3f} {str(would_stop):>10} "
+                          f"{max_recov_r:>12.3f} {verdict:>10}")
+
+                would_stop_count = sum(
+                    1 for _, t in dom_exits.iterrows()
+                    if self._counterfactual_would_stop(t, exec_df)
+                )
+                print(f"\nOf {len(dom_exits)} dominance exits: "
+                      f"{would_stop_count} would have hit stop anyway, "
+                      f"{len(dom_exits) - would_stop_count} would have survived.")
+                print("If survivors > stop-outs, the exit is cutting winners.")
+
+            # ── STALL EXIT COUNTERFACTUAL ──────────────────────────────
+            # Same treatment as dominance_exit: for each stall_exit, look
+            # forward from the exit bar to see what actually happened —
+            # did price go on to hit the original stop (stall exit was
+            # right to cut it), or recover well past where it exited
+            # (stall exit cut a trade that was about to work)? Also
+            # breaks down by bars_since_peak and retained_frac at exit
+            # so the threshold can be tuned against real distribution,
+            # not a single guessed cutoff.
+            stall_exits = trades_df[trades_df["exit_reason"] == "slow_bleed_exit"]
+            if not stall_exits.empty:
+                print("\n=== SLOW BLEED EXIT COUNTERFACTUAL ===")
+                print(f"{'Date':>22} {'side':>5} {'exit_R':>7} {'would_stop':>10} {'max_recov_R':>12} {'verdict':>10}")
+                print("-" * 72)
+                stall_saved = 0
+                stall_survived = []
+                for _, t in stall_exits.iterrows():
+                    exit_idx   = int(t["exit_idx"])
+                    entry      = t["entry_price"]
+                    stop       = t["initial_stop"]
+                    side       = t["side"]
+                    R_size     = abs(entry - stop)
+                    if R_size <= 0:
+                        continue
+
+                    future = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
+                    if future.empty:
+                        continue
+
+                    if side == 1:
+                        would_stop  = (future["low"] <= stop).any()
+                        max_recov_r = (future["high"].max() - entry) / R_size
+                    else:
+                        would_stop  = (future["high"] >= stop).any()
+                        max_recov_r = (entry - future["low"].min()) / R_size
+
+                    max_recov_r = max(max_recov_r, 0.0)
+                    verdict = "SAVED" if would_stop else ("WINNER" if max_recov_r > 0.3 else "FLATLINED")
+                    if would_stop:
+                        stall_saved += 1
+                    else:
+                        stall_survived.append(max_recov_r)
+
+                    entry_time_str = str(t["entry_time"])[:16]
+                    print(f"{entry_time_str:>22} {'L' if side==1 else 'S':>5} "
+                          f"{t['pnl_r']:>7.3f} {str(would_stop):>10} "
+                          f"{max_recov_r:>12.3f} {verdict:>10}")
+
+                n_eval = stall_saved + len(stall_survived)
+                if n_eval:
+                    print(f"\nOf {n_eval} stall exits: {stall_saved} would have hit stop anyway, "
+                          f"{len(stall_survived)} would have survived "
+                          f"(avg max_recov_R of survivors: {sum(stall_survived)/len(stall_survived):.3f} if any)" if stall_survived else
+                          f"\nOf {n_eval} stall exits: {stall_saved} would have hit stop anyway, 0 would have survived.")
+                    print("If survivors > stop-outs, the threshold is cutting winners too early.")
+
+                # ── CALIBRATION BREAKDOWN: bars_since_peak vs retained_frac ──
+                print("\n--- Stall exit fingerprint (for threshold tuning) ---")
+                print(f"{'Date':>22} {'mfe_r':>7} {'bars_since_peak':>16} {'retained_frac':>14}")
+                print("-" * 65)
+                for _, t in stall_exits.iterrows():
+                    mfe_r_val = t["mfe_r"]
+                    bars_held_val = int(t["bars_held"])
+                    retained = t["pnl_r"] / mfe_r_val if mfe_r_val > 0 else 0.0
+                    print(f"{str(t['entry_time'])[:16]:>22} {mfe_r_val:>7.3f} "
+                          f"{bars_held_val:>16} {retained:>14.3f}")
+
+        # ── FAST STOP DEBUG ─────────────────────────────────────────────
+        # Identifies trades that hit full stop in 1-2 bars despite having
+        # some initial MFE — the "trap candle" archetype.
+        fast_stops = trades_df[
+            (trades_df["exit_reason"] == "stop_loss") &
+            (trades_df["bars_held"] <= 2) &
+            (trades_df["mfe_r"] > 0.0) &
+            (trades_df["pnl_r"] <= -0.80)
+        ] if not trades_df.empty else pd.DataFrame()
+
+        if not fast_stops.empty:
+            print("\n=== FAST STOP ANALYSIS ===")
+            print(f"{'Date':>22} {'side':>5} {'mfe_r':>7} {'mae_r':>7} {'bars':>5} {'pnl_r':>7}")
+            print("-" * 60)
+            for _, t in fast_stops.iterrows():
+                R_size = abs(t["entry_price"] - t["initial_stop"])
+                mae_r  = abs(t["_price_mae"]) / R_size if R_size > 0 else 0
+                print(f"{str(t['entry_time'])[:16]:>22} "
+                      f"{'L' if t['side']==1 else 'S':>5} "
+                      f"{t['mfe_r']:>7.3f} "
+                      f"{mae_r:>7.3f} "
+                      f"{int(t['bars_held']):>5} "
+                      f"{t['pnl_r']:>7.3f}")
+            print(f"\nTotal fast stops: {len(fast_stops)} | "
+                  f"Avg mfe_r: {fast_stops['mfe_r'].mean():.3f} | "
+                  f"Avg bars: {fast_stops['bars_held'].mean():.1f}")
+
+        # ── MID-DURATION BLEED-BACK DEBUG ────────────────────────────────
+        # Identifies trades that proved real edge (0.15R-0.5R MFE) over
+        # multiple bars, but the trail never activated (it only engages
+        # at mfe_r >= 0.5), so price round-tripped all the way back to
+        # the original full stop. This is the gap between "instant trap"
+        # (already covered by dominance_exit/fast_stop) and "trail
+        # protected" (mfe_r >= 0.5) that the edge decay data hints at.
+        bleed_back = trades_df[
+            (trades_df["exit_reason"].isin(["stop_loss", "opposite_impulse"])) &
+            (trades_df["bars_held"] > 5) &
+            (trades_df["mfe_r"] >= 0.15) &
+            (trades_df["mfe_r"] < 0.5) &
+            (trades_df["pnl_r"] < 0)
+        ] if not trades_df.empty else pd.DataFrame()
+
+        if not bleed_back.empty:
+            print("\n=== MID-DURATION BLEED-BACK ANALYSIS ===")
+            print(f"{'Date':>22} {'side':>5} {'reason':>17} {'mfe_r':>7} {'bars':>5} {'pnl_r':>7} {'give_back_R':>11}")
+            print("-" * 80)
+            for _, t in bleed_back.iterrows():
+                give_back = t["mfe_r"] - t["pnl_r"]
+                print(f"{str(t['entry_time'])[:16]:>22} "
+                      f"{'L' if t['side']==1 else 'S':>5} "
+                      f"{t['exit_reason']:>17} "
+                      f"{t['mfe_r']:>7.3f} "
+                      f"{int(t['bars_held']):>5} "
+                      f"{t['pnl_r']:>7.3f} "
+                      f"{give_back:>11.3f}")
+            print(f"\nTotal bleed-back trades: {len(bleed_back)} | "
+                  f"Avg mfe_r at peak: {bleed_back['mfe_r'].mean():.3f} | "
+                  f"Avg final pnl_r: {bleed_back['pnl_r'].mean():.3f} | "
+                  f"Avg R given back: {(bleed_back['mfe_r'] - bleed_back['pnl_r']).mean():.3f} | "
+                  f"Avg bars held: {bleed_back['bars_held'].mean():.1f}")
+
+            # ── TRAIL ACTIVATION DIAGNOSTIC ──────────────────────────
+            # mfe_r in the trades_df is a running max captured every bar,
+            # so its final value at exit IS the peak mfe_r the trade ever
+            # reached. update_dynamic_stop() gates on `if mfe_r < 0.5: return`
+            # so any trade whose peak never reached 0.5R had the trail OFF
+            # for its entire life — that's a threshold gap, not a signal
+            # problem. Trades that DID cross 0.5R but still bled back point
+            # the other way: trail was live, signal/trail-tightness is the
+            # likely cause instead.
+            TRAIL_ACTIVATION_R = 0.5  # must match update_dynamic_stop's gate
+            print("\n=== TRAIL ACTIVATION DIAGNOSTIC ===")
+            print(f"{'Date':>22} {'side':>5} {'peak_mfe_r':>10} {'pnl_r':>7} {'trail_active':>12} {'verdict':>16}")
+            print("-" * 80)
+
+            never_activated = 0
+            activated_but_lost = 0
+            for _, t in bleed_back.iterrows():
+                peak_mfe_r = t["mfe_r"]
+                trail_active = peak_mfe_r >= TRAIL_ACTIVATION_R
+                if trail_active:
+                    activated_but_lost += 1
+                    verdict = "TRAIL FAILED"
+                else:
+                    never_activated += 1
+                    verdict = "NEVER ACTIVATED"
+                print(f"{str(t['entry_time'])[:16]:>22} "
+                      f"{'L' if t['side']==1 else 'S':>5} "
+                      f"{peak_mfe_r:>10.3f} "
+                      f"{t['pnl_r']:>7.3f} "
+                      f"{str(trail_active):>12} "
+                      f"{verdict:>16}")
+
+            n = never_activated + activated_but_lost
+            if n:
+                print(f"\nOf {n} bleed-back trades:")
+                print(f"  {never_activated} ({never_activated/n*100:.0f}%) NEVER reached "
+                      f"{TRAIL_ACTIVATION_R}R — trail never turned on. TRAILING STOP threshold issue.")
+                print(f"  {activated_but_lost} ({activated_but_lost/n*100:.0f}%) reached "
+                      f"{TRAIL_ACTIVATION_R}R+ and the trail WAS live but still lost it — "
+                      f"points to SIGNAL QUALITY / trail looseness, not the activation threshold.")
+                if never_activated > activated_but_lost:
+                    print("  → Majority never activated: try lowering TRAIL_ACTIVATION_R or adding a sub-0.5R tier.")
+                else:
+                    print("  → Majority activated and still lost: tighten ATR_AFTER_ENTRY, not the activation floor.")
+
+        # ── PEAK-MFE-TO-STOP GAP ANALYSIS ────────────────────────────────
+        # For the pure stop_loss subset of bleed-back trades (OIE never
+        # fired), measures how many 5m bars elapsed between the trade's
+        # peak MFE and the final stop hit. If the gap is tiny (1-2 bars),
+        # even an aggressive trail wouldn't have had time to update and
+        # lock in the gain before the reversal ran it over — same failure
+        # mode as the "fast assault" case, just triggered from profit
+        # instead of from entry. If the gap is wider, a tighter trail in
+        # the 0.2-0.5R band would plausibly have caught it.
+        pure_stop_bleed = bleed_back[bleed_back["exit_reason"] == "stop_loss"] if not bleed_back.empty else pd.DataFrame()
+
+        if not pure_stop_bleed.empty:
+            print("\n=== PEAK-MFE-TO-STOP GAP ANALYSIS ===")
+            print(f"{'Date':>22} {'side':>5} {'mfe_r':>7} {'peak_bar':>9} {'exit_bar':>9} {'gap_bars':>9} {'gap_min':>8}")
+            print("-" * 80)
+            gaps = []
+            for _, t in pure_stop_bleed.iterrows():
+                entry_idx = int(t["entry_idx"])
+                exit_idx  = int(t["exit_idx"])
+                side      = t["side"]
+                entry     = t["entry_price"]
+                R_size    = abs(entry - t["initial_stop"])
+                if R_size <= 0:
+                    continue
+                window = exec_df.iloc[entry_idx + 1: exit_idx + 1]
+                if window.empty:
+                    continue
+                if side == 1:
+                    running_mfe = (window["high"] - entry) / R_size
+                else:
+                    running_mfe = (entry - window["low"]) / R_size
+                peak_pos     = running_mfe.values.argmax()
+                peak_bar_idx = entry_idx + 1 + peak_pos
+                gap_bars     = exit_idx - peak_bar_idx
+                gaps.append(gap_bars)
+                print(f"{str(t['entry_time'])[:16]:>22} "
+                      f"{'L' if side == 1 else 'S':>5} "
+                      f"{t['mfe_r']:>7.3f} "
+                      f"{peak_bar_idx:>9} "
+                      f"{exit_idx:>9} "
+                      f"{gap_bars:>9} "
+                      f"{gap_bars * 5:>7}m")
+            if gaps:
+                avg_gap = sum(gaps) / len(gaps)
+                fast_reversals = sum(1 for g in gaps if g <= 2)
+                print(f"\nAvg gap from peak MFE to stop hit: {avg_gap:.1f} bars ({avg_gap * 5:.0f} min)")
+                print(f"Fast reversals (≤2 bars from peak to stop): {fast_reversals}/{len(gaps)}")
 
         liquidations = len(trades_df[trades_df["exit_reason"] == "liquidated"]) if not trades_df.empty else 0
 

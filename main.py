@@ -98,14 +98,14 @@ def fetch_binance(symbol, interval, limit):
 # ==========================================================
 # SYMBOLS = [
 #     "ICXUSDT", "RUNEUSDT", "LDOUSDT", "SUIUSDT", "ADAUSDT", "APTUSDT", "LSKUSDT",
-#     "LTCUSDT", "NMRUSDT", "SSVUSDT", "THETAUSDT", "YGGUSDT", "UNIUSDT", "VETUSDT",
-#     "SANDUSDT", "TRBUSDT", "LUMIAUSDT", "IDUSDT", "ETHUSDT", "ORDIUSDT", "ZILUSDT",
-#     "TONUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT", "NFPUSDT",
-#     "KNCUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT", "GRTUSDT",
-#     "RENDERUSDT", "PAXGUSDT", "CKBUSDT", "JUPUSDT", "ZENUSDT", "IOTXUSDT", "COTIUSDT",
-#     "BNTUSDT", "STORJUSDT", "RIFUSDT", "WALUSDT",
-# ] JST CTK
-SYMBOL = "CTKUSDT"
+#     "AAVEUSDT", "APTUSDT", "SSVUSDT", "AVAXUSDT", "YGGUSDT", "UNIUSDT", "VETUSDT",
+#     "SANDUSDT", "TRBUSDT", "YFIUSDT", "IDUSDT", "ETHUSDT", "ORDIUSDT", "ZILUSDT",
+#     "XVGUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT", "NFPUSDT",
+#     "XMRUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT", "GRTUSDT",
+#     "TRXUSDT", "PAXGUSDT", "CKBUSDT", "JUPUSDT", "ZENUSDT", "IOTXUSDT", "COTIUSDT",
+#     "TIAUSDT", "STORJUSDT", "RIFUSDT", "SLPUSDT", "CFXUSDT", "ARBUSDT", "CVXUSDT",
+# ] SNX SLP
+SYMBOL = "AVAXUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -412,113 +412,113 @@ diagnostics_df = diagnose_trades(trade_log)
 # ==========================================================
 # EDGE DECAY ANALYSIS
 # ==========================================================
-def edge_decay_analysis(trades_df, lltf_df):
-    checkpoints = [3, 6, 12, 18, 24, 36, 48]
-    results = []
+# def edge_decay_analysis(trades_df, lltf_df):
+#     checkpoints = [3, 6, 12, 18, 24, 36, 48]
+#     results = []
 
-    for _, trade in trades_df.iterrows():
-        entry_idx   = int(trade['entry_idx'])
-        entry_price = trade['entry_price']
-        side        = trade['side']
-        atr         = trade['ATR']
-        final_mfe   = trade['MFE']
-        R           = abs(entry_price - trade['initial_stop'])
-        if R <= 0:
-            R = atr * 1.5
+#     for _, trade in trades_df.iterrows():
+#         entry_idx   = int(trade['entry_idx'])
+#         entry_price = trade['entry_price']
+#         side        = trade['side']
+#         atr         = trade['ATR']
+#         final_mfe   = trade['MFE']
+#         R           = abs(entry_price - trade['initial_stop'])
+#         if R <= 0:
+#             R = atr * 1.5
 
-        row = {
-            'side': side,
-            'final_mfe_r': trade['mfe_r'],
-            'final_pnl_r': trade['pnl_r'],
-            'exit_reason': trade.get('exit_reason', ''),
-        }
+#         row = {
+#             'side': side,
+#             'final_mfe_r': trade['mfe_r'],
+#             'final_pnl_r': trade['pnl_r'],
+#             'exit_reason': trade.get('exit_reason', ''),
+#         }
 
-        for bars in checkpoints:
-            end_idx = min(entry_idx + bars, len(lltf_df) - 1)
-            window  = lltf_df.iloc[entry_idx:end_idx + 1]
+#         for bars in checkpoints:
+#             end_idx = min(entry_idx + bars, len(lltf_df) - 1)
+#             window  = lltf_df.iloc[entry_idx:end_idx + 1]
 
-            if window.empty:
-                row[f'mfe_r_{bars}b'] = np.nan
-                row[f'pnl_r_{bars}b'] = np.nan
-                continue
+#             if window.empty:
+#                 row[f'mfe_r_{bars}b'] = np.nan
+#                 row[f'pnl_r_{bars}b'] = np.nan
+#                 continue
 
-            if side == 1:
-                mfe_price = window['high'].max()
-                pnl_price = window['close'].iloc[-1]
-                mfe_r = (mfe_price - entry_price) / R
-                pnl_r = (pnl_price - entry_price) / R
-            else:
-                mfe_price = window['low'].min()
-                pnl_price = window['close'].iloc[-1]
-                mfe_r = (entry_price - mfe_price) / R
-                pnl_r = (entry_price - pnl_price) / R
+#             if side == 1:
+#                 mfe_price = window['high'].max()
+#                 pnl_price = window['close'].iloc[-1]
+#                 mfe_r = (mfe_price - entry_price) / R
+#                 pnl_r = (pnl_price - entry_price) / R
+#             else:
+#                 mfe_price = window['low'].min()
+#                 pnl_price = window['close'].iloc[-1]
+#                 mfe_r = (entry_price - mfe_price) / R
+#                 pnl_r = (entry_price - pnl_price) / R
 
-            row[f'mfe_r_{bars}b'] = max(mfe_r, 0.0)
-            row[f'pnl_r_{bars}b'] = pnl_r
+#             row[f'mfe_r_{bars}b'] = max(mfe_r, 0.0)
+#             row[f'pnl_r_{bars}b'] = pnl_r
 
-        # what fraction of final MFE was present at each checkpoint?
-        for bars in checkpoints:
-            if final_mfe > 0 and not np.isnan(row.get(f'mfe_r_{bars}b', np.nan)):
-                row[f'mfe_pct_{bars}b'] = row[f'mfe_r_{bars}b'] / trade['mfe_r'] if trade['mfe_r'] > 0 else np.nan
-            else:
-                row[f'mfe_pct_{bars}b'] = np.nan
+#         # what fraction of final MFE was present at each checkpoint?
+#         for bars in checkpoints:
+#             if final_mfe > 0 and not np.isnan(row.get(f'mfe_r_{bars}b', np.nan)):
+#                 row[f'mfe_pct_{bars}b'] = row[f'mfe_r_{bars}b'] / trade['mfe_r'] if trade['mfe_r'] > 0 else np.nan
+#             else:
+#                 row[f'mfe_pct_{bars}b'] = np.nan
 
-        results.append(row)
+#         results.append(row)
 
-    result_df = pd.DataFrame(results)
+#     result_df = pd.DataFrame(results)
 
-    print("\n=== EDGE DECAY PROFILE ===")
-    print(f"{'Bars':>5} {'Time':>6} {'MFE%':>8} {'AvgPnL R':>10} {'WinMFE%':>10} {'LosMFE%':>10} {'AvgMFE R':>10}")
-    print("-" * 65)
+#     print("\n=== EDGE DECAY PROFILE ===")
+#     print(f"{'Bars':>5} {'Time':>6} {'MFE%':>8} {'AvgPnL R':>10} {'WinMFE%':>10} {'LosMFE%':>10} {'AvgMFE R':>10}")
+#     print("-" * 65)
 
-    winners = result_df[result_df['final_mfe_r'] >= 0.5]
-    losers  = result_df[result_df['final_mfe_r'] <  0.5]
+#     winners = result_df[result_df['final_mfe_r'] >= 0.5]
+#     losers  = result_df[result_df['final_mfe_r'] <  0.5]
 
-    for bars in checkpoints:
-        mfe_pct_col = f'mfe_pct_{bars}b'
-        pnl_col     = f'pnl_r_{bars}b'
-        mfe_r_col   = f'mfe_r_{bars}b'
+#     for bars in checkpoints:
+#         mfe_pct_col = f'mfe_pct_{bars}b'
+#         pnl_col     = f'pnl_r_{bars}b'
+#         mfe_r_col   = f'mfe_r_{bars}b'
 
-        avg_mfe_pct = result_df[mfe_pct_col].mean()
-        avg_pnl     = result_df[pnl_col].mean()
-        win_mfe_pct = winners[mfe_pct_col].mean() if not winners.empty else np.nan
-        los_mfe_pct = losers[mfe_pct_col].mean()  if not losers.empty  else np.nan
-        avg_mfe_r   = result_df[mfe_r_col].mean()
+#         avg_mfe_pct = result_df[mfe_pct_col].mean()
+#         avg_pnl     = result_df[pnl_col].mean()
+#         win_mfe_pct = winners[mfe_pct_col].mean() if not winners.empty else np.nan
+#         los_mfe_pct = losers[mfe_pct_col].mean()  if not losers.empty  else np.nan
+#         avg_mfe_r   = result_df[mfe_r_col].mean()
 
-        print(
-            f"{bars:>5} "
-            f"{bars*5:>5}m "
-            f"{avg_mfe_pct:>8.1%} "
-            f"{avg_pnl:>10.3f} "
-            f"{win_mfe_pct:>10.1%} "
-            f"{los_mfe_pct:>10.1%} "
-            f"{avg_mfe_r:>10.3f}"
-        )
+#         print(
+#             f"{bars:>5} "
+#             f"{bars*5:>5}m "
+#             f"{avg_mfe_pct:>8.1%} "
+#             f"{avg_pnl:>10.3f} "
+#             f"{win_mfe_pct:>10.1%} "
+#             f"{los_mfe_pct:>10.1%} "
+#             f"{avg_mfe_r:>10.3f}"
+#         )
 
-    # when does average PnL peak?
-    pnl_by_time = [result_df[f'pnl_r_{b}b'].mean() for b in checkpoints]
-    peak_idx    = int(np.nanargmax(pnl_by_time))
-    peak_bar    = checkpoints[peak_idx]
-    print(f"\nAvg PnL peaks at bar {peak_bar} ({peak_bar * 5} min) — holding longer costs edge on average")
+#     # when does average PnL peak?
+#     pnl_by_time = [result_df[f'pnl_r_{b}b'].mean() for b in checkpoints]
+#     peak_idx    = int(np.nanargmax(pnl_by_time))
+#     peak_bar    = checkpoints[peak_idx]
+#     print(f"\nAvg PnL peaks at bar {peak_bar} ({peak_bar * 5} min) — holding longer costs edge on average")
 
-    # exit reason breakdown
-    print("\n--- Exit reason vs avg R ---")
-    for reason, grp in result_df.groupby('exit_reason'):
-        print(f"  {reason:<25} n={len(grp):>3}  avg_final_pnl_r={grp['final_pnl_r'].mean():>6.3f}")
+#     # exit reason breakdown
+#     print("\n--- Exit reason vs avg R ---")
+#     for reason, grp in result_df.groupby('exit_reason'):
+#         print(f"  {reason:<25} n={len(grp):>3}  avg_final_pnl_r={grp['final_pnl_r'].mean():>6.3f}")
 
-    # front-load score: what % of final MFE is captured in first 30 min?
-    fl = result_df['mfe_pct_6b'].mean()
-    print(f"\nFront-load score (MFE% at 30 min): {fl:.1%}")
-    if fl >= 0.70:
-        print("  → FRONT-LOADED. Most edge is gone by bar 6. Prioritize fast profit lock.")
-    elif fl >= 0.45:
-        print("  → GRADUAL BUILD. Edge persists past 30 min. Tighter trail is the fix.")
-    else:
-        print("  → SLOW STARTER. Edge develops late. Check if entries are early enough.")
+#     # front-load score: what % of final MFE is captured in first 30 min?
+#     fl = result_df['mfe_pct_6b'].mean()
+#     print(f"\nFront-load score (MFE% at 30 min): {fl:.1%}")
+#     if fl >= 0.70:
+#         print("  → FRONT-LOADED. Most edge is gone by bar 6. Prioritize fast profit lock.")
+#     elif fl >= 0.45:
+#         print("  → GRADUAL BUILD. Edge persists past 30 min. Tighter trail is the fix.")
+#     else:
+#         print("  → SLOW STARTER. Edge develops late. Check if entries are early enough.")
 
-    return result_df
+#     return result_df
 
-decay_df = edge_decay_analysis(trade_log, backtester.lltf_df)
+# decay_df = edge_decay_analysis(trade_log, backtester.lltf_df)
 
 # # ==========================================================
 # # EXIT COUNTERFACTUAL

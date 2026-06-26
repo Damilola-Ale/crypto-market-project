@@ -601,10 +601,10 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     
     displacement_ok = df['DISPLACEMENT_SCORE'] > 0.15
     displacement_long_ok  = (
-        df['BREAK_RESISTANCE'] & (df['DISPLACEMENT_SCORE'] > 0.4)
+        df['BREAK_RESISTANCE'] & (df['DISPLACEMENT_SCORE'] > 0.5)
     )
     displacement_short_ok = (
-        df['BREAK_SUPPORT'] & (df['DISPLACEMENT_SCORE'] > 0.4)
+        df['BREAK_SUPPORT'] & (df['DISPLACEMENT_SCORE'] > 0.5)
     )
     df['displacement_long_ok']  = displacement_long_ok
     df['displacement_short_ok'] = displacement_short_ok
@@ -1661,7 +1661,7 @@ def expansion_maturity(df, lookback=20):
     # FLOW_STRENGTH is already computed in participation_state().
     # Read it directly — no re-smoothing, no re-compositing.
     # --------------------------------------------------
-    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.5
+    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.45
 
     # --------------------------------------------------
     # 3. EARLY_EXPANSION DEFINITION
@@ -1879,8 +1879,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # LONG_CONDITION &= df['ENTRY_LONG']
     # SHORT_CONDITION &= df['ENTRY_SHORT']
 
-    LONG_CONDITION &= HTF_OK
-    SHORT_CONDITION &= HTF_OK
+    # LONG_CONDITION &= HTF_OK
+    # SHORT_CONDITION &= HTF_OK
 
     # LONG_CONDITION  &= df['LOCATION_LONG_OK']
     # SHORT_CONDITION &= df['LOCATION_SHORT_OK']
