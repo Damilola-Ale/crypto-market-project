@@ -1307,17 +1307,16 @@ def run_hourly_for_symbol(
                         f"ltf_index={int(row_5m['ltf_index'])}"
                     )
 
-            has_position = symbol in pm.positions
-            if has_position:
-                pos = pm.positions[symbol]
-                notifier.debug(
-                    f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(_)} | "
-                    f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
-                    f"entry={pos['entry_price']:.6f} | "
-                    f"stop={pos['stop_loss']:.6f} | "
-                    f"bars={pos.get('bars_in_trade', 0)} | "
-                    f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
-                )
+        if symbol in pm.positions:
+            pos = pm.positions[symbol]
+            notifier.debug(
+                f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(new_bars.index[-1])} | "
+                f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
+                f"entry={pos['entry_price']:.6f} | "
+                f"stop={pos['stop_loss']:.6f} | "
+                f"bars={pos.get('bars_in_trade', 0)} | "
+                f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
+            )
 
         if not replay and replay_cursor is None:
             if not new_bars.empty:
