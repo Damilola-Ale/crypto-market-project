@@ -633,15 +633,15 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     flow_bias_short = close_location_bias < 0.5
 
     df['VALID_BREAK_LONG'] = (
-        df['EARLY_EXPANSION'] &
+        # df['EARLY_EXPANSION'] &
         # displacement_long_ok &
         flow_bias_long 
         # df['MICRO_BREAK_LONG']
     )
 
     df['VALID_BREAK_SHORT'] = (
-        df['EARLY_EXPANSION'] &
-        displacement_short_ok &
+        # df['EARLY_EXPANSION'] &
+        # displacement_short_ok &
         flow_bias_short 
         # df['MICRO_BREAK_SHORT']
     )
@@ -1851,10 +1851,15 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
         htf_compressed_aligned
     )
 
-    # HTF_SHORT_OK = (
-    #     (df['HTF_DIRECTION'] == -1) 
-    #     # (df['LTF_DIRECTION'] == -1)
-    # )
+    HTF_SHORT_OK = (
+        (df['HTF_DIRECTION'] == -1) 
+        # (df['LTF_DIRECTION'] == -1)
+    )
+
+    HTF_LONG_OK = (
+        (df['HTF_DIRECTION'] == 1) 
+        # (df['LTF_DIRECTION'] == -1)
+    )
 
     # =========================
     # PREDICTIVE MODULES
@@ -1879,8 +1884,8 @@ def generate_signal(df, htf_df, atr_mult=1.5, live=False, as_of=None, symbol="?"
     # LONG_CONDITION &= df['ENTRY_LONG']
     # SHORT_CONDITION &= df['ENTRY_SHORT']
 
-    # LONG_CONDITION &= HTF_OK
-    # SHORT_CONDITION &= HTF_OK
+    # LONG_CONDITION &= HTF_LONG_OK
+    # SHORT_CONDITION &= HTF_SHORT_OK
 
     # LONG_CONDITION  &= df['LOCATION_LONG_OK']
     # SHORT_CONDITION &= df['LOCATION_SHORT_OK']
