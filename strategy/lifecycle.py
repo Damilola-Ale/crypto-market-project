@@ -163,9 +163,32 @@ class PositionManager:
                     entry_ts = pd.Timestamp(position["entry_5m_ts"])
                     if entry_ts.tzinfo is None:
                         entry_ts = entry_ts.tz_localize("UTC")
-                    history_df = lltf_df[lltf_df.index >= entry_ts].copy()
+                    else:
+                        entry_ts = entry_ts.tz_convert("UTC")
+
+                    # Normalise current_ts to UTC so the upper-bound
+                    # comparison doesn't silently drop bars on tz mismatch
+                    _current_ts_utc = current_ts
+                    if hasattr(_current_ts_utc, "tzinfo"):
+                        if _current_ts_utc.tzinfo is None:
+                            _current_ts_utc = pd.Timestamp(_current_ts_utc).tz_localize("UTC")
+                        else:
+                            _current_ts_utc = pd.Timestamp(_current_ts_utc).tz_convert("UTC")
+
+                    # Normalise lltf_df index to UTC before slicing —
+                    # a tz-naive index compared against a tz-aware entry_ts
+                    # returns an empty slice silently, which is why the
+                    # rebuild always produces 0 bars and the window stays at 2.
+                    _lltf_idx = lltf_df.index
+                    if _lltf_idx.tzinfo is None:
+                        _lltf_for_rebuild = lltf_df.copy()
+                        _lltf_for_rebuild.index = _lltf_idx.tz_localize("UTC")
+                    else:
+                        _lltf_for_rebuild = lltf_df
+
+                    history_df = _lltf_for_rebuild[_lltf_for_rebuild.index >= entry_ts].copy()
                     # exclude the current bar — we append it fresh below
-                    history_df = history_df[history_df.index < current_ts]
+                    history_df = history_df[history_df.index < _current_ts_utc]
                     rebuilt = []
                     for ts_h, row_h in history_df.iterrows():
                         rebuilt.append({

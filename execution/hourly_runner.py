@@ -487,7 +487,7 @@ def run_hourly():
 
             _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
             try:
-                resync_result = run_hourly_for_symbol(open_symbol)
+                resync_result = run_hourly_for_symbol(open_symbol, external_pm=pm_check)
                 resync_summary = (
                     resync_result[0] if isinstance(resync_result, tuple)
                     else resync_result
@@ -511,7 +511,7 @@ def run_hourly():
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
 
         try:
-            result = run_hourly_for_symbol(symbol)
+            result = run_hourly_for_symbol(symbol, external_pm=pm_check)
             if isinstance(result, tuple):
                 summary, _ = result
             else:
