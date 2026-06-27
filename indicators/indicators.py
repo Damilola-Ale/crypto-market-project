@@ -634,7 +634,7 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
 
     df['VALID_BREAK_LONG'] = (
         df['EARLY_EXPANSION'] &
-        displacement_long_ok &
+        # displacement_long_ok &
         flow_bias_long 
         # df['MICRO_BREAK_LONG']
     )
