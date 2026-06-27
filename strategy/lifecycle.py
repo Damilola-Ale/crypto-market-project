@@ -54,7 +54,7 @@ class PositionManager:
     # TRADE LIFECYCLE SETTINGS (mirrors SignalBacktester exactly)
     # ==========================================================
     POSITION_VALUE_USDT  = 10    # floor — never go below this
-    RISK_PCT_OF_ACCOUNT  = 0.30  # 20% of account per trade
+    RISK_PCT_OF_ACCOUNT  = 0.10  # 20% of account per trade
     ACCOUNT_THRESHOLD    = 25.0  # only scale above this balance
     MAX_SIMULTANEOUS     = 3    # hard cap on open trades
     INCUBATION_BARS = 6        # 30 minutes (6×5m)
