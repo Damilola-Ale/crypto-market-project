@@ -655,6 +655,34 @@ class SignalBacktester:
         # ── 5m window for exit checks ──────────────────────────
         window_5m = self.get_5m_window(trade["entry_time"], current_time)
 
+        # ── EXIT AUDIT (last 12 bars = 1h, printed after run) ──
+        _mae_r_for_audit = abs(trade.get("_price_mae", 0.0)) / R if R > 0 else 0.0
+        _exec_row = exec_df.iloc[idx]
+        _atr_5m_val = exec_df["ATR_5M"].iloc[idx] if "ATR_5M" in exec_df.columns else None
+        if not pd.isna(_atr_5m_val) and _atr_5m_val > 0:
+            pass
+        else:
+            _atr_5m_val = None
+        if not hasattr(self, "_audit_log"):
+            self._audit_log = []
+        self._audit_log.append({
+            "ts": current_time,
+            "side": side,
+            "bars": trade.get("bars_in_trade", 0),
+            "mfe_r": mfe_r,
+            "pnl_r": pnl_r,
+            "mae_r": _mae_r_for_audit,
+            "bar_open": float(_exec_row["open"]),
+            "bar_high": float(_exec_row["high"]),
+            "bar_low":  float(_exec_row["low"]),
+            "bar_close": float(_exec_row["close"]),
+            "stop_loss": trade["stop_loss"],
+            "initial_stop": trade.get("initial_stop", trade["stop_loss"]),
+            "R": R,
+            "atr_5m": _atr_5m_val,
+            "window_5m": window_5m.copy(),
+        })
+
         # ── DYNAMIC TRAILING STOP (mirrors lifecycle.py) ───────
         if "ATR_5M" in exec_df.columns:
             atr = exec_df["ATR_5M"].iloc[idx]
@@ -1187,6 +1215,30 @@ class SignalBacktester:
             "leverage":         self.leverage,
             "liquidations":     liquidations,
         }
+
+        # ── PRINT LAST 12 BARS OF EXIT AUDIT (for live comparison) ──
+        if hasattr(self, "_audit_log") and self._audit_log:
+            from strategy.exit_audit import format_exit_audit
+            print("\n=== EXIT FILTER AUDIT (last 12 bars) ===")
+            for entry in self._audit_log[-12:]:
+                print(format_exit_audit(
+                    symbol="BACKTEST",
+                    side=entry["side"],
+                    bars=entry["bars"],
+                    mfe_r=entry["mfe_r"],
+                    pnl_r=entry["pnl_r"],
+                    mae_r=entry["mae_r"],
+                    bar_open=entry["bar_open"],
+                    bar_high=entry["bar_high"],
+                    bar_low=entry["bar_low"],
+                    bar_close=entry["bar_close"],
+                    stop_loss=entry["stop_loss"],
+                    initial_stop=entry["initial_stop"],
+                    R=entry["R"],
+                    atr_5m=entry["atr_5m"],
+                    window_5m=entry["window_5m"],
+                ))
+            self._audit_log = []
 
         return {
             "summary":      summary,

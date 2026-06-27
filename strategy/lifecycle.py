@@ -319,6 +319,28 @@ class PositionManager:
                 _price_mfe = position.get("MFE", 0.0) / position.get("units", 1) if position.get("units", 0) > 0 else position.get("MFE", 0.0)
                 _mae_r = abs(position.get("MAE", 0.0)) / R if R > 0 else 0.0
 
+                # ── EXIT FILTER AUDIT (live — every bar) ─────────────
+                from strategy.exit_audit import format_exit_audit
+                _mae_r_live = abs(position.get("MAE", 0.0)) / R if R > 0 else 0.0
+                _atr_5m_live = atr_5m if atr_5m and not pd.isna(atr_5m) and atr_5m > 0 else None
+                _tg_debug(format_exit_audit(
+                    symbol=symbol,
+                    side=side,
+                    bars=_bars,
+                    mfe_r=mfe_r_now,
+                    pnl_r=position.get("pnl_r", 0.0),
+                    mae_r=_mae_r_live,
+                    bar_open=o,
+                    bar_high=h,
+                    bar_low=l,
+                    bar_close=c,
+                    stop_loss=position["stop_loss"],
+                    initial_stop=position.get("initial_stop", position["stop_loss"]),
+                    R=R,
+                    atr_5m=_atr_5m_live,
+                    window_5m=window_5m,
+                ))
+
                 if _bars == 3 and mfe_r_now == 0.0 and _mae_r > 0.50:
                     try_exit("dominance_exit", current_price)
 

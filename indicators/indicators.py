@@ -633,16 +633,16 @@ def validated_breakouts(df, body_ratio=0.6, atr_mult=1.2):
     flow_bias_short = close_location_bias < 0.5
 
     df['VALID_BREAK_LONG'] = (
-        df['EARLY_EXPANSION'] 
-        # displacement_long_ok &
-        # flow_bias_long 
+        df['EARLY_EXPANSION'] &
+        displacement_long_ok &
+        flow_bias_long 
         # df['MICRO_BREAK_LONG']
     )
 
     df['VALID_BREAK_SHORT'] = (
-        df['EARLY_EXPANSION'] 
-        # displacement_short_ok &
-        # flow_bias_short 
+        df['EARLY_EXPANSION'] &
+        displacement_short_ok &
+        flow_bias_short 
         # df['MICRO_BREAK_SHORT']
     )
 
@@ -1661,7 +1661,7 @@ def expansion_maturity(df, lookback=20):
     # FLOW_STRENGTH is already computed in participation_state().
     # Read it directly — no re-smoothing, no re-compositing.
     # --------------------------------------------------
-    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.05
+    flow_confirming = df['FLOW_STRENGTH'].abs() > 0.45
 
     # --------------------------------------------------
     # 3. EARLY_EXPANSION DEFINITION
