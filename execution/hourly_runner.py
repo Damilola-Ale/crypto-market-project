@@ -737,15 +737,22 @@ def run_hourly_for_symbol(
                     )
                     os.remove(cursor_file)
                 elif last_seen_ts >= current_5m_boundary:
-                    # Cursor is current — skip regardless of position state.
-                    # If a position is open, exit checks already ran when this
-                    # symbol processed this bar in its normal pass. Running again
-                    # duplicates Telegram messages and double-increments bars_in_trade.
-                    print(
-                        f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= "
-                        f"boundary {current_5m_boundary}, already current, skipping"
-                    )
-                    return None
+                    # Cursor is current. Skip UNLESS we were called with an
+                    # external_pm that has an open position for this symbol —
+                    # in that case the cursor reflects a previous pass in this
+                    # same tick and we still need to run exit checks on any
+                    # bars the shared PM hasn't processed yet.
+                    if external_pm is not None and symbol in external_pm.positions:
+                        print(
+                            f"[FAST GATE BYPASS] {symbol} — cursor current but "
+                            f"shared PM has open position, proceeding for exit checks"
+                        )
+                    else:
+                        print(
+                            f"[FAST GATE] {symbol} — cursor {last_seen_ts} >= "
+                            f"boundary {current_5m_boundary}, already current, skipping"
+                        )
+                        return None
                 else:
                     print(
                         f"[FAST GATE PASS] {symbol} — cursor {last_seen_ts} < "
@@ -755,9 +762,20 @@ def run_hourly_for_symbol(
             except Exception as e:
                 _tg_debug(f"[FAST GATE ERROR] {symbol} — {e}, proceeding")
 
-    # FIX 2: use external PM if provided (replay), else instantiate normally
+    # Use external PM if provided — this keeps bar_history alive across
+    # symbol passes in the same tick without re-loading from disk.
+    # When external_pm is provided and this symbol has an open position,
+    # skip the fast gate entirely — the gate reads the on-disk cursor
+    # which may not reflect bars already processed by this PM instance
+    # in the same tick, causing double-processing of the same bars.
     if external_pm is not None:
         pm = external_pm
+        # If we already have an open position for this symbol in the
+        # shared PM, bypass the fast gate — it was designed to prevent
+        # redundant full-symbol runs, but with a shared PM the bar history
+        # is in memory and we need to process new bars regardless of cursor.
+        if symbol in pm.positions and is_live:
+            pass  # proceed — don't return early based on stale cursor
     else:
         pm = PositionManager(persist=True, notify=notify)
 
