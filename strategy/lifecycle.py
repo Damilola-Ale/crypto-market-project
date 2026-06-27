@@ -358,6 +358,12 @@ class PositionManager:
             # increment real trade age AFTER exit checks (backtest parity)
             position["bars_in_trade"] += 1
             self._dirty = True
+            # Persist bar history immediately so the next PM instance
+            # (fresh cron tick or resync) gets the full window.
+            # Without this, every new instance rebuilds from lltf_df
+            # and gets a 1-2 bar window, permanently breaking OIE.
+            if self.persist:
+                self._save()
         
         # =====================================================
         # 🔓 REENTRY UNLOCK LOGIC

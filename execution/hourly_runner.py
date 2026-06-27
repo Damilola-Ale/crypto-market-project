@@ -476,6 +476,15 @@ def run_hourly():
             cur_ts = _cursor_ts(_read_5m_cursor(open_symbol))
             if cur_ts is not None and _max_cursor_seen is not None and cur_ts >= _max_cursor_seen:
                 continue  # already caught up
+
+            # Skip if this open symbol's cursor already matches the symbol
+            # that triggered the resync — means it was processed this tick
+            # and reprocessing would just replay the same bars again,
+            # causing the alternating-timestamp / double-increment bug.
+            _triggering_cursor = _cursor_ts(_read_5m_cursor(symbol))
+            if cur_ts is not None and _triggering_cursor is not None and cur_ts >= _triggering_cursor:
+                continue
+
             _rl.wait_if_needed_for_symbol(open_symbol, n_timeframes=3, pages_per_tf=2)
             try:
                 resync_result = run_hourly_for_symbol(open_symbol)
