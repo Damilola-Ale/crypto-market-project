@@ -346,16 +346,18 @@ class PositionManager:
                         try_exit("thesis_invalidation_exit", current_price)
 
                 # ── STOP PROXIMITY EXIT ──────────────────────────────
-                # Trade (including mfe_r=0) is bleeding toward the stop
-                # without triggering OIE or dominance. Exit now rather
-                # than waiting for the hard stop to confirm failure.
                 if exit_reason is None and mfe_r_now < 0.5:
                     pnl_r_now = position.get("pnl_r", 0.0)
                     if pnl_r_now < -0.35:
+                        # Use close price for proximity — consistent with
+                        # pnl_r which is also close-based. Using current_price
+                        # (bar high for longs) gives a misleadingly comfortable
+                        # reading when close is already near the stop.
+                        initial_stop = position.get("initial_stop", position["stop_loss"])
                         if side == 1:
-                            prox_r = (current_price - position.get("initial_stop", position["stop_loss"])) / R
+                            prox_r = (c - initial_stop) / R
                         else:
-                            prox_r = (position.get("initial_stop", position["stop_loss"]) - current_price) / R
+                            prox_r = (initial_stop - c) / R
                         if prox_r < 0.20:
                             try_exit("stop_proximity_exit", current_price)
 
