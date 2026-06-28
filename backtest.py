@@ -1216,11 +1216,28 @@ class SignalBacktester:
             "liquidations":     liquidations,
         }
 
-        # ── PRINT LAST 12 BARS OF EXIT AUDIT (for live comparison) ──
+        # ── PRINT LAST HOUR OF EXIT AUDIT (for live comparison) ──
         if hasattr(self, "_audit_log") and self._audit_log:
             from strategy.exit_audit import format_exit_audit
-            print("\n=== EXIT FILTER AUDIT (last 12 bars) ===")
-            for entry in self._audit_log[-12:]:
+            # Group audit log by trade (reset when bars_in_trade resets to 1)
+            # and take only the last trade's entries, then filter to last hour
+            trades_in_log = []
+            current_group = []
+            for e in self._audit_log:
+                if e["bars"] == 1 and current_group:
+                    trades_in_log.append(current_group)
+                    current_group = []
+                current_group.append(e)
+            if current_group:
+                trades_in_log.append(current_group)
+
+            # Take the last trade's audit entries, then filter to last hour
+            last_trade_log = trades_in_log[-1] if trades_in_log else []
+            cutoff_ts = last_trade_log[-1]["ts"] - pd.Timedelta(hours=1) if last_trade_log else None
+            recent = [e for e in last_trade_log if cutoff_ts is None or e["ts"] >= cutoff_ts]
+
+            print(f"\n=== EXIT FILTER AUDIT (last hour of most recent trade: {len(recent)} bars) ===")
+            for entry in recent:
                 print(format_exit_audit(
                     symbol="BACKTEST",
                     side=entry["side"],
@@ -1237,6 +1254,7 @@ class SignalBacktester:
                     R=entry["R"],
                     atr_5m=entry["atr_5m"],
                     window_5m=entry["window_5m"],
+                    ts=entry["ts"],
                 ))
             self._audit_log = []
 

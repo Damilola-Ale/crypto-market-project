@@ -81,6 +81,7 @@ def format_exit_audit(
     R,
     atr_5m,         # 5m ATR (may be None)
     window_5m,      # pd.DataFrame of 5m bars since entry
+    ts=None,
 ):
     if R <= 0:
         return f"[EXIT AUDIT] {symbol} — R=0, skipping"

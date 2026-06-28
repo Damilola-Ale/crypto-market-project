@@ -120,6 +120,17 @@ class PositionManager:
         signal = 0 if pd.isna(external_signal) else int(external_signal)
         position = self.positions.get(symbol)
 
+        # ── DUPLICATE BAR GUARD ─────────────────────────────────
+        # Resync calls can deliver the same 5m bar multiple times
+        # in one tick. Track the last processed bar per symbol and
+        # skip exit checks (but not entry checks) if it's the same.
+        _last_processed = getattr(self, '_last_processed_bar', {})
+        _this_bar_ts = current_5m_row.name
+        _already_processed = _last_processed.get(symbol) == _this_bar_ts
+        if not hasattr(self, '_last_processed_bar'):
+            self._last_processed_bar = {}
+        self._last_processed_bar[symbol] = _this_bar_ts
+
         o = float(current_5m_row["open"])
         h = float(current_5m_row["high"])
         l = float(current_5m_row["low"])
@@ -137,7 +148,7 @@ class PositionManager:
         # -------------------------------------------------------
         # APPEND current 5M bar to history (for window checks)
         # -------------------------------------------------------
-        if position:
+        if position and not _already_processed:
 
             # APPEND BAR FIRST
             atr_5m = float(current_5m_row["ATR_5M"]) if "ATR_5M" in current_5m_row.index and not pd.isna(current_5m_row["ATR_5M"]) else None
