@@ -1307,7 +1307,20 @@ def run_hourly_for_symbol(
                         f"ltf_index={int(row_5m['ltf_index'])}"
                     )
 
-        if symbol in pm.positions:
+        # Determine whether this tick produced anything beyond the forming
+        # placeholder bar. Used to (a) hold the cursor at its previous value
+        # instead of consuming the placeholder's timestamp, and (b) suppress
+        # duplicate "TRADE ACTIVE" notifies when nothing actually changed.
+        _new_bars_all_placeholder = False
+        if not new_bars.empty:
+            _latest_row = lltf_frozen.loc[new_bars.index[-1]]
+            _latest_is_placeholder = (
+                _latest_row.get("volume", 0) == 0
+                and _latest_row["high"] == _latest_row["low"] == _latest_row["open"]
+            )
+            _new_bars_all_placeholder = _latest_is_placeholder and len(new_bars) == 1
+
+        if symbol in pm.positions and not _new_bars_all_placeholder:
             pos = pm.positions[symbol]
             notifier.debug(
                 f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(new_bars.index[-1])} | "
@@ -1323,18 +1336,23 @@ def run_hourly_for_symbol(
                 has_open_position = symbol in pm.positions
 
                 if has_open_position:
-                    # Only hold the cursor back if the LATEST bar is still
-                    # a placeholder — meaning it hasn't been revalidated with
-                    # real OHLC yet. Otherwise advance fully like normal,
-                    # so the cursor doesn't get stuck reprocessing forever.
                     _latest_row = lltf_frozen.loc[new_bars.index[-1]]
                     _latest_is_placeholder = (
                         _latest_row.get("volume", 0) == 0
                         and _latest_row["high"] == _latest_row["low"] == _latest_row["open"]
                     )
-                    if _latest_is_placeholder and len(new_bars) >= 2:
-                        last_clean_ts = new_bars.index[-2]
-                        print(f"[CURSOR HELD] {symbol} — latest bar is placeholder, holding at {last_clean_ts}")
+                    if _latest_is_placeholder:
+                        if len(new_bars) >= 2:
+                            last_clean_ts = new_bars.index[-2]
+                            print(f"[CURSOR HELD] {symbol} — latest bar is placeholder, holding at {last_clean_ts}")
+                        else:
+                            # Only the placeholder is new this tick — do NOT
+                            # advance onto its timestamp. Advancing here means
+                            # the real bar that later closes at this exact
+                            # timestamp gets filtered out by `> last_seen`
+                            # next tick and is never processed at all.
+                            last_clean_ts = last_seen
+                            print(f"[CURSOR HELD] {symbol} — only placeholder seen, holding at {last_clean_ts}")
                     else:
                         last_clean_ts = new_bars.index[-1]
                 else:
