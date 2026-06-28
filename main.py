@@ -106,7 +106,7 @@ def fetch_binance(symbol, interval, limit):
 #     "TIAUSDT", "STORJUSDT", "RIFUSDT", "SLPUSDT", "CFXUSDT", "ARBUSDT", "CVXUSDT",
 #     "FETUSDT", "FILUSDT", "GALAUSDT"
 # ] 
-SYMBOL = "APTUSDT"
+SYMBOL = "ICXUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -143,13 +143,13 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 2000   # ~30 days of 1h candles
 # HTF_LIMIT = 500   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 12000
-# LTF_LIMIT = 1000   # ~30 days of 1h candles
-# HTF_LIMIT = 250   # ~120 days of 4h candles
+LLTF_LIMIT = 12000
+LTF_LIMIT = 1000   # ~30 days of 1h candles
+HTF_LIMIT = 250   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 9600
-# LTF_LIMIT = 800   # ~30 days of 1h candles
-# HTF_LIMIT = 200   # ~120 days of 4h candles
+LLTF_LIMIT = 1500
+LTF_LIMIT = 125   # ~30 days of 1h candles
+HTF_LIMIT = 31   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
@@ -350,10 +350,15 @@ htf_df = load_or_fetch(SYMBOL, HTF_INTERVAL, HTF_LIMIT, now_utc)
 
 # Drop current incomplete 1H bar
 current_1h_boundary = now_utc.floor("h")
-ltf_df = ltf_df[ltf_df.index < current_1h_boundary].copy()
-
 current_4h_open = now_utc.floor("4h")
 htf_df = htf_df[htf_df.index < current_4h_open].copy()
+
+# Save raw copies BEFORE any trimming — needed for backtest freeze
+lltf_df_bt_full = lltf_df.copy()
+ltf_df_bt_full  = ltf_df.copy()  # includes current open 1H bar
+
+# Signal generation uses closed bars only
+ltf_df = ltf_df[ltf_df.index < current_1h_boundary].copy()
 print(f"[DEBUG] now_utc={now_utc.strftime('%Y-%m-%d %H:%M UTC')} | current_4h_open={current_4h_open} | last_closed_4h={htf_df.index[-1]} len={len(htf_df)}")
 
 # lltf_df.index = pd.to_datetime(lltf_df.index, utc=True)
@@ -386,13 +391,31 @@ print(f"[DEBUG] ltf_df shape: {ltf_df.shape}, first={ltf_df.index[0]}, last={ltf
 # BACKTEST
 # ==========================================================
 
-backtester = SignalBacktester(ltf_df, htf_df=htf_df, lltf_df=lltf_df, leverage=LEVERAGE)
+# Freeze backtest at current 5m bar so audit matches live
+FREEZE_AT = pd.Timestamp.now(tz="UTC").floor("5min")
+lltf_df_bt = lltf_df_bt_full[lltf_df_bt_full.index <= FREEZE_AT].copy()
+ltf_df_bt  = ltf_df_bt_full[ltf_df_bt_full.index < current_1h_boundary].copy()
+ltf_df_bt.index = pd.to_datetime(ltf_df_bt.index, utc=True)
+ltf_df_bt = generate_signal(ltf_df_bt.copy(), htf_df, symbol=SYMBOL)
+_aligned_bt = align_htf_scores(_htf_scores, ltf_df_bt)
+for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
+    if _col in _aligned_bt.columns:
+        ltf_df_bt[_col] = _aligned_bt[_col]
+print(f"[FREEZE] backtest frozen at {FREEZE_AT} | lltf={len(lltf_df_bt)} bars | ltf={len(ltf_df_bt)} bars")
+
+backtester = SignalBacktester(ltf_df_bt, htf_df=htf_df, lltf_df=lltf_df_bt, leverage=LEVERAGE)
 
 backtest_output = backtester.run()
 
 trade_log = backtest_output["trades"]
 equity_curve = backtest_output["equity_curve"]
 results = backtest_output["summary"]
+
+# Report whether a trade is still open at freeze point
+if backtester.position != 0:
+    print(f"[FREEZE] trade still OPEN at {FREEZE_AT} — audit shows current bars")
+else:
+    print(f"[FREEZE] no open trade at {FREEZE_AT} — audit shows last completed trade")
 
 print(results)
 

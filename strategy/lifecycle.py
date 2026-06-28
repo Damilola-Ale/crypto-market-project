@@ -124,17 +124,26 @@ class PositionManager:
         # Resync calls can deliver the same 5m bar multiple times
         # in one tick. Track the last processed bar per symbol and
         # skip exit checks (but not entry checks) if it's the same.
-        _last_processed = getattr(self, '_last_processed_bar', {})
-        _this_bar_ts = current_5m_row.name
-        _already_processed = _last_processed.get(symbol) == _this_bar_ts
         if not hasattr(self, '_last_processed_bar'):
             self._last_processed_bar = {}
-        self._last_processed_bar[symbol] = _this_bar_ts
+        _this_bar_ts = current_5m_row.name
+        _already_processed = self._last_processed_bar.get(symbol) == _this_bar_ts
 
         o = float(current_5m_row["open"])
         h = float(current_5m_row["high"])
         l = float(current_5m_row["low"])
         c = float(current_5m_row["close"])
+
+        _bar_volume_raw = current_5m_row["volume"] if "volume" in current_5m_row.index else 0.0
+        _bar_volume = float(_bar_volume_raw) if not pd.isna(_bar_volume_raw) else 0.0
+        _is_placeholder_bar = (_bar_volume == 0.0 and h == l == o == c)
+
+        # Only stamp the duplicate-bar cursor on REAL bars. A placeholder
+        # shares the same timestamp as the real bar that will eventually
+        # close it — stamping here would make the real bar's later arrival
+        # look "already processed" and get silently skipped.
+        if not _is_placeholder_bar:
+            self._last_processed_bar[symbol] = _this_bar_ts
 
         # =====================================================
         # ROLLING ATR (precomputed — O(1) lookup)
@@ -148,7 +157,7 @@ class PositionManager:
         # -------------------------------------------------------
         # APPEND current 5M bar to history (for window checks)
         # -------------------------------------------------------
-        if position and not _already_processed:
+        if position and not _already_processed and not _is_placeholder_bar:
 
             # APPEND BAR FIRST
             atr_5m = float(current_5m_row["ATR_5M"]) if "ATR_5M" in current_5m_row.index and not pd.isna(current_5m_row["ATR_5M"]) else None
@@ -158,6 +167,7 @@ class PositionManager:
                 "high": h,
                 "low": l,
                 "close": c,
+                "volume": _bar_volume,
                 "ATR": atr,
                 "ATR_5M": atr_5m,
                 "ts": str(current_ts),
@@ -207,6 +217,7 @@ class PositionManager:
                             "high":   float(row_h["high"]),
                             "low":    float(row_h["low"]),
                             "close":  float(row_h["close"]),
+                            "volume": float(row_h["volume"]) if "volume" in row_h.index and not pd.isna(row_h["volume"]) else 0.0,
                             "ATR":    float(row_h["ATR"]) if "ATR" in row_h.index and not pd.isna(row_h["ATR"]) else atr,
                             "ATR_5M": float(row_h["ATR_5M"]) if "ATR_5M" in row_h.index and not pd.isna(row_h["ATR_5M"]) else None,
                             "ts":     str(ts_h),
@@ -574,6 +585,7 @@ class PositionManager:
                     "high": h,
                     "low":  l,
                     "close": c,
+                    "volume": _bar_volume,
                     "ATR": atr,
                     "ts": current_ts,
                 }]
