@@ -136,7 +136,17 @@ class PositionManager:
 
         _bar_volume_raw = current_5m_row["volume"] if "volume" in current_5m_row.index else 0.0
         _bar_volume = float(_bar_volume_raw) if not pd.isna(_bar_volume_raw) else 0.0
-        _is_placeholder_bar = (_bar_volume == 0.0 and h == l == o == c)
+
+        # Use explicit flag, not shape heuristic. Real zero-volume bars on
+        # thin symbols (IOTXUSDT, SLPUSDT) look identical to the synthetic
+        # placeholder under a shape-based test and were being silently
+        # skipped, freezing bars_in_trade/MFE/MAE and all exit checks.
+        if "is_placeholder" in current_5m_row.index:
+            _is_placeholder_bar = bool(current_5m_row["is_placeholder"])
+        else:
+            # Backtest/replay callers never inject placeholders — missing
+            # flag means real bar, not fall-back to the broken heuristic.
+            _is_placeholder_bar = False
 
         # Only stamp the duplicate-bar cursor on REAL bars. A placeholder
         # shares the same timestamp as the real bar that will eventually

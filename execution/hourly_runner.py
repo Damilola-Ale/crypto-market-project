@@ -237,7 +237,11 @@ def run_hourly():
             minute=(now_check.minute // 5) * 5, second=0, microsecond=0
         )
 
-        _should_recon = _last_recon_boundary != _recon_boundary
+        # Always recon if positions are open locally — catches manual closes
+        # on Binance that the system would otherwise never discover until the
+        # next scheduled 5m boundary recon. Without this, manually closed
+        # trades leave ghost positions tracked indefinitely.
+        _should_recon = _last_recon_boundary != _recon_boundary or bool(pm_check.positions)
 
         pm_check = PositionManager(persist=True, notify=False)
 
@@ -1019,12 +1023,23 @@ def run_hourly_for_symbol(
         # Keep all fully closed bars
         lltf_df = lltf_df[lltf_df.index < current_5m_boundary].copy()
 
+        # Explicit flag — every real closed bar is NOT a placeholder.
+        # Set BEFORE injecting the synthetic row so the column exists on
+        # both sides of the concat with no NaN ambiguity.
+        lltf_df["is_placeholder"] = False
+
         # PLACEHOLDER FORMING BAR — carries only `open`, so entries can fire
         # immediately when a new bar starts rather than waiting up to 5min
         # for it to close. high/low/close pinned to open so it can never
         # trigger a stop/OIE exit on phantom intrabar movement. The real
         # bar overwrites this placeholder automatically on the next fetch
         # via the existing index-dedup merge in update_symbol/_fetch_all.
+        #
+        # is_placeholder=True is the ONLY reliable marker — do NOT infer
+        # placeholder status from shape (volume==0, flat OHLC) anywhere
+        # downstream. Illiquid symbols (IOTXUSDT, SLPUSDT) routinely
+        # produce real closed 5m candles with zero trades that look
+        # identical to the synthetic placeholder under a shape-based test.
         try:
             from data_pipeline.fetcher import fetch_ohlcv
             forming = fetch_ohlcv(
@@ -1047,6 +1062,7 @@ def run_hourly_for_symbol(
                         "taker_buy_base": 0.0,
                         "intrabar_high": float(forming.loc[current_5m_boundary, "high"]),
                         "intrabar_low":  float(forming.loc[current_5m_boundary, "low"]),
+                        "is_placeholder": True,
                     }],
                     index=pd.DatetimeIndex([current_5m_boundary], tz="UTC"),
                 )
@@ -1302,12 +1318,9 @@ def run_hourly_for_symbol(
         if symbol in pm.positions and last_seen is not None:
             if last_seen in lltf_frozen.index:
                 _last_seen_row = lltf_frozen.loc[last_seen]
-                _was_placeholder = (
-                    _last_seen_row.get("volume", 0) == 0
-                    and _last_seen_row["high"] == _last_seen_row["open"]
-                    and _last_seen_row["low"] == _last_seen_row["open"]
-                    and _last_seen_row["close"] == _last_seen_row["open"]
-                )
+                # Explicit flag only — shape-based detection is unreliable
+                # on thin symbols with real zero-volume bars.
+                _was_placeholder = bool(_last_seen_row.get("is_placeholder", False))
                 if _was_placeholder:
                     _bars_before_placeholder = lltf_frozen[lltf_frozen.index < last_seen]
                     if not _bars_before_placeholder.empty:
@@ -1431,10 +1444,7 @@ def run_hourly_for_symbol(
         _new_bars_all_placeholder = False
         if not new_bars.empty:
             _latest_row = lltf_frozen.loc[new_bars.index[-1]]
-            _latest_is_placeholder = (
-                _latest_row.get("volume", 0) == 0
-                and _latest_row["high"] == _latest_row["low"] == _latest_row["open"]
-            )
+            _latest_is_placeholder = bool(_latest_row.get("is_placeholder", False))
             _new_bars_all_placeholder = _latest_is_placeholder and len(new_bars) == 1
 
         if symbol in pm.positions and not _new_bars_all_placeholder:
@@ -1483,10 +1493,7 @@ def run_hourly_for_symbol(
 
                 if has_open_position:
                     _latest_row = lltf_frozen.loc[new_bars.index[-1]]
-                    _latest_is_placeholder = (
-                        _latest_row.get("volume", 0) == 0
-                        and _latest_row["high"] == _latest_row["low"] == _latest_row["open"]
-                    )
+                    _latest_is_placeholder = bool(_latest_row.get("is_placeholder", False))
                     if _latest_is_placeholder:
                         if len(new_bars) >= 2:
                             last_clean_ts = new_bars.index[-2]
