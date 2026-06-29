@@ -859,12 +859,59 @@ def run_hourly_for_symbol(
                         _current_5m_boundary = pd.Timestamp(
                             now_utc_c.replace(minute=_minutes_floored, second=0, microsecond=0, tzinfo=None)
                         ).tz_localize("UTC")
-
+                        
                         if lltf_df.index[-1] < _current_5m_boundary:
                             # Cache is stale — fetch only the missing bars
                             from data_pipeline.rate_limiter import rate_limiter
+                            _stale_minutes = (_current_5m_boundary - lltf_df.index[-1]).total_seconds() / 60
+
                             if rate_limiter.is_banned():
                                 print(f"[CACHE SERVE] {symbol} — 5m stale but IP banned, skipping fetch")
+
+                                # Silently skipping a stale feed is fine for a flat
+                                # symbol, but dangerous for one with an open position —
+                                # stop/OIE/trail checks all run off this same lltf_df,
+                                # so a stalled feed means the position is flying blind.
+                                # Alert (throttled) when that's the case.
+                                _has_open_here = False
+                                try:
+                                    if external_pm is not None:
+                                        _has_open_here = symbol in external_pm.positions
+                                    else:
+                                        if os.path.exists("data/positions/open_positions.json"):
+                                            with open("data/positions/open_positions.json") as _pf:
+                                                _has_open_here = symbol in (json.load(_pf) or {})
+                                except Exception:
+                                    pass
+
+                                if _has_open_here:
+                                    _stale_alert_file = f"data/cursors/stale_alert_{symbol}.json"
+                                    _last_alert_ts = None
+                                    if os.path.exists(_stale_alert_file):
+                                        try:
+                                            with open(_stale_alert_file) as _af:
+                                                _last_alert_ts = datetime.fromisoformat(json.load(_af).get("sent_at"))
+                                                if _last_alert_ts.tzinfo is None:
+                                                    _last_alert_ts = _last_alert_ts.replace(tzinfo=timezone.utc)
+                                        except Exception:
+                                            pass
+                                    _secs_since_alert = (
+                                        (now_check - _last_alert_ts).total_seconds()
+                                        if _last_alert_ts else 999999
+                                    )
+                                    if _secs_since_alert >= 300:  # throttle to once every 5min
+                                        TelegramNotifier().send_text(
+                                            f"⚠️ *STALE FEED — OPEN POSITION*\n"
+                                            f"`{symbol}` 5m cache is `{_stale_minutes:.0f}m` behind "
+                                            f"and IP is banned — stop/exit checks are NOT seeing "
+                                            f"current price for this symbol."
+                                        )
+                                        try:
+                                            with open(_stale_alert_file + ".tmp", "w") as _af:
+                                                json.dump({"sent_at": now_check.isoformat()}, _af)
+                                            os.replace(_stale_alert_file + ".tmp", _stale_alert_file)
+                                        except Exception:
+                                            pass
                             else:
                                 from data_pipeline.updater import _fetch_all
                                 lltf_fetch_start = lltf_df.index[-1] + pd.Timedelta(minutes=5)
@@ -877,6 +924,13 @@ def run_hourly_for_symbol(
                                     tmp = _cache_path(symbol, "5m") + ".tmp"
                                     lltf_df.to_parquet(tmp)
                                     os.replace(tmp, _cache_path(symbol, "5m"))
+                                # Feed recovered — clear any stale alert throttle state
+                                _stale_alert_file = f"data/cursors/stale_alert_{symbol}.json"
+                                try:
+                                    if os.path.exists(_stale_alert_file):
+                                        os.remove(_stale_alert_file)
+                                except Exception:
+                                    pass
                             print(f"[CACHE SERVE] {symbol} — 1H/4H from cache, 5m fetched (last={lltf_df.index[-1]})")
                         else:
                             # 5m cache is already current — no Binance call needed
@@ -1344,14 +1398,43 @@ def run_hourly_for_symbol(
 
         if symbol in pm.positions and not _new_bars_all_placeholder:
             pos = pm.positions[symbol]
-            notifier.debug(
-                f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(new_bars.index[-1])} | "
-                f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
-                f"entry={pos['entry_price']:.6f} | "
-                f"stop={pos['stop_loss']:.6f} | "
-                f"bars={pos.get('bars_in_trade', 0)} | "
-                f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
-            )
+            # Only notify if the position actually changed since the last
+            # notify (new bars_in_trade or new pnl_r). _new_bars_all_placeholder
+            # alone isn't enough to dedupe — a re-run on an already-processed
+            # real bar (e.g. forming-candle fetch failing silently) also has
+            # len(new_bars)==1 and is NOT a placeholder, so it slipped through
+            # and re-sent the identical message every cron tick.
+            _notify_sig = (pos.get("bars_in_trade", 0), round(pos.get("pnl_r", 0.0), 4))
+            _notify_cache_file = f"data/cursors/last_notify_{symbol}.json"
+            _last_notify_sig = None
+            if os.path.exists(_notify_cache_file):
+                try:
+                    with open(_notify_cache_file) as f:
+                        _raw = json.load(f)
+                    _last_notify_sig = (_raw.get("bars"), _raw.get("pnl"))
+                except Exception:
+                    pass
+
+            if _notify_sig != _last_notify_sig:
+                notifier.debug(
+                    f"📊 TRADE ACTIVE | {symbol} | ts={TelegramNotifier._fmt_ts(new_bars.index[-1])} | "
+                    f"side={'LONG' if pos['direction'] == 1 else 'SHORT'} | "
+                    f"entry={pos['entry_price']:.6f} | "
+                    f"stop={pos['stop_loss']:.6f} | "
+                    f"bars={pos.get('bars_in_trade', 0)} | "
+                    f"pnl={pos.get('pnl_r', 0.0):+.3f}R"
+                )
+                try:
+                    with open(_notify_cache_file + ".tmp", "w") as f:
+                        json.dump({"bars": _notify_sig[0], "pnl": _notify_sig[1]}, f)
+                    os.replace(_notify_cache_file + ".tmp", _notify_cache_file)
+                except Exception:
+                    pass
+            else:
+                print(
+                    f"[TRADE ACTIVE SUPPRESSED] {symbol} — no change since last notify "
+                    f"(bars={_notify_sig[0]}, pnl={_notify_sig[1]:+.3f}R)"
+                )
 
         if not replay and replay_cursor is None:
             if not new_bars.empty:

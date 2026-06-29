@@ -1142,6 +1142,16 @@ class PositionManager:
                 os.remove(_rewind_file)
         except Exception:
             pass
+
+        # Clear persisted TRADE ACTIVE dedupe state so the next position
+        # on this symbol doesn't get its first notify suppressed because
+        # it happens to match the previous trade's last (bars, pnl) signature.
+        _notify_file = f"data/cursors/last_notify_{symbol}.json"
+        try:
+            if os.path.exists(_notify_file):
+                os.remove(_notify_file)
+        except Exception:
+            pass
         
         direction = pos["direction"]
         entry     = pos["entry_price"]
