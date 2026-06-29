@@ -395,7 +395,7 @@ class PositionManager:
                 # Scenario B — violent rejection (mfe_r 0.15–0.5):
                 #   Had real promise, collapsed hard within 6 bars of peak.
                 #   >6 bars excluded — slow grinds are not violent rejections.
-                if exit_reason is None and _bars <= 3:
+                if exit_reason is None and _bars <= 6:
                     _entry        = position["entry_price"]
                     _initial_stop = position.get("initial_stop", position["stop_loss"])
                     _R            = abs(_entry - _initial_stop) or 1e-9
@@ -431,6 +431,17 @@ class PositionManager:
                         (c - _entry) / _R if side == 1
                         else (_entry - c) / _R
                     )
+
+                    # On placeholder bars, MFE/MAE were computed from flat OHLC
+                    # (h==l==o==c==open), so mfe_r_now is stale. Recompute it
+                    # from real intrabar extremes before evaluating scenarios.
+                    # This is critical for scenario_b's mfe_r range check.
+                    if _is_placeholder_bar and _has_intrabar:
+                        _intrabar_mfe = (
+                            max(0.0, _real_high - _entry) if side == 1
+                            else max(0.0, _entry - _real_low)
+                        )
+                        mfe_r_now = max(mfe_r_now, _intrabar_mfe / _R)
 
                     _scenario_a = mfe_r_now < 0.15 and _intrabar_pnl_r <= -0.6
                     _scenario_b = (

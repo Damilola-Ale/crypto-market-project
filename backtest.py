@@ -318,6 +318,13 @@ class SignalBacktester:
     ATR_AFTER_HALF_R  = 0.55   # tighter once 0.5R secured
     ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
+    # Mirrors PositionManager.BINANCE_CALLBACK_FLOOR_PCT in lifecycle.py.
+    # Backtest must respect the same exchange-side minimum stop distance
+    # live does — otherwise backtest is testing a trail tightness that's
+    # not actually achievable on Binance, and the two environments will
+    # keep diverging on exactly which bar a trade exits.
+    BINANCE_CALLBACK_FLOOR_PCT = 0.0016
+
     def update_dynamic_stop(self, trade, current_price, atr):
         mfe_r = trade.get('mfe_r', 0.0)
 
@@ -347,14 +354,21 @@ class SignalBacktester:
         else:
             atr_mult = self.ATR_AFTER_ENTRY
 
+        # Same floor logic as live's PositionManager._update_dynamic_stop —
+        # ATR multipliers unchanged, but the trail distance can never be
+        # tighter than what Binance's amend_stop would allow in practice.
+        floor_distance = current_price * self.BINANCE_CALLBACK_FLOOR_PCT
+        atr_distance    = atr * atr_mult
+        trail_distance  = max(atr_distance, floor_distance)
+
         if side == 1:
-            trail_candidate = current_price - atr * atr_mult
+            trail_candidate = current_price - trail_distance
             # Only lock to breakeven once 0.5R is secured, not before
             if mfe_r >= 0.5:
                 trail_candidate = max(trail_candidate, entry)
             new_stop = max(current_stop, trail_candidate)
         else:
-            trail_candidate = current_price + atr * atr_mult
+            trail_candidate = current_price + trail_distance
             if mfe_r >= 0.5:
                 trail_candidate = min(trail_candidate, entry)
             new_stop = min(current_stop, trail_candidate)
