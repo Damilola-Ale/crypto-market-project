@@ -106,7 +106,7 @@ def fetch_binance(symbol, interval, limit):
 #     "TIAUSDT", "STORJUSDT", "RIFUSDT", "SLPUSDT", "CFXUSDT", "ARBUSDT", "CVXUSDT",
 #     "FETUSDT", "FILUSDT", "GALAUSDT"
 # ] 
-SYMBOL = "ZECUSDT"
+SYMBOL = "TRBUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -147,9 +147,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 1000   # ~30 days of 1h candles
 # HTF_LIMIT = 250   # ~120 days of 4h candles
 
-# LLTF_LIMIT = 1500
-# LTF_LIMIT = 125   # ~30 days of 1h candles
-# HTF_LIMIT = 31   # ~120 days of 4h candles
+LLTF_LIMIT = 1500
+LTF_LIMIT = 125   # ~30 days of 1h candles
+HTF_LIMIT = 31   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
@@ -378,14 +378,14 @@ ltf_df = generate_signal(ltf_df.copy(), htf_df, symbol=SYMBOL)
 # Patch HTF columns on the real bars directly — same call that
 # generate_signal makes internally, repeated here so the last 1H
 # bar always carries the latest closed 4H score.
-_htf_scores = compute_htf_scores(htf_df)
-_aligned = align_htf_scores(_htf_scores, ltf_df)
-for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
-    if _col in _aligned.columns:
-        ltf_df[_col] = _aligned[_col]
+# _htf_scores = compute_htf_scores(htf_df)
+# _aligned = align_htf_scores(_htf_scores, ltf_df)
+# for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
+#     if _col in _aligned.columns:
+#         ltf_df[_col] = _aligned[_col]
 
-print(ltf_df[["FLOW_STRENGTH", "COMPRESSION_OK", "EARLY_EXPANSION", "signal"]].tail(50))
-print(f"[DEBUG] ltf_df shape: {ltf_df.shape}, first={ltf_df.index[0]}, last={ltf_df.index[-1]}")
+# print(ltf_df[["FLOW_STRENGTH", "COMPRESSION_OK", "EARLY_EXPANSION", "signal"]].tail(50))
+# print(f"[DEBUG] ltf_df shape: {ltf_df.shape}, first={ltf_df.index[0]}, last={ltf_df.index[-1]}")
 
 # ==========================================================
 # BACKTEST
@@ -397,10 +397,10 @@ lltf_df_bt = lltf_df_bt_full[lltf_df_bt_full.index <= FREEZE_AT].copy()
 ltf_df_bt  = ltf_df_bt_full[ltf_df_bt_full.index < current_1h_boundary].copy()
 ltf_df_bt.index = pd.to_datetime(ltf_df_bt.index, utc=True)
 ltf_df_bt = generate_signal(ltf_df_bt.copy(), htf_df, symbol=SYMBOL)
-_aligned_bt = align_htf_scores(_htf_scores, ltf_df_bt)
-for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
-    if _col in _aligned_bt.columns:
-        ltf_df_bt[_col] = _aligned_bt[_col]
+# _aligned_bt = align_htf_scores(_htf_scores, ltf_df_bt)
+# for _col in ["HTF_DIRECTION", "HTF_QUALITY"]:
+#     if _col in _aligned_bt.columns:
+#         ltf_df_bt[_col] = _aligned_bt[_col]
 print(f"[FREEZE] backtest frozen at {FREEZE_AT} | lltf={len(lltf_df_bt)} bars | ltf={len(ltf_df_bt)} bars")
 
 backtester = SignalBacktester(ltf_df_bt, htf_df=htf_df, lltf_df=lltf_df_bt, leverage=LEVERAGE)

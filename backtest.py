@@ -779,10 +779,10 @@ class SignalBacktester:
             if _scenario_a or _scenario_b:
                 entry_time_str = trade.get("entry_time", "?")
                 _which = "A_pure_loser" if _scenario_a else "B_violent_rejection"
-                print(f"[DISASTER_STOP] {entry_time_str} | side={side} | "
-                      f"scenario={_which} | "
-                      f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} bars={_bars_in} | "
-                      f"exit_price={current_price:.5f} R={R:.5f}")
+                # print(f"[DISASTER_STOP] {entry_time_str} | side={side} | "
+                #       f"scenario={_which} | "
+                #       f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} bars={_bars_in} | "
+                #       f"exit_price={current_price:.5f} R={R:.5f}")
                 self._exit(current_price, idx, "disaster_stop")
                 return
 
@@ -805,10 +805,10 @@ class SignalBacktester:
 
         if _bars == 3 and mfe_r == 0.0 and _mae_r > 0.50:
             entry_time_str = trade.get("entry_time", "?")
-            print(f"[DOMINANCE_EXIT BAR3] {entry_time_str} | side={trade['side']} | "
-                  f"mfe_r={mfe_r:.3f} mae_r={_mae_r:.3f} ratio={_pressure_ratio:.2f} | "
-                  f"exit_price={current_price:.5f} | "
-                  f"stop_was={trade['stop_loss']:.5f} R={R:.5f}")
+            # print(f"[DOMINANCE_EXIT BAR3] {entry_time_str} | side={trade['side']} | "
+            #       f"mfe_r={mfe_r:.3f} mae_r={_mae_r:.3f} ratio={_pressure_ratio:.2f} | "
+            #       f"exit_price={current_price:.5f} | "
+            #       f"stop_was={trade['stop_loss']:.5f} R={R:.5f}")
             self._exit(current_price, idx, "dominance_exit")
             return
 
@@ -874,10 +874,10 @@ class SignalBacktester:
 
             if pnl_r < -0.10 and stop_proximity_r < 0.25 and drawdown_from_peak > 0.35:
                 entry_time_str = trade.get("entry_time", "?")
-                print(f"[THESIS_INVALID_EXIT] {entry_time_str} | side={trade['side']} | "
-                      f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
-                      f"stop_proximity_r={stop_proximity_r:.3f} drawdown_from_peak={drawdown_from_peak:.3f} | "
-                      f"exit_price={current_price:.5f} R={R:.5f}")
+                # print(f"[THESIS_INVALID_EXIT] {entry_time_str} | side={trade['side']} | "
+                #       f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
+                #       f"stop_proximity_r={stop_proximity_r:.3f} drawdown_from_peak={drawdown_from_peak:.3f} | "
+                #       f"exit_price={current_price:.5f} R={R:.5f}")
                 self._exit(current_price, idx, "thesis_invalidation_exit")
                 return
 
@@ -924,10 +924,10 @@ class SignalBacktester:
                 oie_stop_proximity = (trade.get("initial_stop", trade["stop_loss"]) - current_price) / R
             oie_drawdown_from_peak = mfe_r - pnl_r
             entry_time_str = trade.get("entry_time", "?")
-            print(f"[OIE_FIRE] {entry_time_str} | side={trade['side']} | "
-                  f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
-                  f"stop_proximity_r={oie_stop_proximity:.3f} drawdown_from_peak={oie_drawdown_from_peak:.3f} | "
-                  f"bars={_bars} exit_price={current_price:.5f}")
+            # print(f"[OIE_FIRE] {entry_time_str} | side={trade['side']} | "
+            #       f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} | "
+            #       f"stop_proximity_r={oie_stop_proximity:.3f} drawdown_from_peak={oie_drawdown_from_peak:.3f} | "
+            #       f"bars={_bars} exit_price={current_price:.5f}")
             self._exit(current_price, idx, "opposite_impulse")
             return
 
@@ -1029,46 +1029,46 @@ class SignalBacktester:
             # 48 bars. Did price hit the original stop? Or did it recover?
             exec_df = self.lltf_df if hasattr(self, 'lltf_df') else self.df
             dom_exits = trades_df[trades_df["exit_reason"] == "dominance_exit"]
-            if not dom_exits.empty:
-                print("\n=== DOMINANCE EXIT COUNTERFACTUAL ===")
-                print(f"{'Date':>22} {'side':>5} {'exit_R':>7} {'would_stop':>10} {'max_recov_R':>12} {'verdict':>10}")
-                print("-" * 72)
-                for _, t in dom_exits.iterrows():
-                    exit_idx   = int(t["exit_idx"])
-                    entry      = t["entry_price"]
-                    stop       = t["initial_stop"]
-                    side       = t["side"]
-                    R_size     = abs(entry - stop)
-                    if R_size <= 0:
-                        continue
+            # if not dom_exits.empty:
+                # print("\n=== DOMINANCE EXIT COUNTERFACTUAL ===")
+                # print(f"{'Date':>22} {'side':>5} {'exit_R':>7} {'would_stop':>10} {'max_recov_R':>12} {'verdict':>10}")
+                # print("-" * 72)
+                # for _, t in dom_exits.iterrows():
+                #     exit_idx   = int(t["exit_idx"])
+                #     entry      = t["entry_price"]
+                #     stop       = t["initial_stop"]
+                #     side       = t["side"]
+                #     R_size     = abs(entry - stop)
+                #     if R_size <= 0:
+                #         continue
 
-                    future = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
-                    if future.empty:
-                        continue
+                #     future = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
+                #     if future.empty:
+                #         continue
 
-                    if side == 1:
-                        would_stop   = (future["low"] <= stop).any()
-                        max_recov_r  = (future["high"].max() - entry) / R_size
-                    else:
-                        would_stop   = (future["high"] >= stop).any()
-                        max_recov_r  = (entry - future["low"].min()) / R_size
+                #     if side == 1:
+                #         would_stop   = (future["low"] <= stop).any()
+                #         max_recov_r  = (future["high"].max() - entry) / R_size
+                #     else:
+                #         would_stop   = (future["high"] >= stop).any()
+                #         max_recov_r  = (entry - future["low"].min()) / R_size
 
-                    max_recov_r = max(max_recov_r, 0.0)
-                    verdict = "SAVED" if would_stop else ("WINNER" if max_recov_r > 0.3 else "FLATLINED")
+                #     max_recov_r = max(max_recov_r, 0.0)
+                #     verdict = "SAVED" if would_stop else ("WINNER" if max_recov_r > 0.3 else "FLATLINED")
 
-                    entry_time_str = str(t["entry_time"])[:16]
-                    print(f"{entry_time_str:>22} {'L' if side==1 else 'S':>5} "
-                          f"{t['pnl_r']:>7.3f} {str(would_stop):>10} "
-                          f"{max_recov_r:>12.3f} {verdict:>10}")
+                #     entry_time_str = str(t["entry_time"])[:16]
+                #     print(f"{entry_time_str:>22} {'L' if side==1 else 'S':>5} "
+                #           f"{t['pnl_r']:>7.3f} {str(would_stop):>10} "
+                #           f"{max_recov_r:>12.3f} {verdict:>10}")
 
-                would_stop_count = sum(
-                    1 for _, t in dom_exits.iterrows()
-                    if self._counterfactual_would_stop(t, exec_df)
-                )
-                print(f"\nOf {len(dom_exits)} dominance exits: "
-                      f"{would_stop_count} would have hit stop anyway, "
-                      f"{len(dom_exits) - would_stop_count} would have survived.")
-                print("If survivors > stop-outs, the exit is cutting winners.")
+                # would_stop_count = sum(
+                #     1 for _, t in dom_exits.iterrows()
+                #     if self._counterfactual_would_stop(t, exec_df)
+                # )
+                # print(f"\nOf {len(dom_exits)} dominance exits: "
+                #       f"{would_stop_count} would have hit stop anyway, "
+                #       f"{len(dom_exits) - would_stop_count} would have survived.")
+                # print("If survivors > stop-outs, the exit is cutting winners.")
 
             # ── STALL EXIT COUNTERFACTUAL ──────────────────────────────
             # Same treatment as dominance_exit: for each stall_exit, look
@@ -1171,32 +1171,32 @@ class SignalBacktester:
         # the original full stop. This is the gap between "instant trap"
         # (already covered by dominance_exit/fast_stop) and "trail
         # protected" (mfe_r >= 0.5) that the edge decay data hints at.
-        bleed_back = trades_df[
-            (trades_df["exit_reason"].isin(["stop_loss", "opposite_impulse"])) &
-            (trades_df["bars_held"] > 5) &
-            (trades_df["mfe_r"] >= 0.15) &
-            (trades_df["mfe_r"] < 0.5) &
-            (trades_df["pnl_r"] < 0)
-        ] if not trades_df.empty else pd.DataFrame()
+        # bleed_back = trades_df[
+        #     (trades_df["exit_reason"].isin(["stop_loss", "opposite_impulse"])) &
+        #     (trades_df["bars_held"] > 5) &
+        #     (trades_df["mfe_r"] >= 0.15) &
+        #     (trades_df["mfe_r"] < 0.5) &
+        #     (trades_df["pnl_r"] < 0)
+        # ] if not trades_df.empty else pd.DataFrame() 
 
-        if not bleed_back.empty:
-            print("\n=== MID-DURATION BLEED-BACK ANALYSIS ===")
-            print(f"{'Date':>22} {'side':>5} {'reason':>17} {'mfe_r':>7} {'bars':>5} {'pnl_r':>7} {'give_back_R':>11}")
-            print("-" * 80)
-            for _, t in bleed_back.iterrows():
-                give_back = t["mfe_r"] - t["pnl_r"]
-                print(f"{str(t['entry_time'])[:16]:>22} "
-                      f"{'L' if t['side']==1 else 'S':>5} "
-                      f"{t['exit_reason']:>17} "
-                      f"{t['mfe_r']:>7.3f} "
-                      f"{int(t['bars_held']):>5} "
-                      f"{t['pnl_r']:>7.3f} "
-                      f"{give_back:>11.3f}")
-            print(f"\nTotal bleed-back trades: {len(bleed_back)} | "
-                  f"Avg mfe_r at peak: {bleed_back['mfe_r'].mean():.3f} | "
-                  f"Avg final pnl_r: {bleed_back['pnl_r'].mean():.3f} | "
-                  f"Avg R given back: {(bleed_back['mfe_r'] - bleed_back['pnl_r']).mean():.3f} | "
-                  f"Avg bars held: {bleed_back['bars_held'].mean():.1f}")
+        # if not bleed_back.empty:
+        #     print("\n=== MID-DURATION BLEED-BACK ANALYSIS ===")
+        #     print(f"{'Date':>22} {'side':>5} {'reason':>17} {'mfe_r':>7} {'bars':>5} {'pnl_r':>7} {'give_back_R':>11}")
+        #     print("-" * 80)
+        #     for _, t in bleed_back.iterrows():
+        #         give_back = t["mfe_r"] - t["pnl_r"]
+        #         print(f"{str(t['entry_time'])[:16]:>22} "
+        #               f"{'L' if t['side']==1 else 'S':>5} "
+        #               f"{t['exit_reason']:>17} "
+        #               f"{t['mfe_r']:>7.3f} "
+        #               f"{int(t['bars_held']):>5} "
+        #               f"{t['pnl_r']:>7.3f} "
+        #               f"{give_back:>11.3f}")
+        #     print(f"\nTotal bleed-back trades: {len(bleed_back)} | "
+        #           f"Avg mfe_r at peak: {bleed_back['mfe_r'].mean():.3f} | "
+        #           f"Avg final pnl_r: {bleed_back['pnl_r'].mean():.3f} | "
+        #           f"Avg R given back: {(bleed_back['mfe_r'] - bleed_back['pnl_r']).mean():.3f} | "
+        #           f"Avg bars held: {bleed_back['bars_held'].mean():.1f}")
 
             # ── TRAIL ACTIVATION DIAGNOSTIC ──────────────────────────
             # mfe_r in the trades_df is a running max captured every bar,
@@ -1511,53 +1511,53 @@ class SignalBacktester:
             _A = [r for r in _all if r["scenario"] == "A_pure_loser"]
             _B = [r for r in _all if r["scenario"] == "B_violent_rejection"]
 
-            print("\n=== DISASTER STOP SCENARIO ANALYSIS (threshold = -0.6R) ===")
+            # print("\n=== DISASTER STOP SCENARIO ANALYSIS (threshold = -0.6R) ===")
 
-            for _label, _pop in [("A — Pure losers (mfe_r < 0.15 at crossing)", _A),
-                                  ("B — Violent rejections (mfe_r 0.15–0.5R at crossing)", _B)]:
-                if not _pop:
-                    print(f"\n{_label}\n  No trades in this population.")
-                    continue
+            # for _label, _pop in [("A — Pure losers (mfe_r < 0.15 at crossing)", _A),
+            #                       ("B — Violent rejections (mfe_r 0.15–0.5R at crossing)", _B)]:
+            #     if not _pop:
+            #         print(f"\n{_label}\n  No trades in this population.")
+            #         continue
 
-                _n = len(_pop)
-                _n_recovered = sum(1 for r in _pop if r["recovered"])
-                _n_continued = _n - _n_recovered
-                _avg_mfe_at_cross = sum(r["mfe_r_at_cross"] for r in _pop) / _n
-                _avg_pnl_at_cross = sum(r["pnl_r_at_cross"] for r in _pop) / _n
-                _avg_final_pnl    = sum(r["final_pnl_r"] for r in _pop) / _n
-                _avg_bars         = sum(r["bars_to_cross"] for r in _pop) / _n
-                _avg_saving = sum(
-                    abs(r["final_pnl_r"]) - 0.6
-                    for r in _pop if not r["recovered"]
-                ) / max(_n_continued, 1)
+            #     _n = len(_pop)
+            #     _n_recovered = sum(1 for r in _pop if r["recovered"])
+            #     _n_continued = _n - _n_recovered
+            #     _avg_mfe_at_cross = sum(r["mfe_r_at_cross"] for r in _pop) / _n
+            #     _avg_pnl_at_cross = sum(r["pnl_r_at_cross"] for r in _pop) / _n
+            #     _avg_final_pnl    = sum(r["final_pnl_r"] for r in _pop) / _n
+            #     _avg_bars         = sum(r["bars_to_cross"] for r in _pop) / _n
+            #     _avg_saving = sum(
+            #         abs(r["final_pnl_r"]) - 0.6
+            #         for r in _pop if not r["recovered"]
+            #     ) / max(_n_continued, 1)
 
-                print(f"\n{_label}")
-                print(f"  Total trades crossing -0.6R : {_n}")
-                print(f"  Recovered above -0.6R (false positive) : {_n_recovered} "
-                      f"({_n_recovered/_n*100:.0f}%)")
-                print(f"  Continued to worse exit (true positive) : {_n_continued} "
-                      f"({_n_continued/_n*100:.0f}%)")
-                print(f"  Avg mfe_r when -0.6R crossed  : {_avg_mfe_at_cross:.3f}R")
-                print(f"  Avg pnl_r when -0.6R crossed  : {_avg_pnl_at_cross:.3f}R")
-                print(f"  Avg final pnl_r (actual exit) : {_avg_final_pnl:.3f}R")
-                print(f"  Avg bars to reach -0.6R       : {_avg_bars:.1f} ({_avg_bars*5:.0f} min)")
-                print(f"  Avg R saved per true positive : {_avg_saving:.3f}R "
-                      f"(diff between -0.6R exit and actual exit)")
+            #     print(f"\n{_label}")
+            #     print(f"  Total trades crossing -0.6R : {_n}")
+            #     print(f"  Recovered above -0.6R (false positive) : {_n_recovered} "
+            #           f"({_n_recovered/_n*100:.0f}%)")
+            #     print(f"  Continued to worse exit (true positive) : {_n_continued} "
+            #           f"({_n_continued/_n*100:.0f}%)")
+            #     print(f"  Avg mfe_r when -0.6R crossed  : {_avg_mfe_at_cross:.3f}R")
+            #     print(f"  Avg pnl_r when -0.6R crossed  : {_avg_pnl_at_cross:.3f}R")
+            #     print(f"  Avg final pnl_r (actual exit) : {_avg_final_pnl:.3f}R")
+            #     print(f"  Avg bars to reach -0.6R       : {_avg_bars:.1f} ({_avg_bars*5:.0f} min)")
+            #     print(f"  Avg R saved per true positive : {_avg_saving:.3f}R "
+            #           f"(diff between -0.6R exit and actual exit)")
 
-                print(f"\n  Per-trade detail:")
-                print(f"  {'entry_time':>16} {'side':>4} {'mfe@cross':>10} "
-                      f"{'pnl@cross':>10} {'final_pnl':>10} "
-                      f"{'bars':>5} {'recovered':>10} {'exit_reason':>22}")
-                print(f"  {'-'*95}")
-                for r in sorted(_pop, key=lambda x: x["bars_to_cross"]):
-                    print(f"  {str(r['entry_time'])[:16]:>16} "
-                          f"{'L' if r['side']==1 else 'S':>4} "
-                          f"{r['mfe_r_at_cross']:>10.3f} "
-                          f"{r['pnl_r_at_cross']:>10.3f} "
-                          f"{r['final_pnl_r']:>10.3f} "
-                          f"{r['bars_to_cross']:>5} "
-                          f"{str(r['recovered']):>10} "
-                          f"{str(r.get('exit_reason','?')):>22}")
+            #     print(f"\n  Per-trade detail:")
+            #     print(f"  {'entry_time':>16} {'side':>4} {'mfe@cross':>10} "
+            #           f"{'pnl@cross':>10} {'final_pnl':>10} "
+            #           f"{'bars':>5} {'recovered':>10} {'exit_reason':>22}")
+            #     print(f"  {'-'*95}")
+            #     for r in sorted(_pop, key=lambda x: x["bars_to_cross"]):
+            #         print(f"  {str(r['entry_time'])[:16]:>16} "
+            #               f"{'L' if r['side']==1 else 'S':>4} "
+            #               f"{r['mfe_r_at_cross']:>10.3f} "
+            #               f"{r['pnl_r_at_cross']:>10.3f} "
+            #               f"{r['final_pnl_r']:>10.3f} "
+            #               f"{r['bars_to_cross']:>5} "
+            #               f"{str(r['recovered']):>10} "
+            #               f"{str(r.get('exit_reason','?')):>22}")
 
             # Overall verdict
             _total = len(_all)

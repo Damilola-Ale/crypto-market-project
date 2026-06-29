@@ -237,13 +237,15 @@ def run_hourly():
             minute=(now_check.minute // 5) * 5, second=0, microsecond=0
         )
 
+        # Create pm_check FIRST — _should_recon needs to read its
+        # .positions, so the instance must exist before that check.
+        pm_check = PositionManager(persist=True, notify=False)
+
         # Always recon if positions are open locally — catches manual closes
         # on Binance that the system would otherwise never discover until the
         # next scheduled 5m boundary recon. Without this, manually closed
         # trades leave ghost positions tracked indefinitely.
         _should_recon = _last_recon_boundary != _recon_boundary or bool(pm_check.positions)
-
-        pm_check = PositionManager(persist=True, notify=False)
 
         if _should_recon:
             # Try websocket state first — zero REST calls
@@ -459,6 +461,12 @@ def run_hourly():
     _priority = [s for s in SYMBOLS if s in _open_symbols]
     _normal   = [s for s in SYMBOLS if s not in _open_symbols]
 
+    # Must be initialized BEFORE the priority pass loop below, since
+    # that loop appends to all three on every iteration.
+    symbol_summaries = []
+    failed_symbols = []
+    ip_ban_wait = None
+
     # Process all priority symbols FIRST in their own pass before any
     # normal symbol runs. This guarantees open positions get exit checks
     # on the current bar even if the normal symbol loop takes minutes.
@@ -520,10 +528,6 @@ def run_hourly():
             return ts
         except Exception:
             return None
-
-    symbol_summaries = []
-    failed_symbols = []
-    ip_ban_wait = None
 
     # Newest 5m bar timestamp ANY symbol has confirmed processing so far
     # this tick. This — not "cursor at tick start" — is the correct basis

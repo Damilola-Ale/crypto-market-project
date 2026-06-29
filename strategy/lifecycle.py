@@ -69,6 +69,15 @@ class PositionManager:
     ATR_AFTER_HALF_R  = 0.55  # tighter once 0.5R secured — matches backtest
     ATR_AFTER_ONE_R   = 0.4   # tight once 1R secured
 
+    # Binance's amend_stop enforces a minimum 0.15% gap between the new
+    # stop and current mark price (it clamps silently if you ask for
+    # tighter). Using this same floor when COMPUTING the trail means our
+    # local logic already respects the constraint instead of relying on
+    # the exchange to override it after the fact. Set slightly above
+    # 0.0015 for safety margin against mark-price drift between our calc
+    # and the exchange's check moments later.
+    BINANCE_CALLBACK_FLOOR_PCT = 0.0016
+
     USE_ACCOUNT_GATES = True
 
     SIGNAL_EXPIRY_BARS      = 6    # replay: signal dies after 6×5m = 30 minutes
@@ -888,14 +897,23 @@ class PositionManager:
         else:
             atr_mult = self.ATR_AFTER_ENTRY
 
+        # ATR multipliers stay exactly as configured. We just make sure
+        # the distance we compute is never tighter than what Binance will
+        # actually allow — taking the max means our own number already
+        # respects the exchange floor, so amend_stop's clamp almost never
+        # has to silently override what we send.
+        floor_distance = current_price * self.BINANCE_CALLBACK_FLOOR_PCT
+        atr_distance    = atr * atr_mult
+        trail_distance  = max(atr_distance, floor_distance)
+
         if side == 1:
-            trail_candidate = current_price - atr * atr_mult
+            trail_candidate = current_price - trail_distance
             # Breakeven lock only once 0.5R is secured
             if mfe_r >= 0.5:
                 trail_candidate = max(trail_candidate, entry)
             new_stop = max(current_stop, trail_candidate)
         else:
-            trail_candidate = current_price + atr * atr_mult
+            trail_candidate = current_price + trail_distance
             if mfe_r >= 0.5:
                 trail_candidate = min(trail_candidate, entry)
             new_stop = min(current_stop, trail_candidate)
@@ -911,7 +929,7 @@ class PositionManager:
             # exchange isn't actually protecting against.
             if _EXECUTION_ENABLED and self._is_live:
                 try:
-                    new_stop_order = _binance_amend_stop(
+                    new_stop_result = _binance_amend_stop(
                         symbol=position["symbol"],
                         direction=side,
                         quantity=position.get("quantity", 0),
@@ -919,8 +937,11 @@ class PositionManager:
                         existing_stop_order_id=position.get("binance_stop_order_id"),
                         trade_id=position.get("trade_id"),
                     )
-                    position["binance_stop_order_id"] = new_stop_order.get("algoId")
-                    position["stop_loss"] = new_stop
+                    position["binance_stop_order_id"] = new_stop_result["order"].get("algoId")
+                    # Use the ACTUAL exchange price, not the value we sent in —
+                    # amend_stop may have clamped it. Writing `new_stop` here
+                    # would desync local state from what's really live.
+                    position["stop_loss"] = new_stop_result["actual_stop_price"]
                     position["trailing_activated"] = True
                 except BinanceExecutionError as e:
                     _tg_debug(

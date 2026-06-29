@@ -550,7 +550,12 @@ def amend_stop(
                 f"filled/gone) — old and new may briefly coexist, this is safe: {e}"
             )
 
-    return new_stop
+    # Return the ACTUAL price placed on the exchange, not just the order
+    # dict. new_stop_price may have been silently clamped above — callers
+    # must update their local stop_loss state from actual_stop_price, not
+    # from whatever they originally passed in, or local state will lie
+    # about what's really protecting the position on Binance.
+    return {"order": new_stop, "actual_stop_price": new_stop_price}
 
 
 def close_position(
