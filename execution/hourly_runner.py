@@ -1207,8 +1207,6 @@ def run_hourly_for_symbol(
         if symbol in pm.positions and last_seen is not None:
             if last_seen in lltf_frozen.index:
                 _last_seen_row = lltf_frozen.loc[last_seen]
-                # Check pinned OHLC — intrabar_high/low columns may differ
-                # so only check the columns that are actually pinned on a placeholder
                 _was_placeholder = (
                     _last_seen_row.get("volume", 0) == 0
                     and _last_seen_row["high"] == _last_seen_row["open"]
@@ -1216,28 +1214,28 @@ def run_hourly_for_symbol(
                     and _last_seen_row["close"] == _last_seen_row["open"]
                 )
                 if _was_placeholder:
-                    # Only rewind if this placeholder timestamp is genuinely
-                    # unprocessed — i.e. the bar BEFORE it hasn't been seen yet.
-                    # If the bar before it is already behind last_seen, we already
-                    # processed through it last tick and should NOT rewind again.
-                    # Rewinding every tick means the real closed bar (with actual
-                    # low/high that may hit the stop) is skipped permanently.
                     _bars_before_placeholder = lltf_frozen[lltf_frozen.index < last_seen]
                     if not _bars_before_placeholder.empty:
                         _rewind_target = _bars_before_placeholder.index[-1]
-                        # Guard: only rewind if the target bar hasn't been
-                        # processed yet this session. Use a per-symbol set
-                        # to track which placeholder timestamps we've already
-                        # rewound through — prevents infinite rewind loops.
-                        if not hasattr(pm, '_rewound_placeholders'):
-                            pm._rewound_placeholders = {}
-                        _already_rewound = pm._rewound_placeholders.get(symbol) == last_seen
+                        # Load persisted rewind memory — survives across PM instances
+                        _rewind_file = f"data/cursors/rewind_{symbol}.json"
+                        _already_rewound_ts = None
+                        if os.path.exists(_rewind_file):
+                            try:
+                                with open(_rewind_file) as _rf:
+                                    _already_rewound_ts = json.load(_rf).get("placeholder_ts")
+                            except Exception:
+                                pass
+                        _already_rewound = _already_rewound_ts == last_seen.isoformat()
                         if not _already_rewound:
-                            pm._rewound_placeholders[symbol] = last_seen
+                            # Persist so next cron tick knows we already rewound this placeholder
+                            with open(_rewind_file + ".tmp", "w") as _rf:
+                                json.dump({"placeholder_ts": last_seen.isoformat()}, _rf)
+                            os.replace(_rewind_file + ".tmp", _rewind_file)
                             last_seen = _rewind_target
-                            print(f"[CURSOR REWIND] {symbol} — placeholder at {pm._rewound_placeholders[symbol]}, rewound to {last_seen}")
+                            print(f"[CURSOR REWIND] {symbol} — placeholder at {_already_rewound_ts}, rewound to {last_seen}")
                         else:
-                            print(f"[CURSOR REWIND SKIPPED] {symbol} — already rewound through {last_seen} this session, letting real bar through")
+                            print(f"[CURSOR REWIND SKIPPED] {symbol} — already rewound through {last_seen}, letting real bar through")
 
         new_bars = (
             lltf_frozen if last_seen is None

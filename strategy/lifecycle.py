@@ -394,8 +394,11 @@ class PositionManager:
                         and not pd.isna(current_5m_row.get("intrabar_low"))
                         and not pd.isna(current_5m_row.get("intrabar_high"))
                     )
-                    _real_low  = float(current_5m_row.get("intrabar_low",  l))
-                    _real_high = float(current_5m_row.get("intrabar_high", h))
+                    _raw_intrabar_low  = current_5m_row.get("intrabar_low",  None)
+                    _raw_intrabar_high = current_5m_row.get("intrabar_high", None)
+                    # .get() returns NaN for existing-but-NaN columns — treat NaN as absent
+                    _real_low  = float(_raw_intrabar_low)  if _raw_intrabar_low  is not None and not pd.isna(_raw_intrabar_low)  else l
+                    _real_high = float(_raw_intrabar_high) if _raw_intrabar_high is not None and not pd.isna(_raw_intrabar_high) else h
                     _data_source = "PARTIAL_BAR" if _has_intrabar and _is_placeholder_bar else "CLOSED_BAR"
 
                     _intrabar_pnl_r = (
@@ -1132,6 +1135,13 @@ class PositionManager:
             self._reentry_lock_ts[symbol] = self._reentry_lock_ts[symbol].tz_localize("UTC")
         self._bar_history.pop(symbol, None)
         self._last_entry_ts.pop(symbol, None)
+        # Clear persisted rewind memory so next trade starts fresh
+        _rewind_file = f"data/cursors/rewind_{symbol}.json"
+        try:
+            if os.path.exists(_rewind_file):
+                os.remove(_rewind_file)
+        except Exception:
+            pass
         
         direction = pos["direction"]
         entry     = pos["entry_price"]
