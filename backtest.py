@@ -693,13 +693,106 @@ class SignalBacktester:
 
         self.update_dynamic_stop(trade, current_price, atr)
 
+        # ── DISASTER STOP DIAGNOSTIC ────────────────────────────────────
+        # Tracks two distinct populations that a -0.6R floor would catch:
+        #
+        #   Scenario A (pure loser): mfe_r never reached 0.15R before
+        #   pnl_r crossed -0.6R. Trade went wrong immediately and drifted
+        #   toward the stop without ever showing real edge.
+        #
+        #   Scenario B (violent rejection): mfe_r DID reach 0.15–0.5R
+        #   before pnl_r crossed -0.6R. Trade proved some edge then got
+        #   violently reversed before the trail activated. The more
+        #   dangerous case — felt like a winner until it wasn't.
+        #
+        # For each trade, records the FIRST bar where pnl_r crosses -0.6R
+        # (so we get one row per trade, not one row per bar). Then tracks
+        # whether pnl_r ever recovered above -0.6R after that crossing —
+        # if it did, a hard exit at -0.6R would have been a false positive.
+        # If it didn't, the exit would have saved the difference between
+        # -0.6R and the actual final pnl_r.
+        if not hasattr(self, "_disaster_log"):
+            self._disaster_log = {}   # keyed by entry_time str, one entry per trade
+
+        _entry_key = str(trade.get("entry_time", idx))
+        DISASTER_THRESHOLD = -0.6
+
+        if pnl_r <= DISASTER_THRESHOLD and mfe_r < 0.5:
+            if _entry_key not in self._disaster_log:
+                # First bar this trade crossed the threshold — record it
+                _scenario = (
+                    "B_violent_rejection" if mfe_r >= 0.15
+                    else "A_pure_loser"
+                )
+                self._disaster_log[_entry_key] = {
+                    "entry_time":     _entry_key,
+                    "side":           side,
+                    "scenario":       _scenario,
+                    "mfe_r_at_cross": mfe_r,
+                    "pnl_r_at_cross": pnl_r,
+                    "bars_to_cross":  trade.get("bars_in_trade", 0),
+                    "recovered":      False,   # updated below if price comes back
+                    "final_pnl_r":    pnl_r,  # will be overwritten on exit
+                    "exit_reason":    None,    # will be overwritten on exit
+                }
+            else:
+                # Already crossed — check if price recovered above threshold
+                if pnl_r > DISASTER_THRESHOLD:
+                    self._disaster_log[_entry_key]["recovered"] = True
+
+        # Keep final_pnl_r and exit_reason current on every bar after crossing
+        # so when the trade exits we have accurate final values without needing
+        # a separate hook into _exit().
+        if _entry_key in self._disaster_log:
+            self._disaster_log[_entry_key]["final_pnl_r"] = pnl_r
+            # exit_reason will remain None until we read it from trades_df
+            # in the run() reporting block — no access to it here yet.
+
+        # ── DISASTER STOP — hard floor at -0.6R when trail inactive ────
+        # Two populations this catches, both requiring mfe_r < 0.5 (trail
+        # not yet activated — once trail is live it owns the trade):
+        #
+        #   Scenario A (pure loser): mfe_r stayed below 0.15R the whole
+        #   time. Trade went wrong immediately, grinding toward -1R with
+        #   no evidence of edge. 100% true-positive rate across ICX/FIL/ZEC.
+        #
+        #   Scenario B (violent rejection): mfe_r reached 0.15–0.5R then
+        #   price reversed hard to -0.6R within 12 bars. The 12-bar guard
+        #   is critical — the one false positive in ZEC (2024-10-21) took
+        #   41 bars to reach -0.6R, meaning it was a slow grind, not a
+        #   violent rejection. All genuine violent rejections in the sample
+        #   (FIL: bars 14/14/16/26) crossed within that window.
+        #
+        # Diagnostic log is still running in parallel — exits labeled
+        # "disaster_stop" will appear in the scenario analysis so you can
+        # verify the rule fires only on true positives going forward.
+        #
+        # This check runs BEFORE all other soft exits so the price saved
+        # (difference between -0.6R and the actual hard stop at -1R) is
+        # never eroded by waiting for OIE/thesis_invalid to fire first.
+        if mfe_r < 0.5 and pnl_r <= -0.6:
+            _bars_in = trade.get("bars_in_trade", 0)
+            _scenario_a = mfe_r < 0.15
+            _bars_since_peak = _bars_in - trade.get("mfe_peak_bar", _bars_in)
+            _scenario_b = mfe_r >= 0.15 and _bars_since_peak <= 6
+
+            if _scenario_a or _scenario_b:
+                entry_time_str = trade.get("entry_time", "?")
+                _which = "A_pure_loser" if _scenario_a else "B_violent_rejection"
+                print(f"[DISASTER_STOP] {entry_time_str} | side={side} | "
+                      f"scenario={_which} | "
+                      f"mfe_r={mfe_r:.3f} pnl_r={pnl_r:.3f} bars={_bars_in} | "
+                      f"exit_price={current_price:.5f} R={R:.5f}")
+                self._exit(current_price, idx, "disaster_stop")
+                return
+
         # ── STALL EXIT — catches slow bleed trades OIE never sees ──
         # bars_in_trade = trade.get("bars_in_trade", 0)
         # if self.stall_exit(trade, bars_in_trade):
         #     self._exit(current_price, idx, "stall_exit")
         #     return
 
-        # ── DOMINANCE EXIT ──────────────────────────────────────────
+        # ── DOMINANCE EXIT ──────────────────────────────────────────────
         # Fires when adverse movement is clearly dominating favorable
         # movement — not just when MFE is exactly zero.
         # Bar 3 (15 min): MAE > 0.30R and ratio > 3.0
@@ -1197,6 +1290,292 @@ class SignalBacktester:
                 fast_reversals = sum(1 for g in gaps if g <= 2)
                 print(f"\nAvg gap from peak MFE to stop hit: {avg_gap:.1f} bars ({avg_gap * 5:.0f} min)")
                 print(f"Fast reversals (≤2 bars from peak to stop): {fast_reversals}/{len(gaps)}")
+
+        # ══════════════════════════════════════════════════════════════
+        # ADAPTIVE STOP MINING — which of the 3 stop-tightening options
+        # actually fits this system's trade distribution:
+        #   (A) Time-decaying risk        — losers sit dead a long time
+        #   (B) Volatility-aware tighten   — ATR expands before the stop
+        #   (C) Path-to-stop mining        — losers reliably pass through
+        #       an early adverse threshold well before -1R, AND winners
+        #       rarely touch that same threshold (so tightening wouldn't
+        #       clip them)
+        # Tune the three constants below and re-run to test other values.
+        # ══════════════════════════════════════════════════════════════
+        if hasattr(self, "_audit_log") and self._audit_log:
+            EARLY_THRESHOLD_R = -0.6   # candidate early-tightening trigger
+            DECAY_CHECK_BAR   = 12     # ~1 hour in, for time-decay check
+            DECAY_MFE_CEILING = 0.15   # "shown nothing" threshold
+
+            _groups = []
+            _cur = []
+            for _e in self._audit_log:
+                if _e["bars"] == 1 and _cur:
+                    _groups.append(_cur)
+                    _cur = []
+                _cur.append(_e)
+            if _cur:
+                _groups.append(_cur)
+
+            # Positional alignment: groups and non-"end_of_data" trade rows
+            # are both built in strict chronological order within the same
+            # forward pass, one group per trade that reached _check_intrabar.
+            _trades_aligned = (
+                trades_df[trades_df["exit_reason"] != "end_of_data"].reset_index(drop=True)
+                if not trades_df.empty else pd.DataFrame()
+            )
+
+            _path_rows = []
+            _false_positive_winners = []
+            _atr_expansion_rows = []
+            _decay_rows = []
+
+            for _gi, _grp in enumerate(_groups):
+                if not _grp or _gi >= len(_trades_aligned):
+                    continue
+
+                _exit_reason = _trades_aligned.iloc[_gi]["exit_reason"]
+                _is_stop_loss_exit = _exit_reason == "stop_loss"
+                _entry_atr = _grp[0].get("atr_5m")
+                _entry_time = _trades_aligned.iloc[_gi]["entry_time"]
+                _final_pnl_r = _trades_aligned.iloc[_gi]["pnl_r"]
+
+                # consecutive bars below EARLY_THRESHOLD_R, and whether
+                # the trade ever recovered above -0.3R after dipping
+                _consec_below = 0
+                _max_consec_below = 0
+                _recovered_after_dip = False
+                _dipped = False
+                for _e in _grp:
+                    if _e["pnl_r"] <= EARLY_THRESHOLD_R:
+                        _dipped = True
+                        _consec_below += 1
+                        _max_consec_below = max(_max_consec_below, _consec_below)
+                    else:
+                        if _dipped and _e["pnl_r"] > -0.3:
+                            _recovered_after_dip = True
+                        _consec_below = 0
+
+                if _dipped:
+                    # The correct question isn't "did this end in stop_loss"
+                    # — it's "did the trade ever recover to better than the
+                    # threshold before it finally exited, by ANY mechanism."
+                    # A trade caught by thesis_invalidation/stop_proximity/
+                    # dominance_exit AFTER dipping below threshold, at a
+                    # final pnl_r still worse than the threshold, is a TRUE
+                    # confirmation — tightening here would have cut it
+                    # earlier at a better price, not clipped a winner.
+                    _recovered_past_threshold = _final_pnl_r > EARLY_THRESHOLD_R
+                    if _recovered_past_threshold:
+                        _false_positive_winners.append({
+                            "entry_time": _entry_time,
+                            "final_pnl_r": _final_pnl_r,
+                            "exit_reason": _exit_reason,
+                        })
+                    else:
+                        _path_rows.append({
+                            "entry_time": _entry_time,
+                            "max_consec_below": _max_consec_below,
+                            "recovered": _recovered_after_dip,
+                            "exit_reason": _exit_reason,
+                            "final_pnl_r": _final_pnl_r,
+                        })
+
+                # ATR expansion: final 3 bars' ATR vs entry-bar ATR
+                if _is_stop_loss_exit and _entry_atr and _entry_atr > 0:
+                    _late_atrs = [e["atr_5m"] for e in _grp[-3:] if e.get("atr_5m")]
+                    if _late_atrs:
+                        _late_atr_avg = sum(_late_atrs) / len(_late_atrs)
+                        _atr_expansion_rows.append({
+                            "entry_time": _entry_time,
+                            "expansion_ratio": _late_atr_avg / _entry_atr,
+                        })
+
+                # Time decay: was mfe_r still tiny by DECAY_CHECK_BAR for
+                # trades that eventually stopped out anyway?
+                if _is_stop_loss_exit:
+                    _bar_at_check = next((e for e in _grp if e["bars"] >= DECAY_CHECK_BAR), None)
+                    if _bar_at_check is not None:
+                        _decay_rows.append({
+                            "entry_time": _entry_time,
+                            "mfe_r_at_check": _bar_at_check["mfe_r"],
+                            "showed_nothing": _bar_at_check["mfe_r"] < DECAY_MFE_CEILING,
+                        })
+
+            print("\n=== ADAPTIVE STOP MINING (which option fits your system) ===")
+
+            # --- (C) Path-to-stop mining ---
+            print(f"\n--- Path-to-stop: trades dipping below {EARLY_THRESHOLD_R}R ---")
+            if _path_rows:
+                _n_path = len(_path_rows)
+                _n_no_recover = sum(1 for r in _path_rows if not r["recovered"])
+                print(f"{_n_path} stop_loss losers dipped below {EARLY_THRESHOLD_R}R at some point.")
+                print(f"  {_n_no_recover}/{_n_path} ({_n_no_recover/_n_path*100:.0f}%) never recovered "
+                      f"above -0.3R after the dip.")
+                _avg_consec = sum(r["max_consec_below"] for r in _path_rows) / _n_path
+                print(f"  Avg consecutive bars spent below {EARLY_THRESHOLD_R}R: "
+                      f"{_avg_consec:.1f} ({_avg_consec*5:.0f} min)")
+            else:
+                print(f"  No stop_loss losers dipped below {EARLY_THRESHOLD_R}R pre-stop — "
+                      f"threshold may be too aggressive to test, or sample too small.")
+
+            if _false_positive_winners:
+                _n_fp = len(_false_positive_winners)
+                print(f"\n  ⚠️ {_n_fp} trade(s) ALSO dipped below {EARLY_THRESHOLD_R}R but did NOT "
+                      f"end in stop_loss (would've been cut early by tightening here):")
+                for r in _false_positive_winners:
+                    print(f"    {str(r['entry_time'])[:16]} exit={r['exit_reason']:>20} "
+                          f"final_pnl_r={r['final_pnl_r']:.3f}")
+            else:
+                print(f"\n  ✅ Zero trades dipped below {EARLY_THRESHOLD_R}R and still survived/won — "
+                      f"tightening here would not have cost any winners in this sample.")
+
+            if _path_rows and not _false_positive_winners:
+                print(f"\n  → VERDICT: {EARLY_THRESHOLD_R}R looks like a strong candidate for "
+                      f"adaptive disaster-stop tightening — confirms losers without clipping winners.")
+            elif _path_rows and _false_positive_winners:
+                _ratio = len(_false_positive_winners) / len(_path_rows)
+                _verdict_txt = "too risky, raise the threshold or test deeper" if _ratio > 0.15 else "still workable, but watch this"
+                print(f"\n  → VERDICT: {len(_false_positive_winners)} false positive(s) vs "
+                      f"{len(_path_rows)} true positive(s) ({_ratio*100:.0f}% false-positive rate) "
+                      f"— {_verdict_txt}.")
+
+            # --- (B) Volatility-aware tightening ---
+            print(f"\n--- Volatility check: ATR in final 3 bars vs entry ATR (stop_loss losers) ---")
+            if _atr_expansion_rows:
+                _n_atr = len(_atr_expansion_rows)
+                _avg_expansion = sum(r["expansion_ratio"] for r in _atr_expansion_rows) / _n_atr
+                _n_expanded = sum(1 for r in _atr_expansion_rows if r["expansion_ratio"] > 1.5)
+                print(f"  {_n_atr} stop_loss losers measured | avg late/entry ATR ratio = {_avg_expansion:.2f}x")
+                print(f"  {_n_expanded}/{_n_atr} ({_n_expanded/_n_atr*100:.0f}%) showed ATR expansion "
+                      f">1.5x before the stop hit.")
+                if _n_expanded / _n_atr > 0.5:
+                    print("  → VERDICT: majority of losers show real volatility expansion — "
+                          "volatility-aware tightening has empirical support.")
+                else:
+                    print("  → VERDICT: most losers did NOT show ATR expansion before stopping — "
+                          "this option alone likely wouldn't have caught most of these.")
+            else:
+                print("  No stop_loss trades with usable ATR data in this run.")
+
+            # --- (A) Time-decaying risk ---
+            print(f"\n--- Time decay check: mfe_r at bar {DECAY_CHECK_BAR} "
+                  f"(~{DECAY_CHECK_BAR*5}min) for stop_loss losers ---")
+            if _decay_rows:
+                _n_decay = len(_decay_rows)
+                _n_nothing = sum(1 for r in _decay_rows if r["showed_nothing"])
+                print(f"  {_n_decay} stop_loss losers lived past bar {DECAY_CHECK_BAR} | "
+                      f"{_n_nothing}/{_n_decay} ({_n_nothing/_n_decay*100:.0f}%) still had "
+                      f"mfe_r < {DECAY_MFE_CEILING} at that point (showed no edge yet).")
+                if _n_nothing / _n_decay > 0.5:
+                    print("  → VERDICT: majority of slow losers show zero edge by 1hr in — "
+                          "time-decaying risk has empirical support.")
+                else:
+                    print("  → VERDICT: most slow losers HAD shown some edge by 1hr — "
+                          "time-decay risks cutting trades that still had a case to stay open.")
+            else:
+                print(f"  No stop_loss trades lasted past bar {DECAY_CHECK_BAR} in this run — "
+                      f"sample too short-lived to evaluate, or trades resolve fast already.")
+
+            print("\n(Tune EARLY_THRESHOLD_R / DECAY_CHECK_BAR / DECAY_MFE_CEILING at the top "
+                  "of this block and re-run to test other candidate values.)")
+
+        # ══════════════════════════════════════════════════════════════
+        # DISASTER STOP SCENARIO ANALYSIS
+        # Breaks down trades that crossed -0.6R into two populations:
+        #   A — pure losers (never showed edge before crossing)
+        #   B — violent rejections (had 0.15–0.5R MFE then collapsed)
+        # For each: how many recovered above -0.6R (false positives for
+        # a hard exit) vs how many continued to a worse final pnl_r
+        # (true positives where the exit would have saved money).
+        # ══════════════════════════════════════════════════════════════
+        if hasattr(self, "_disaster_log") and self._disaster_log and not trades_df.empty:
+
+            # Patch in final_pnl_r and exit_reason from trades_df
+            # using entry_time as the join key — more reliable than
+            # bar index since _disaster_log is also keyed by entry_time.
+            _trade_lookup = {
+                str(row["entry_time"]): row
+                for _, row in trades_df.iterrows()
+            }
+            for _key, _rec in self._disaster_log.items():
+                if _key in _trade_lookup:
+                    _t = _trade_lookup[_key]
+                    _rec["final_pnl_r"] = _t["pnl_r"]
+                    _rec["exit_reason"] = _t["exit_reason"]
+                    # Correct recovered flag using actual final pnl_r:
+                    # if final_pnl_r > threshold the trade genuinely came back
+                    _rec["recovered"] = _t["pnl_r"] > -0.6
+
+            _all = list(self._disaster_log.values())
+            _A = [r for r in _all if r["scenario"] == "A_pure_loser"]
+            _B = [r for r in _all if r["scenario"] == "B_violent_rejection"]
+
+            print("\n=== DISASTER STOP SCENARIO ANALYSIS (threshold = -0.6R) ===")
+
+            for _label, _pop in [("A — Pure losers (mfe_r < 0.15 at crossing)", _A),
+                                  ("B — Violent rejections (mfe_r 0.15–0.5R at crossing)", _B)]:
+                if not _pop:
+                    print(f"\n{_label}\n  No trades in this population.")
+                    continue
+
+                _n = len(_pop)
+                _n_recovered = sum(1 for r in _pop if r["recovered"])
+                _n_continued = _n - _n_recovered
+                _avg_mfe_at_cross = sum(r["mfe_r_at_cross"] for r in _pop) / _n
+                _avg_pnl_at_cross = sum(r["pnl_r_at_cross"] for r in _pop) / _n
+                _avg_final_pnl    = sum(r["final_pnl_r"] for r in _pop) / _n
+                _avg_bars         = sum(r["bars_to_cross"] for r in _pop) / _n
+                _avg_saving = sum(
+                    abs(r["final_pnl_r"]) - 0.6
+                    for r in _pop if not r["recovered"]
+                ) / max(_n_continued, 1)
+
+                print(f"\n{_label}")
+                print(f"  Total trades crossing -0.6R : {_n}")
+                print(f"  Recovered above -0.6R (false positive) : {_n_recovered} "
+                      f"({_n_recovered/_n*100:.0f}%)")
+                print(f"  Continued to worse exit (true positive) : {_n_continued} "
+                      f"({_n_continued/_n*100:.0f}%)")
+                print(f"  Avg mfe_r when -0.6R crossed  : {_avg_mfe_at_cross:.3f}R")
+                print(f"  Avg pnl_r when -0.6R crossed  : {_avg_pnl_at_cross:.3f}R")
+                print(f"  Avg final pnl_r (actual exit) : {_avg_final_pnl:.3f}R")
+                print(f"  Avg bars to reach -0.6R       : {_avg_bars:.1f} ({_avg_bars*5:.0f} min)")
+                print(f"  Avg R saved per true positive : {_avg_saving:.3f}R "
+                      f"(diff between -0.6R exit and actual exit)")
+
+                print(f"\n  Per-trade detail:")
+                print(f"  {'entry_time':>16} {'side':>4} {'mfe@cross':>10} "
+                      f"{'pnl@cross':>10} {'final_pnl':>10} "
+                      f"{'bars':>5} {'recovered':>10} {'exit_reason':>22}")
+                print(f"  {'-'*95}")
+                for r in sorted(_pop, key=lambda x: x["bars_to_cross"]):
+                    print(f"  {str(r['entry_time'])[:16]:>16} "
+                          f"{'L' if r['side']==1 else 'S':>4} "
+                          f"{r['mfe_r_at_cross']:>10.3f} "
+                          f"{r['pnl_r_at_cross']:>10.3f} "
+                          f"{r['final_pnl_r']:>10.3f} "
+                          f"{r['bars_to_cross']:>5} "
+                          f"{str(r['recovered']):>10} "
+                          f"{str(r.get('exit_reason','?')):>22}")
+
+            # Overall verdict
+            _total = len(_all)
+            _total_fp = sum(1 for r in _all if r["recovered"])
+            _total_tp = _total - _total_fp
+            print(f"\n  ── OVERALL ──")
+            print(f"  {_total} trades crossed -0.6R with mfe_r < 0.5R")
+            print(f"  {_total_tp} ({_total_tp/_total*100:.0f}%) would benefit from a hard -0.6R exit")
+            print(f"  {_total_fp} ({_total_fp/_total*100:.0f}%) recovered — these are the cost of the rule")
+            if _total_fp / _total < 0.15:
+                print("  → VERDICT: false-positive rate under 15% — "
+                      "-0.6R disaster stop is empirically justified for BOTH scenarios.")
+            elif _total_fp / _total < 0.30:
+                print("  → VERDICT: false-positive rate 15–30% — "
+                      "workable but check if Scenario B recoveries skew the number.")
+            else:
+                print("  → VERDICT: false-positive rate above 30% — "
+                      "too many recoveries, raise threshold or split the rule by scenario.")
 
         liquidations = len(trades_df[trades_df["exit_reason"] == "liquidated"]) if not trades_df.empty else 0
 

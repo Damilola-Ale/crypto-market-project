@@ -466,37 +466,62 @@ def amend_stop(
     trade_id: str = None,
 ) -> dict:
     """
-    Cancel the existing stop and place a new STOP_MARKET at new_stop_price.
-    Binance Futures does not support in-place stop amendment.
-    Stops are now Algo Orders (mandatory since 2025-12-09) — cancel via
+    Place the NEW stop first, confirm it, THEN cancel the old one.
+    Binance Futures does not support in-place stop amendment, so this
+    is implemented as place-then-cancel rather than cancel-then-place —
+    the latter leaves the position completely unprotected on the
+    exchange for the duration of the round trip between the two calls.
+    Worst case here is briefly having two live stops (harmless — the
+    first one to trigger closes the position via reduce-only, making
+    the other a no-op once quantity is gone), never zero stops.
+
+    Stops are Algo Orders (mandatory since 2025-12-09) — cancel via
     /fapi/v1/algoOrder using algoId, not the legacy orderId-based cancel.
 
     Returns the new stop order dict.
     """
-    # Cancel old stop first (ignore errors — it may have already been hit)
-    if existing_stop_order_id:
-        try:
-            _cancel_algo_order(existing_stop_order_id)
-            print(f"[BINANCE AMEND STOP] cancelled old stop algoId={existing_stop_order_id}")
-        except BinanceExecutionError as e:
-            print(f"[BINANCE AMEND STOP] cancel failed (may already be filled): {e}")
-
     stop_side = "SELL" if direction == 1 else "BUY"
-    stop_cid  = f"stop_{trade_id}"[:36] if trade_id else None
+    stop_cid  = f"stop_{trade_id}_{int(time.time() * 1000)}"[:36] if trade_id else None
 
-    new_stop = _place_stop_market_order(
-        symbol=symbol,
-        side=stop_side,
-        stop_price=new_stop_price,
-        quantity=quantity,
-        reduce_only=True,
-        client_order_id=stop_cid,
-    )
+    # ── Place new stop FIRST ─────────────────────────────────────
+    try:
+        new_stop = _place_stop_market_order(
+            symbol=symbol,
+            side=stop_side,
+            stop_price=new_stop_price,
+            quantity=quantity,
+            reduce_only=True,
+            client_order_id=stop_cid,
+        )
+    except BinanceExecutionError as e:
+        # New stop failed to place — the OLD stop is still live and still
+        # protecting the position. Do NOT cancel it. Raise so the caller
+        # knows the trail did not actually move and must not update its
+        # local stop_loss state.
+        raise BinanceExecutionError(
+            f"[BINANCE AMEND STOP] new stop placement failed for {symbol}, "
+            f"OLD stop (algoId={existing_stop_order_id}) left intact: {e}"
+        ) from e
 
     print(
         f"[BINANCE AMEND STOP] {symbol} new stop={new_stop_price} "
         f"algoId={new_stop.get('algoId')}"
     )
+
+    # ── Cancel old stop SECOND, only after new one is confirmed live ──
+    if existing_stop_order_id:
+        try:
+            _cancel_algo_order(existing_stop_order_id)
+            print(f"[BINANCE AMEND STOP] cancelled old stop algoId={existing_stop_order_id}")
+        except BinanceExecutionError as e:
+            # Old stop cancel failed — most likely it already triggered.
+            # Not dangerous: worst case is two reduce-only stop orders
+            # briefly coexisting; whichever fills first closes the
+            # quantity and makes the other a harmless no-op.
+            print(
+                f"[BINANCE AMEND STOP] old stop cancel failed (likely already "
+                f"filled/gone) — old and new may briefly coexist, this is safe: {e}"
+            )
 
     return new_stop
 

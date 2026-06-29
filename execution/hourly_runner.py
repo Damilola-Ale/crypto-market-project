@@ -944,12 +944,14 @@ def run_hourly_for_symbol(
                 forming_open = float(forming.loc[current_5m_boundary, "open"])
                 placeholder = pd.DataFrame(
                     [{
-                        "open":  forming_open,
-                        "high":  forming_open,
-                        "low":   forming_open,
-                        "close": forming_open,
-                        "volume": 0.0,
+                        "open":          forming_open,
+                        "high":          forming_open,
+                        "low":           forming_open,
+                        "close":         forming_open,
+                        "volume":        0.0,
                         "taker_buy_base": 0.0,
+                        "intrabar_high": float(forming.loc[current_5m_boundary, "high"]),
+                        "intrabar_low":  float(forming.loc[current_5m_boundary, "low"]),
                     }],
                     index=pd.DatetimeIndex([current_5m_boundary], tz="UTC"),
                 )
@@ -1205,15 +1207,19 @@ def run_hourly_for_symbol(
         if symbol in pm.positions and last_seen is not None:
             if last_seen in lltf_frozen.index:
                 _last_seen_row = lltf_frozen.loc[last_seen]
+                # Check pinned OHLC — intrabar_high/low columns may differ
+                # so only check the columns that are actually pinned on a placeholder
                 _was_placeholder = (
                     _last_seen_row.get("volume", 0) == 0
-                    and _last_seen_row["high"] == _last_seen_row["low"] == _last_seen_row["open"]
+                    and _last_seen_row["high"] == _last_seen_row["open"]
+                    and _last_seen_row["low"] == _last_seen_row["open"]
+                    and _last_seen_row["close"] == _last_seen_row["open"]
                 )
                 if _was_placeholder:
-                    _bars_up_to_last = lltf_frozen[lltf_frozen.index <= last_seen]
-                    if len(_bars_up_to_last) >= 2:
-                        last_seen = _bars_up_to_last.index[-2]
-                        print(f"[CURSOR REWIND] {symbol} — {last_seen} was placeholder, rewound for real OHLC recheck")
+                    _bars_before_placeholder = lltf_frozen[lltf_frozen.index < last_seen]
+                    if not _bars_before_placeholder.empty:
+                        last_seen = _bars_before_placeholder.index[-1]
+                        print(f"[CURSOR REWIND] {symbol} — {last_seen} was placeholder, rewound to {last_seen}")
 
         new_bars = (
             lltf_frozen if last_seen is None

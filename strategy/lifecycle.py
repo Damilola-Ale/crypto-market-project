@@ -362,8 +362,98 @@ class PositionManager:
                     atr_5m=_atr_5m_live,
                     window_5m=window_5m,
                 ))
+                
+                # ── DISASTER STOP (bars 1–3, partial-bar aware) ──────────
+                # The only exit that reads real intrabar extremes from the
+                # forming candle. All other exits stay on closed-bar data.
+                # intrabar_high/low are injected by the placeholder in
+                # hourly_runner — on closed bars those columns are absent
+                # so it falls back to the normal h/l (same result).
+                #
+                # Scenario A — pure loser (mfe_r < 0.15):
+                #   No edge shown at all. 0% recovery rate in audit.
+                #
+                # Scenario B — violent rejection (mfe_r 0.15–0.5):
+                #   Had real promise, collapsed hard within 6 bars of peak.
+                #   >6 bars excluded — slow grinds are not violent rejections.
+                if exit_reason is None and _bars <= 3:
+                    _entry        = position["entry_price"]
+                    _initial_stop = position.get("initial_stop", position["stop_loss"])
+                    _R            = abs(_entry - _initial_stop) or 1e-9
+                    _mfe_peak_bar    = position.get("last_mfe_bar", 0)
+                    _bars_since_peak = _bars - _mfe_peak_bar
 
-                if _bars == 3 and mfe_r_now == 0.0 and _mae_r > 0.50:
+                    # Detect whether this is a forming bar (placeholder) or
+                    # a closed bar. On a placeholder: volume=0, h==l==o==c,
+                    # but intrabar_high/low carry the real exchange extremes.
+                    # On a closed bar: intrabar columns are absent, falls back
+                    # to h/l which are identical to the real extremes anyway.
+                    _has_intrabar = (
+                        "intrabar_low" in current_5m_row.index
+                        and "intrabar_high" in current_5m_row.index
+                        and not pd.isna(current_5m_row.get("intrabar_low"))
+                        and not pd.isna(current_5m_row.get("intrabar_high"))
+                    )
+                    _real_low  = float(current_5m_row.get("intrabar_low",  l))
+                    _real_high = float(current_5m_row.get("intrabar_high", h))
+                    _data_source = "PARTIAL_BAR" if _has_intrabar and _is_placeholder_bar else "CLOSED_BAR"
+
+                    _intrabar_pnl_r = (
+                        (_real_low  - _entry) / _R if side == 1
+                        else (_entry - _real_high) / _R
+                    )
+
+                    # Close-based pnl_r for comparison — shows exactly how
+                    # much earlier the partial data fires vs waiting for close
+                    _close_pnl_r = (
+                        (c - _entry) / _R if side == 1
+                        else (_entry - c) / _R
+                    )
+
+                    _scenario_a = mfe_r_now < 0.15 and _intrabar_pnl_r <= -0.6
+                    _scenario_b = (
+                        0.15 <= mfe_r_now < 0.5
+                        and _intrabar_pnl_r <= -0.6
+                        and _bars_since_peak <= 6
+                    )
+
+                    # Always log disaster stop evaluation on bars 1–3 so we
+                    # can confirm partial data is being read and how far it
+                    # is from the threshold — even when it doesn't fire.
+                    _tg_debug(
+                        f"[DISASTER_STOP_EVAL] {symbol} | bar={_bars} | {_data_source}\n"
+                        f"side={'L' if side == 1 else 'S'} | "
+                        f"entry={_entry:.5f} | "
+                        f"real_low={_real_low:.5f} real_high={_real_high:.5f}\n"
+                        f"intrabar_pnl_r={_intrabar_pnl_r:.3f} | "
+                        f"close_pnl_r={_close_pnl_r:.3f} | "
+                        f"mfe_r={mfe_r_now:.3f}\n"
+                        f"scenario_a={_scenario_a} (need mfe_r<0.15 + pnl_r<=-0.6) | "
+                        f"scenario_b={_scenario_b} (need 0.15<=mfe_r<0.5 + pnl_r<=-0.6 + bars_since_peak<=6)\n"
+                        f"partial_advantage={(_close_pnl_r - _intrabar_pnl_r):.3f}R "
+                        f"({'partial fires, close would NOT' if _intrabar_pnl_r <= -0.6 and _close_pnl_r > -0.6 else 'both same' if abs(_close_pnl_r - _intrabar_pnl_r) < 0.001 else 'both fire' if _intrabar_pnl_r <= -0.6 and _close_pnl_r <= -0.6 else 'neither fires'})"
+                    )
+
+                    if _scenario_a or _scenario_b:
+                        _which = "A_pure_loser" if _scenario_a else "B_violent_rejection"
+                        _fill  = _real_low if side == 1 else _real_high
+                        _tg_debug(
+                            f"[DISASTER_STOP 🔥FIRED] {symbol} | scenario={_which} | {_data_source}\n"
+                            f"mfe_r={mfe_r_now:.3f} intrabar_pnl_r={_intrabar_pnl_r:.3f} "
+                            f"close_pnl_r={_close_pnl_r:.3f}\n"
+                            f"bars={_bars} bars_since_peak={_bars_since_peak} | "
+                            f"fill={_fill:.5f}\n"
+                            f"partial_saved={'YES — would have waited for close' if _close_pnl_r > -0.6 else 'NO — close already past threshold'}"
+                        )
+                        print(
+                            f"[DISASTER_STOP] {symbol} | scenario={_which} | {_data_source} | "
+                            f"mfe_r={mfe_r_now:.3f} intrabar_pnl_r={_intrabar_pnl_r:.3f} "
+                            f"bars={_bars} bars_since_peak={_bars_since_peak} | "
+                            f"fill={_fill:.5f}"
+                        )
+                        try_exit("disaster_stop", _fill)
+
+                if exit_reason is None and _bars == 3 and mfe_r_now == 0.0 and _mae_r > 0.50:
                     try_exit("dominance_exit", current_price)
 
                 # ── TRAP REJECTION EXIT ──────────────────────────────
@@ -827,10 +917,14 @@ class PositionManager:
             new_stop = min(current_stop, trail_candidate)
 
         if new_stop != current_stop:
-            position["stop_loss"] = new_stop
-            position["trailing_activated"] = True
-
             # ── BINANCE STOP AMENDMENT ─────────────────────────────
+            # Attempt the exchange-side amend FIRST. Only update local
+            # state if it actually succeeds — otherwise position["stop_loss"]
+            # would claim the trail moved while the real stop on Binance
+            # is still sitting at the old, looser price. That mismatch
+            # would make the local hard_stop check (which uses
+            # position["stop_loss"]) fire/skip based on a price the
+            # exchange isn't actually protecting against.
             if _EXECUTION_ENABLED and self._is_live:
                 try:
                     new_stop_order = _binance_amend_stop(
@@ -842,8 +936,19 @@ class PositionManager:
                         trade_id=position.get("trade_id"),
                     )
                     position["binance_stop_order_id"] = new_stop_order.get("algoId")
+                    position["stop_loss"] = new_stop
+                    position["trailing_activated"] = True
                 except BinanceExecutionError as e:
-                    _tg_debug(f"[BINANCE STOP AMEND FAILED] {position['symbol']} — {e}")
+                    _tg_debug(
+                        f"[BINANCE STOP AMEND FAILED] {position['symbol']} — {e}\n"
+                        f"Local stop_loss NOT updated — staying at {current_stop} "
+                        f"to match what's actually live on the exchange."
+                    )
+            else:
+                # No live execution — paper/backtest-parity mode, just
+                # update local state since there's no exchange order to sync.
+                position["stop_loss"] = new_stop
+                position["trailing_activated"] = True
             # ────────────────────────────────────────────────────────
 
     # --------------------------------------------------
