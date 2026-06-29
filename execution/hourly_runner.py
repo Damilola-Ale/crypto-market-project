@@ -1216,10 +1216,28 @@ def run_hourly_for_symbol(
                     and _last_seen_row["close"] == _last_seen_row["open"]
                 )
                 if _was_placeholder:
+                    # Only rewind if this placeholder timestamp is genuinely
+                    # unprocessed — i.e. the bar BEFORE it hasn't been seen yet.
+                    # If the bar before it is already behind last_seen, we already
+                    # processed through it last tick and should NOT rewind again.
+                    # Rewinding every tick means the real closed bar (with actual
+                    # low/high that may hit the stop) is skipped permanently.
                     _bars_before_placeholder = lltf_frozen[lltf_frozen.index < last_seen]
                     if not _bars_before_placeholder.empty:
-                        last_seen = _bars_before_placeholder.index[-1]
-                        print(f"[CURSOR REWIND] {symbol} — {last_seen} was placeholder, rewound to {last_seen}")
+                        _rewind_target = _bars_before_placeholder.index[-1]
+                        # Guard: only rewind if the target bar hasn't been
+                        # processed yet this session. Use a per-symbol set
+                        # to track which placeholder timestamps we've already
+                        # rewound through — prevents infinite rewind loops.
+                        if not hasattr(pm, '_rewound_placeholders'):
+                            pm._rewound_placeholders = {}
+                        _already_rewound = pm._rewound_placeholders.get(symbol) == last_seen
+                        if not _already_rewound:
+                            pm._rewound_placeholders[symbol] = last_seen
+                            last_seen = _rewind_target
+                            print(f"[CURSOR REWIND] {symbol} — placeholder at {pm._rewound_placeholders[symbol]}, rewound to {last_seen}")
+                        else:
+                            print(f"[CURSOR REWIND SKIPPED] {symbol} — already rewound through {last_seen} this session, letting real bar through")
 
         new_bars = (
             lltf_frozen if last_seen is None
