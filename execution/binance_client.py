@@ -483,6 +483,33 @@ def amend_stop(
     stop_side = "SELL" if direction == 1 else "BUY"
     stop_cid  = f"stop_{trade_id}_{int(time.time() * 1000)}"[:36] if trade_id else None
 
+    # ── Clamp stop to safe distance from current mark price ──────
+    # Binance rejects -2021 if the stop would trigger immediately
+    # (i.e. new_stop_price >= mark for a short stop, or <= mark for a long stop).
+    # Fetch mark price and clamp to at least 0.15% away so the order lands safely.
+    try:
+        _ticker = _request("GET", "/fapi/v1/ticker/price", {"symbol": symbol}, signed=False)
+        _mark = float(_ticker["price"])
+        _min_gap = _mark * 0.0015  # 0.15% buffer
+        if direction == 1:   # LONG stop is below market
+            if new_stop_price >= _mark - _min_gap:
+                _clamped = _mark - _min_gap
+                print(
+                    f"[AMEND CLAMP] {symbol} LONG stop {new_stop_price:.6f} too close to "
+                    f"mark {_mark:.6f} — clamped to {_clamped:.6f}"
+                )
+                new_stop_price = _clamped
+        else:                # SHORT stop is above market
+            if new_stop_price <= _mark + _min_gap:
+                _clamped = _mark + _min_gap
+                print(
+                    f"[AMEND CLAMP] {symbol} SHORT stop {new_stop_price:.6f} too close to "
+                    f"mark {_mark:.6f} — clamped to {_clamped:.6f}"
+                )
+                new_stop_price = _clamped
+    except Exception as _clamp_err:
+        print(f"[AMEND CLAMP FAILED] {symbol} — {_clamp_err}, proceeding with original price")
+
     # ── Place new stop FIRST ─────────────────────────────────────
     try:
         new_stop = _place_stop_market_order(

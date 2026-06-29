@@ -459,6 +459,30 @@ def run_hourly():
     _priority = [s for s in SYMBOLS if s in _open_symbols]
     _normal   = [s for s in SYMBOLS if s not in _open_symbols]
 
+    # Process all priority symbols FIRST in their own pass before any
+    # normal symbol runs. This guarantees open positions get exit checks
+    # on the current bar even if the normal symbol loop takes minutes.
+    print(f"[PRIORITY PASS] processing {len(_priority)} open symbols first: {_priority}")
+    for symbol in _priority:
+        from data_pipeline.rate_limiter import rate_limiter as _rl
+        _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
+        try:
+            result = run_hourly_for_symbol(symbol, external_pm=pm_check)
+            if isinstance(result, tuple):
+                summary, _ = result
+            else:
+                summary = result
+            symbol_summaries.append((symbol, summary))
+        except Exception as sym_err:
+            err_str = str(sym_err)
+            if "IP_BANNED" in err_str:
+                import re
+                match = re.search(r"wait (\d+)s", err_str)
+                if match and ip_ban_wait is None:
+                    ip_ban_wait = int(match.group(1))
+            failed_symbols.append(symbol)
+            symbol_summaries.append((symbol, None))
+
     try:
         _scores = {s: _symbol_priority_score(s) for s in _normal}
         _normal_sorted = sorted(_normal, key=lambda s: _scores[s], reverse=True)
@@ -552,6 +576,8 @@ def run_hourly():
                 )
 
     for symbol in _run_order:
+        if symbol in _priority:
+            continue  # already processed in priority pass above
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
 
@@ -852,11 +878,18 @@ def run_hourly_for_symbol(
         try:
             now_check = datetime.now(timezone.utc)
             is_5m_boundary = now_check.minute % 5 == 0
-
+            
             if forced_time is None and not replay:
                 _now_utc_c = datetime.now(timezone.utc)
                 _is_new_hour = _now_utc_c.minute < 5  # first 5 minutes of the hour
-                if is_5m_boundary or _is_new_hour or not os.path.exists(_cache_path(symbol, "5m")):
+                _has_open_position = symbol in pm.positions
+                # Only do the full update_symbol (1h + 4h + 5m) when:
+                # - It's a new hour (need fresh 1h/4h bars)
+                # - No 5m cache exists yet
+                # - Symbol has an open position (need accurate data for exit checks)
+                # For normal symbols at non-hour boundaries, skip straight to
+                # cache-serve which only fetches the missing 5m bars.
+                if _is_new_hour or not os.path.exists(_cache_path(symbol, "5m")) or _has_open_position:
                     df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
                 else:
                     # between 5m boundaries — serve 1H/4H from cache.

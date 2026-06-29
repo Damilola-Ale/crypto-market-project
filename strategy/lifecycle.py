@@ -582,17 +582,6 @@ class PositionManager:
         if not position and signal != 0:
 
             if symbol in self._just_unlocked:
-                _tg_debug(
-                    f"[ENTRY BLOCKED — JUST UNLOCKED] {symbol} "
-                    f"dir={signal} bar={current_ts}"
-                )
-                return {"state": "FLAT"}
-
-            if symbol in self._just_unlocked:
-                _tg_debug(
-                    f"[ENTRY BLOCKED — JUST UNLOCKED] {symbol} "
-                    f"dir={signal} bar={current_ts}"
-                )
                 return {"state": "FLAT"}
 
             if symbol in self._reentry_lock:
@@ -629,27 +618,15 @@ class PositionManager:
                 )
                 return {"state": "FLAT"}
 
-            # Live staleness gate — BEFORE registering the signal ID.
-            # This ensures stale bars from cursor-reset recovery never
-            # consume a signal slot or touch Binance, even if executed_signals
-            # was empty on restart.
+            # Live staleness gate — before registering the signal ID so
+            # stale bars don't consume a signal slot.
             if self._is_live:
                 _now_utc = pd.Timestamp.now(tz="UTC")
                 _bar_age_seconds = (_now_utc - current_ts).total_seconds()
-                if _bar_age_seconds > 300:  # 5 minutes
-                    _tg_debug(
-                        f"[ENTRY BLOCKED — STALE BAR] {symbol}\n"
-                        f"bar_ts={current_ts} now={_now_utc}\n"
-                        f"age={_bar_age_seconds:.0f}s > 300s limit"
-                    )
+                if _bar_age_seconds > 300:
                     return {"state": "FLAT"}
 
             self._executed_signals.add(signal_id)
-            _tg_debug(
-                f"[EXECUTED SIGNAL REGISTERED] {symbol}\n"
-                f"signal_id={signal_id}\n"
-                f"total_executed={len(self._executed_signals)}"
-            )
 
             # Use current 5m bar open as fill price.
             # external_row["open"] is the signal bar open — a price that
@@ -667,13 +644,7 @@ class PositionManager:
 
             atr = float(atr)
 
-            _tg_debug(
-                f"[PRE-OPEN] {symbol}\n"
-                f"signal={signal} atr={atr}\n"
-                f"current_ts={current_ts}\n"
-                f"entry_price_raw={float(current_5m_row['open'])}\n"
-                f"positions_before_open={list(self.positions.keys())}"
-            )
+            pass  # pre-open debug removed
 
             if atr <= 0:
                 _tg_debug(f"[ENTRY BLOCKED — ATR] {symbol} @ {current_ts} atr={atr}")
@@ -975,10 +946,6 @@ class PositionManager:
 
         # Hard cap on simultaneous trades
         if len(self.positions) >= self.MAX_SIMULTANEOUS:
-            _tg_debug(
-                f"[ENTRY BLOCKED — MAX TRADES] {symbol}\n"
-                f"open={len(self.positions)} max={self.MAX_SIMULTANEOUS}"
-            )
             return None
 
         # Position sizing — fixed floor below threshold, percentage above
