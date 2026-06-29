@@ -341,26 +341,67 @@ def run_hourly():
                                     f"(atr={_fallback_atr:.6f}), will be reconstructed on next bar"
                                 )
 
+                            # Align entry_5m_ts to the current 5m bar boundary, not raw
+                            # wall-clock time. update()'s is_entry_candle check compares
+                            # this against current_5m_row.name, which is ALWAYS a bar
+                            # boundary — a raw now() here can never match it, so
+                            # is_entry_candle was permanently False for recovered
+                            # positions. That skipped the one-bar grace period every
+                            # fresh entry gets, and exit logic (hard stop, disaster
+                            # stop, OIE) ran immediately against a synthetic ATR-based
+                            # fallback stop instead of the real exchange stop.
+                            _recovery_5m_boundary = pd.Timestamp.now(tz="UTC").floor("5min")
+                            # Seed pnl_r/MFE/MAE from the CURRENT market price at recovery
+                            # time, not a hardcoded 0.0. Leaving these at 0.0 made every
+                            # recovered position display "pnl=+0.000R" on the very next
+                            # TRADE ACTIVE notify even when real PnL already existed —
+                            # the seeded value isn't wrong, it's just "not measured yet,"
+                            # but it reads as a calculation bug. Using current price closes
+                            # that gap immediately instead of waiting up to 5 minutes for
+                            # the next real 5m close to compute it for the first time.
+                            _recovery_R = abs(entry_price - stop_price) or 1e-9
+                            _seed_mfe_r, _seed_pnl_r = 0.0, 0.0
+                            _seed_mfe, _seed_mae = 0.0, 0.0
+                            try:
+                                _last_price_cache = pd.read_parquet(f"data/cache/{symbol}_5m.parquet")
+                                _current_price = float(_last_price_cache["close"].iloc[-1])
+                                _move = (
+                                    _current_price - entry_price if direction == 1
+                                    else entry_price - _current_price
+                                )
+                                _seed_pnl_r = _move / _recovery_R
+                                # Treat current move as both the MFE and PnL seed — we have
+                                # no intrabar history to know if price went further in our
+                                # favor and pulled back, so this is a conservative estimate,
+                                # not a true MFE. It will self-correct upward as real bars
+                                # come in if price had actually been higher (long) / lower
+                                # (short) at some point during the gap.
+                                _seed_mfe_r = max(_seed_pnl_r, 0.0)
+                                _seed_mfe = max(_move, 0.0)
+                                _seed_mae = min(_move, 0.0)
+                            except Exception as _seed_err:
+                                _tg_debug(f"[RECON] Could not seed live PnL for {symbol}: {_seed_err}")
+
                             recovered = {
                                 "symbol":           symbol,
                                 "trade_id":         TelegramNotifier.make_trade_id(symbol),
                                 "direction":        direction,
                                 "entry_price":      entry_price,
-                                "entry_time":       pd.Timestamp.now(tz="UTC").isoformat(),
-                                "entry_5m_ts":      pd.Timestamp.now(tz="UTC").isoformat(),
+                                "entry_time":       _recovery_5m_boundary.isoformat(),
+                                "entry_5m_ts":      _recovery_5m_boundary.isoformat(),
                                 "stop_loss":        stop_price,
                                 "initial_stop":     stop_price,
-                                "R":                abs(entry_price - stop_price) or 1e-9,
+                                "R":                _recovery_R,
                                 "state":            "OPEN",
-                                "mfe_r":            0.0,
-                                "pnl_r":            0.0,
-                                "MAE":              0.0,
-                                "MFE":              0.0,
+                                "mfe_r":            _seed_mfe_r,
+                                "pnl_r":            _seed_pnl_r,
+                                "MAE":              _seed_mae,
+                                "MFE":              _seed_mfe,
                                 "risk_usd":         0.0,
                                 "quantity":         qty,
                                 "position_value":   entry_price * qty,
-                                "bars_in_trade":    0,
-                                "last_mfe_bar":     0,
+                                "bars_in_trade":    1,
+                                "last_mfe_bar":     1,
                                 "last_trail_bar":   0,
                                 "binance_stop_order_id": stop_order_id,
                                 "binance_entry_order_id": None,
