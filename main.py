@@ -98,15 +98,15 @@ def fetch_binance(symbol, interval, limit):
 # ==========================================================
 # SYMBOLS = [
 #     "ICXUSDT", "RUNEUSDT", "LDOUSDT", "SUIUSDT", "ADAUSDT", "APTUSDT", "LSKUSDT",
-#     "AAVEUSDT", "APTUSDT", "SSVUSDT", "AVAXUSDT", "YGGUSDT", "UNIUSDT", "VETUSDT",
-#     "SANDUSDT", "TRBUSDT", "YFIUSDT", "IDUSDT", "ETHUSDT", "ORDIUSDT", "ZILUSDT",
+#     "AAVEUSDT", "APTUSDT", "SSVUSDT", "AVAXUSDT"-, "YGGUSDT", "UNIUSDT", "VETUSDT"-,
+#     "SANDUSDT", "TRBUSDT", "YFIUSDT", "IDUSDT", "ETHUSDT"-, "ORDIUSDT", "ZILUSDT",
 #     "XVGUSDT", "GMXUSDT", "ZECUSDT", "DEXEUSDT", "RPLUSDT", "IOSTUSDT", "NFPUSDT",
 #     "DOGEUSDT", "KSMUSDT", "KAVAUSDT", "EGLDUSDT", "ICPUSDT", "SOLUSDT", "GRTUSDT",
 #     "TRXUSDT", "PAXGUSDT", "CKBUSDT", "JUPUSDT", "ZENUSDT", "IOTXUSDT", "COTIUSDT",
-#     "TIAUSDT", "STORJUSDT", "RIFUSDT", "SLPUSDT", "CFXUSDT", "ARBUSDT", "CVXUSDT",
-#     "FETUSDT", "FILUSDT", "GALAUSDT"
+#     "TIAUSDT"-, "STORJUSDT"|, "RIFUSDT", "SLPUSDT", "CFXUSDT", "ARBUSDT", "CVXUSDT",
+#     "FETUSDT"|, "FILUSDT"-, "GALAUSDT"|, "LINKUSDT"-, "AXLUSDT"-, ""
 # ] 
-SYMBOL = "TRBUSDT"
+SYMBOL = "YFIUSDT"
 
 LLTF_INTERVAL = "5m"
 LTF_INTERVAL = "1h"
@@ -147,9 +147,9 @@ HTF_LIMIT = 4380   # ~120 days of 4h candles
 # LTF_LIMIT = 1000   # ~30 days of 1h candles
 # HTF_LIMIT = 250   # ~120 days of 4h candles
 
-LLTF_LIMIT = 1500
-LTF_LIMIT = 125   # ~30 days of 1h candles
-HTF_LIMIT = 31   # ~120 days of 4h candles
+# LLTF_LIMIT = 1500
+# LTF_LIMIT = 125   # ~30 days of 1h candles
+# HTF_LIMIT = 31   # ~120 days of 4h candles
 
 # ==========================================================
 # FETCH DATA
@@ -419,13 +419,13 @@ else:
 
 print(results)
 
-print("=== TRADE LOG ===")
-print(trade_log.head(10))
+# print("=== TRADE LOG ===")
+# print(trade_log.head(10))
 
-print("\nColumns:", trade_log.columns)
-print("\nNumber of trades:", len(trade_log))
-print("LTF candles (1h):", len(ltf_df))
-print("HTF candles (4h):", len(htf_df))
+# print("\nColumns:", trade_log.columns)
+# print("\nNumber of trades:", len(trade_log))
+# print("LTF candles (1h):", len(ltf_df))
+# print("HTF candles (4h):", len(htf_df))
 
 # ==========================================================
 # DIAGNOSTICS

@@ -273,41 +273,46 @@ class PositionManager:
             # Current price for R calculation (best price this bar)
             current_price = h if side == 1 else l
 
-            # Trail anchored to MFE price (best price ever seen)
-            if side == 1:
-                if h - entry_price >= position["MFE"]:
-                    position["mfe_price"] = h
-                    position["last_mfe_bar"] = position["bars_in_trade"]
-            else:
-                if entry_price - l >= position["MFE"]:
-                    position["mfe_price"] = l
-                    position["last_mfe_bar"] = position["bars_in_trade"]
-
-            trail_price = position.get("mfe_price", c)
-
-            # =========================
-            # TRUE MFE / MAE TRACKING
-            # =========================
-
             if "MFE" not in position:
                 position["MFE"] = 0.0
             if "MAE" not in position:
                 position["MAE"] = 0.0
 
-            # per-bar movement (NOT candle-close derived pnl)
-            if side == 1:
-                move_high = h - entry_price
-                move_low  = l - entry_price
+            # Entry-bar candle must NOT contribute to MFE/MAE — matches
+            # backtest, where get_5m_window() drops the entry bar and
+            # _check_intrabar() only runs once (idx - entry_idx) >= 1.
+            # Without this guard, the entry candle's real OHLC (which can
+            # differ from the flat placeholder it overwrites) gets folded
+            # into MFE before the trade has had a single genuine post-entry
+            # bar — silently disabling dominance_exit (which requires
+            # mfe_r == 0.0 exactly) and anything else gated on mfe_r==0.
+            if not skip_exit_checks:
+                # Trail anchored to MFE price (best price ever seen)
+                if side == 1:
+                    if h - entry_price >= position["MFE"]:
+                        position["mfe_price"] = h
+                        position["last_mfe_bar"] = position["bars_in_trade"]
+                else:
+                    if entry_price - l >= position["MFE"]:
+                        position["mfe_price"] = l
+                        position["last_mfe_bar"] = position["bars_in_trade"]
 
-                position["MFE"] = max(position["MFE"], move_high)
-                position["MAE"] = min(position["MAE"], move_low)
+                # per-bar movement (NOT candle-close derived pnl)
+                if side == 1:
+                    move_high = h - entry_price
+                    move_low  = l - entry_price
 
-            else:
-                move_high = entry_price - l
-                move_low  = entry_price - h
+                    position["MFE"] = max(position["MFE"], move_high)
+                    position["MAE"] = min(position["MAE"], move_low)
 
-                position["MFE"] = max(position["MFE"], move_high)
-                position["MAE"] = min(position["MAE"], move_low)
+                else:
+                    move_high = entry_price - l
+                    move_low  = entry_price - h
+
+                    position["MFE"] = max(position["MFE"], move_high)
+                    position["MAE"] = min(position["MAE"], move_low)
+
+            trail_price = position.get("mfe_price", c)
 
             # -------------------------------------------------------
             # BUILD 5M WINDOW (REAL ATR HISTORY — BACKTEST PARITY)

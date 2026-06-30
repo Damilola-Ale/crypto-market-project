@@ -1042,48 +1042,7 @@ class SignalBacktester:
             # For each dominance exit, look at what happened in the next
             # 48 bars. Did price hit the original stop? Or did it recover?
             exec_df = self.lltf_df if hasattr(self, 'lltf_df') else self.df
-            dom_exits = trades_df[trades_df["exit_reason"] == "dominance_exit"]
-            # if not dom_exits.empty:
-                # print("\n=== DOMINANCE EXIT COUNTERFACTUAL ===")
-                # print(f"{'Date':>22} {'side':>5} {'exit_R':>7} {'would_stop':>10} {'max_recov_R':>12} {'verdict':>10}")
-                # print("-" * 72)
-                # for _, t in dom_exits.iterrows():
-                #     exit_idx   = int(t["exit_idx"])
-                #     entry      = t["entry_price"]
-                #     stop       = t["initial_stop"]
-                #     side       = t["side"]
-                #     R_size     = abs(entry - stop)
-                #     if R_size <= 0:
-                #         continue
-
-                #     future = exec_df.iloc[exit_idx + 1 : exit_idx + 49]
-                #     if future.empty:
-                #         continue
-
-                #     if side == 1:
-                #         would_stop   = (future["low"] <= stop).any()
-                #         max_recov_r  = (future["high"].max() - entry) / R_size
-                #     else:
-                #         would_stop   = (future["high"] >= stop).any()
-                #         max_recov_r  = (entry - future["low"].min()) / R_size
-
-                #     max_recov_r = max(max_recov_r, 0.0)
-                #     verdict = "SAVED" if would_stop else ("WINNER" if max_recov_r > 0.3 else "FLATLINED")
-
-                #     entry_time_str = str(t["entry_time"])[:16]
-                #     print(f"{entry_time_str:>22} {'L' if side==1 else 'S':>5} "
-                #           f"{t['pnl_r']:>7.3f} {str(would_stop):>10} "
-                #           f"{max_recov_r:>12.3f} {verdict:>10}")
-
-                # would_stop_count = sum(
-                #     1 for _, t in dom_exits.iterrows()
-                #     if self._counterfactual_would_stop(t, exec_df)
-                # )
-                # print(f"\nOf {len(dom_exits)} dominance exits: "
-                #       f"{would_stop_count} would have hit stop anyway, "
-                #       f"{len(dom_exits) - would_stop_count} would have survived.")
-                # print("If survivors > stop-outs, the exit is cutting winners.")
-
+            
             # ── STALL EXIT COUNTERFACTUAL ──────────────────────────────
             # Same treatment as dominance_exit: for each stall_exit, look
             # forward from the exit bar to see what actually happened —
@@ -1221,41 +1180,41 @@ class SignalBacktester:
             # problem. Trades that DID cross 0.5R but still bled back point
             # the other way: trail was live, signal/trail-tightness is the
             # likely cause instead.
-            TRAIL_ACTIVATION_R = 0.5  # must match update_dynamic_stop's gate
-            print("\n=== TRAIL ACTIVATION DIAGNOSTIC ===")
-            print(f"{'Date':>22} {'side':>5} {'peak_mfe_r':>10} {'pnl_r':>7} {'trail_active':>12} {'verdict':>16}")
-            print("-" * 80)
+            # TRAIL_ACTIVATION_R = 0.5  # must match update_dynamic_stop's gate
+            # print("\n=== TRAIL ACTIVATION DIAGNOSTIC ===")
+            # print(f"{'Date':>22} {'side':>5} {'peak_mfe_r':>10} {'pnl_r':>7} {'trail_active':>12} {'verdict':>16}")
+            # print("-" * 80)
 
-            never_activated = 0
-            activated_but_lost = 0
-            for _, t in bleed_back.iterrows():
-                peak_mfe_r = t["mfe_r"]
-                trail_active = peak_mfe_r >= TRAIL_ACTIVATION_R
-                if trail_active:
-                    activated_but_lost += 1
-                    verdict = "TRAIL FAILED"
-                else:
-                    never_activated += 1
-                    verdict = "NEVER ACTIVATED"
-                print(f"{str(t['entry_time'])[:16]:>22} "
-                      f"{'L' if t['side']==1 else 'S':>5} "
-                      f"{peak_mfe_r:>10.3f} "
-                      f"{t['pnl_r']:>7.3f} "
-                      f"{str(trail_active):>12} "
-                      f"{verdict:>16}")
+            # never_activated = 0
+            # activated_but_lost = 0
+            # for _, t in bleed_back.iterrows():
+            #     peak_mfe_r = t["mfe_r"]
+            #     trail_active = peak_mfe_r >= TRAIL_ACTIVATION_R
+            #     if trail_active:
+            #         activated_but_lost += 1
+            #         verdict = "TRAIL FAILED"
+            #     else:
+            #         never_activated += 1
+            #         verdict = "NEVER ACTIVATED"
+            #     print(f"{str(t['entry_time'])[:16]:>22} "
+            #           f"{'L' if t['side']==1 else 'S':>5} "
+            #           f"{peak_mfe_r:>10.3f} "
+            #           f"{t['pnl_r']:>7.3f} "
+            #           f"{str(trail_active):>12} "
+            #           f"{verdict:>16}")
 
-            n = never_activated + activated_but_lost
-            if n:
-                print(f"\nOf {n} bleed-back trades:")
-                print(f"  {never_activated} ({never_activated/n*100:.0f}%) NEVER reached "
-                      f"{TRAIL_ACTIVATION_R}R — trail never turned on. TRAILING STOP threshold issue.")
-                print(f"  {activated_but_lost} ({activated_but_lost/n*100:.0f}%) reached "
-                      f"{TRAIL_ACTIVATION_R}R+ and the trail WAS live but still lost it — "
-                      f"points to SIGNAL QUALITY / trail looseness, not the activation threshold.")
-                if never_activated > activated_but_lost:
-                    print("  → Majority never activated: try lowering TRAIL_ACTIVATION_R or adding a sub-0.5R tier.")
-                else:
-                    print("  → Majority activated and still lost: tighten ATR_AFTER_ENTRY, not the activation floor.")
+            # n = never_activated + activated_but_lost
+            # if n:
+            #     print(f"\nOf {n} bleed-back trades:")
+            #     print(f"  {never_activated} ({never_activated/n*100:.0f}%) NEVER reached "
+            #           f"{TRAIL_ACTIVATION_R}R — trail never turned on. TRAILING STOP threshold issue.")
+            #     print(f"  {activated_but_lost} ({activated_but_lost/n*100:.0f}%) reached "
+            #           f"{TRAIL_ACTIVATION_R}R+ and the trail WAS live but still lost it — "
+            #           f"points to SIGNAL QUALITY / trail looseness, not the activation threshold.")
+            #     if never_activated > activated_but_lost:
+            #         print("  → Majority never activated: try lowering TRAIL_ACTIVATION_R or adding a sub-0.5R tier.")
+            #     else:
+            #         print("  → Majority activated and still lost: tighten ATR_AFTER_ENTRY, not the activation floor.")
 
         # ── PEAK-MFE-TO-STOP GAP ANALYSIS ────────────────────────────────
         # For the pure stop_loss subset of bleed-back trades (OIE never
@@ -1266,44 +1225,44 @@ class SignalBacktester:
         # mode as the "fast assault" case, just triggered from profit
         # instead of from entry. If the gap is wider, a tighter trail in
         # the 0.2-0.5R band would plausibly have caught it.
-        pure_stop_bleed = bleed_back[bleed_back["exit_reason"] == "stop_loss"] if not bleed_back.empty else pd.DataFrame()
+        # pure_stop_bleed = bleed_back[bleed_back["exit_reason"] == "stop_loss"] if not bleed_back.empty else pd.DataFrame()
 
-        if not pure_stop_bleed.empty:
-            print("\n=== PEAK-MFE-TO-STOP GAP ANALYSIS ===")
-            print(f"{'Date':>22} {'side':>5} {'mfe_r':>7} {'peak_bar':>9} {'exit_bar':>9} {'gap_bars':>9} {'gap_min':>8}")
-            print("-" * 80)
-            gaps = []
-            for _, t in pure_stop_bleed.iterrows():
-                entry_idx = int(t["entry_idx"])
-                exit_idx  = int(t["exit_idx"])
-                side      = t["side"]
-                entry     = t["entry_price"]
-                R_size    = abs(entry - t["initial_stop"])
-                if R_size <= 0:
-                    continue
-                window = exec_df.iloc[entry_idx + 1: exit_idx + 1]
-                if window.empty:
-                    continue
-                if side == 1:
-                    running_mfe = (window["high"] - entry) / R_size
-                else:
-                    running_mfe = (entry - window["low"]) / R_size
-                peak_pos     = running_mfe.values.argmax()
-                peak_bar_idx = entry_idx + 1 + peak_pos
-                gap_bars     = exit_idx - peak_bar_idx
-                gaps.append(gap_bars)
-                print(f"{str(t['entry_time'])[:16]:>22} "
-                      f"{'L' if side == 1 else 'S':>5} "
-                      f"{t['mfe_r']:>7.3f} "
-                      f"{peak_bar_idx:>9} "
-                      f"{exit_idx:>9} "
-                      f"{gap_bars:>9} "
-                      f"{gap_bars * 5:>7}m")
-            if gaps:
-                avg_gap = sum(gaps) / len(gaps)
-                fast_reversals = sum(1 for g in gaps if g <= 2)
-                print(f"\nAvg gap from peak MFE to stop hit: {avg_gap:.1f} bars ({avg_gap * 5:.0f} min)")
-                print(f"Fast reversals (≤2 bars from peak to stop): {fast_reversals}/{len(gaps)}")
+        # if not pure_stop_bleed.empty:
+        #     print("\n=== PEAK-MFE-TO-STOP GAP ANALYSIS ===")
+        #     print(f"{'Date':>22} {'side':>5} {'mfe_r':>7} {'peak_bar':>9} {'exit_bar':>9} {'gap_bars':>9} {'gap_min':>8}")
+        #     print("-" * 80)
+        #     gaps = []
+        #     for _, t in pure_stop_bleed.iterrows():
+        #         entry_idx = int(t["entry_idx"])
+        #         exit_idx  = int(t["exit_idx"])
+        #         side      = t["side"]
+        #         entry     = t["entry_price"]
+        #         R_size    = abs(entry - t["initial_stop"])
+        #         if R_size <= 0:
+        #             continue
+        #         window = exec_df.iloc[entry_idx + 1: exit_idx + 1]
+        #         if window.empty:
+        #             continue
+        #         if side == 1:
+        #             running_mfe = (window["high"] - entry) / R_size
+        #         else:
+        #             running_mfe = (entry - window["low"]) / R_size
+        #         peak_pos     = running_mfe.values.argmax()
+        #         peak_bar_idx = entry_idx + 1 + peak_pos
+        #         gap_bars     = exit_idx - peak_bar_idx
+        #         gaps.append(gap_bars)
+        #         print(f"{str(t['entry_time'])[:16]:>22} "
+        #               f"{'L' if side == 1 else 'S':>5} "
+        #               f"{t['mfe_r']:>7.3f} "
+        #               f"{peak_bar_idx:>9} "
+        #               f"{exit_idx:>9} "
+        #               f"{gap_bars:>9} "
+        #               f"{gap_bars * 5:>7}m")
+        #     if gaps:
+        #         avg_gap = sum(gaps) / len(gaps)
+        #         fast_reversals = sum(1 for g in gaps if g <= 2)
+        #         print(f"\nAvg gap from peak MFE to stop hit: {avg_gap:.1f} bars ({avg_gap * 5:.0f} min)")
+        #         print(f"Fast reversals (≤2 bars from peak to stop): {fast_reversals}/{len(gaps)}")
 
         # ══════════════════════════════════════════════════════════════
         # ADAPTIVE STOP MINING — which of the 3 stop-tightening options
@@ -1416,83 +1375,83 @@ class SignalBacktester:
                             "showed_nothing": _bar_at_check["mfe_r"] < DECAY_MFE_CEILING,
                         })
 
-            print("\n=== ADAPTIVE STOP MINING (which option fits your system) ===")
+            # print("\n=== ADAPTIVE STOP MINING (which option fits your system) ===")
 
-            # --- (C) Path-to-stop mining ---
-            print(f"\n--- Path-to-stop: trades dipping below {EARLY_THRESHOLD_R}R ---")
-            if _path_rows:
-                _n_path = len(_path_rows)
-                _n_no_recover = sum(1 for r in _path_rows if not r["recovered"])
-                print(f"{_n_path} stop_loss losers dipped below {EARLY_THRESHOLD_R}R at some point.")
-                print(f"  {_n_no_recover}/{_n_path} ({_n_no_recover/_n_path*100:.0f}%) never recovered "
-                      f"above -0.3R after the dip.")
-                _avg_consec = sum(r["max_consec_below"] for r in _path_rows) / _n_path
-                print(f"  Avg consecutive bars spent below {EARLY_THRESHOLD_R}R: "
-                      f"{_avg_consec:.1f} ({_avg_consec*5:.0f} min)")
-            else:
-                print(f"  No stop_loss losers dipped below {EARLY_THRESHOLD_R}R pre-stop — "
-                      f"threshold may be too aggressive to test, or sample too small.")
+            # # --- (C) Path-to-stop mining ---
+            # print(f"\n--- Path-to-stop: trades dipping below {EARLY_THRESHOLD_R}R ---")
+            # if _path_rows:
+            #     _n_path = len(_path_rows)
+            #     _n_no_recover = sum(1 for r in _path_rows if not r["recovered"])
+            #     print(f"{_n_path} stop_loss losers dipped below {EARLY_THRESHOLD_R}R at some point.")
+            #     print(f"  {_n_no_recover}/{_n_path} ({_n_no_recover/_n_path*100:.0f}%) never recovered "
+            #           f"above -0.3R after the dip.")
+            #     _avg_consec = sum(r["max_consec_below"] for r in _path_rows) / _n_path
+            #     print(f"  Avg consecutive bars spent below {EARLY_THRESHOLD_R}R: "
+            #           f"{_avg_consec:.1f} ({_avg_consec*5:.0f} min)")
+            # else:
+            #     print(f"  No stop_loss losers dipped below {EARLY_THRESHOLD_R}R pre-stop — "
+            #           f"threshold may be too aggressive to test, or sample too small.")
 
-            if _false_positive_winners:
-                _n_fp = len(_false_positive_winners)
-                print(f"\n  ⚠️ {_n_fp} trade(s) ALSO dipped below {EARLY_THRESHOLD_R}R but did NOT "
-                      f"end in stop_loss (would've been cut early by tightening here):")
-                for r in _false_positive_winners:
-                    print(f"    {str(r['entry_time'])[:16]} exit={r['exit_reason']:>20} "
-                          f"final_pnl_r={r['final_pnl_r']:.3f}")
-            else:
-                print(f"\n  ✅ Zero trades dipped below {EARLY_THRESHOLD_R}R and still survived/won — "
-                      f"tightening here would not have cost any winners in this sample.")
+            # if _false_positive_winners:
+            #     _n_fp = len(_false_positive_winners)
+            #     print(f"\n  ⚠️ {_n_fp} trade(s) ALSO dipped below {EARLY_THRESHOLD_R}R but did NOT "
+            #           f"end in stop_loss (would've been cut early by tightening here):")
+            #     for r in _false_positive_winners:
+            #         print(f"    {str(r['entry_time'])[:16]} exit={r['exit_reason']:>20} "
+            #               f"final_pnl_r={r['final_pnl_r']:.3f}")
+            # else:
+            #     print(f"\n  ✅ Zero trades dipped below {EARLY_THRESHOLD_R}R and still survived/won — "
+            #           f"tightening here would not have cost any winners in this sample.")
 
-            if _path_rows and not _false_positive_winners:
-                print(f"\n  → VERDICT: {EARLY_THRESHOLD_R}R looks like a strong candidate for "
-                      f"adaptive disaster-stop tightening — confirms losers without clipping winners.")
-            elif _path_rows and _false_positive_winners:
-                _ratio = len(_false_positive_winners) / len(_path_rows)
-                _verdict_txt = "too risky, raise the threshold or test deeper" if _ratio > 0.15 else "still workable, but watch this"
-                print(f"\n  → VERDICT: {len(_false_positive_winners)} false positive(s) vs "
-                      f"{len(_path_rows)} true positive(s) ({_ratio*100:.0f}% false-positive rate) "
-                      f"— {_verdict_txt}.")
+            # if _path_rows and not _false_positive_winners:
+            #     print(f"\n  → VERDICT: {EARLY_THRESHOLD_R}R looks like a strong candidate for "
+            #           f"adaptive disaster-stop tightening — confirms losers without clipping winners.")
+            # elif _path_rows and _false_positive_winners:
+            #     _ratio = len(_false_positive_winners) / len(_path_rows)
+            #     _verdict_txt = "too risky, raise the threshold or test deeper" if _ratio > 0.15 else "still workable, but watch this"
+            #     print(f"\n  → VERDICT: {len(_false_positive_winners)} false positive(s) vs "
+            #           f"{len(_path_rows)} true positive(s) ({_ratio*100:.0f}% false-positive rate) "
+            #           f"— {_verdict_txt}.")
 
-            # --- (B) Volatility-aware tightening ---
-            print(f"\n--- Volatility check: ATR in final 3 bars vs entry ATR (stop_loss losers) ---")
-            if _atr_expansion_rows:
-                _n_atr = len(_atr_expansion_rows)
-                _avg_expansion = sum(r["expansion_ratio"] for r in _atr_expansion_rows) / _n_atr
-                _n_expanded = sum(1 for r in _atr_expansion_rows if r["expansion_ratio"] > 1.5)
-                print(f"  {_n_atr} stop_loss losers measured | avg late/entry ATR ratio = {_avg_expansion:.2f}x")
-                print(f"  {_n_expanded}/{_n_atr} ({_n_expanded/_n_atr*100:.0f}%) showed ATR expansion "
-                      f">1.5x before the stop hit.")
-                if _n_expanded / _n_atr > 0.5:
-                    print("  → VERDICT: majority of losers show real volatility expansion — "
-                          "volatility-aware tightening has empirical support.")
-                else:
-                    print("  → VERDICT: most losers did NOT show ATR expansion before stopping — "
-                          "this option alone likely wouldn't have caught most of these.")
-            else:
-                print("  No stop_loss trades with usable ATR data in this run.")
+            # # --- (B) Volatility-aware tightening ---
+            # print(f"\n--- Volatility check: ATR in final 3 bars vs entry ATR (stop_loss losers) ---")
+            # if _atr_expansion_rows:
+            #     _n_atr = len(_atr_expansion_rows)
+            #     _avg_expansion = sum(r["expansion_ratio"] for r in _atr_expansion_rows) / _n_atr
+            #     _n_expanded = sum(1 for r in _atr_expansion_rows if r["expansion_ratio"] > 1.5)
+            #     print(f"  {_n_atr} stop_loss losers measured | avg late/entry ATR ratio = {_avg_expansion:.2f}x")
+            #     print(f"  {_n_expanded}/{_n_atr} ({_n_expanded/_n_atr*100:.0f}%) showed ATR expansion "
+            #           f">1.5x before the stop hit.")
+            #     if _n_expanded / _n_atr > 0.5:
+            #         print("  → VERDICT: majority of losers show real volatility expansion — "
+            #               "volatility-aware tightening has empirical support.")
+            #     else:
+            #         print("  → VERDICT: most losers did NOT show ATR expansion before stopping — "
+            #               "this option alone likely wouldn't have caught most of these.")
+            # else:
+            #     print("  No stop_loss trades with usable ATR data in this run.")
 
-            # --- (A) Time-decaying risk ---
-            print(f"\n--- Time decay check: mfe_r at bar {DECAY_CHECK_BAR} "
-                  f"(~{DECAY_CHECK_BAR*5}min) for stop_loss losers ---")
-            if _decay_rows:
-                _n_decay = len(_decay_rows)
-                _n_nothing = sum(1 for r in _decay_rows if r["showed_nothing"])
-                print(f"  {_n_decay} stop_loss losers lived past bar {DECAY_CHECK_BAR} | "
-                      f"{_n_nothing}/{_n_decay} ({_n_nothing/_n_decay*100:.0f}%) still had "
-                      f"mfe_r < {DECAY_MFE_CEILING} at that point (showed no edge yet).")
-                if _n_nothing / _n_decay > 0.5:
-                    print("  → VERDICT: majority of slow losers show zero edge by 1hr in — "
-                          "time-decaying risk has empirical support.")
-                else:
-                    print("  → VERDICT: most slow losers HAD shown some edge by 1hr — "
-                          "time-decay risks cutting trades that still had a case to stay open.")
-            else:
-                print(f"  No stop_loss trades lasted past bar {DECAY_CHECK_BAR} in this run — "
-                      f"sample too short-lived to evaluate, or trades resolve fast already.")
+            # # --- (A) Time-decaying risk ---
+            # print(f"\n--- Time decay check: mfe_r at bar {DECAY_CHECK_BAR} "
+            #       f"(~{DECAY_CHECK_BAR*5}min) for stop_loss losers ---")
+            # if _decay_rows:
+            #     _n_decay = len(_decay_rows)
+            #     _n_nothing = sum(1 for r in _decay_rows if r["showed_nothing"])
+            #     print(f"  {_n_decay} stop_loss losers lived past bar {DECAY_CHECK_BAR} | "
+            #           f"{_n_nothing}/{_n_decay} ({_n_nothing/_n_decay*100:.0f}%) still had "
+            #           f"mfe_r < {DECAY_MFE_CEILING} at that point (showed no edge yet).")
+            #     if _n_nothing / _n_decay > 0.5:
+            #         print("  → VERDICT: majority of slow losers show zero edge by 1hr in — "
+            #               "time-decaying risk has empirical support.")
+            #     else:
+            #         print("  → VERDICT: most slow losers HAD shown some edge by 1hr — "
+            #               "time-decay risks cutting trades that still had a case to stay open.")
+            # else:
+            #     print(f"  No stop_loss trades lasted past bar {DECAY_CHECK_BAR} in this run — "
+            #           f"sample too short-lived to evaluate, or trades resolve fast already.")
 
-            print("\n(Tune EARLY_THRESHOLD_R / DECAY_CHECK_BAR / DECAY_MFE_CEILING at the top "
-                  "of this block and re-run to test other candidate values.)")
+            # print("\n(Tune EARLY_THRESHOLD_R / DECAY_CHECK_BAR / DECAY_MFE_CEILING at the top "
+            #       "of this block and re-run to test other candidate values.)")
 
         # ══════════════════════════════════════════════════════════════
         # DISASTER STOP SCENARIO ANALYSIS
