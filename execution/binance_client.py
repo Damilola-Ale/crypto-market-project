@@ -129,13 +129,20 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
     _proxy_url = os.getenv("PROXY_URL")
     _proxies = {"http": _proxy_url, "https": _proxy_url} if _proxy_url else None
 
+    # Build the exact query string ourselves and send it verbatim —
+    # letting requests re-encode `params` separately for GET/DELETE risks
+    # producing a different byte string than what _sign() signed (e.g.
+    # different key ordering or escaping), which Binance rejects with
+    # -1022 even though the params dict itself was correct.
+    query_string = urlencode(params)
+
     try:
         if method == "GET":
-            r = requests.get(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+            r = requests.get(f"{url}?{query_string}", headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "POST":
             r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "DELETE":
-            r = requests.delete(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+            r = requests.delete(f"{url}?{query_string}", headers=_headers(), timeout=10, proxies=_proxies)
         else:
             raise BinanceExecutionError(f"Unknown HTTP method: {method}")
     except requests.exceptions.RequestException as e:
@@ -172,13 +179,14 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
             # Retry once with corrected timestamp
             params["timestamp"] = _get_binance_time()
             params["signature"] = _sign(params)
+            retry_query_string = urlencode(params)
             try:
                 if method == "GET":
-                    r = requests.get(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+                    r = requests.get(f"{url}?{retry_query_string}", headers=_headers(), timeout=10, proxies=_proxies)
                 elif method == "POST":
                     r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
                 elif method == "DELETE":
-                    r = requests.delete(url, params=params, headers=_headers(), timeout=10, proxies=_proxies)
+                    r = requests.delete(f"{url}?{retry_query_string}", headers=_headers(), timeout=10, proxies=_proxies)
                 body = r.json()
                 if r.status_code == 200:
                     return body
