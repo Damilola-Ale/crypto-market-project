@@ -527,7 +527,19 @@ def update_symbol(symbol: str):
                 last_lltf_ts = df_lltf.index[-1]
 
     lltf_fetch_start = start_required if df_lltf is None else last_lltf_ts + timedelta(minutes=5)
-    lltf_fetch_end   = now_full  # 5m candles: use full-precision now so every cron fire fetches new bars
+
+    # Only ever fetch/cache CLOSED 5m candles. Using unfloored `now_full`
+    # here let Binance return the still-forming candle (openTime <= endTime
+    # is always true for the current bar), which then got written into the
+    # persistent parquet cache as if it were final — with a partial
+    # high/low/volume that undercounts the real bar. Once current_5m_boundary
+    # advanced past it, the FAST EARLY-EXIT path above saw
+    # last_5m_ts >= current_5m_boundary and returned early on every
+    # subsequent tick, skipping the revalidation block below entirely — so
+    # the corrupted partial bar was never corrected.
+    _minutes_floored_now = (now_full.minute // 5) * 5
+    _current_5m_boundary_full = now_full.replace(minute=_minutes_floored_now, second=0, microsecond=0)
+    lltf_fetch_end = _current_5m_boundary_full - timedelta(milliseconds=1)
 
     print("[FETCH LLTF WINDOW]")
     print("start:", lltf_fetch_start)
