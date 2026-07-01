@@ -140,7 +140,7 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
         if method == "GET":
             r = requests.get(f"{url}?{query_string}", headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "POST":
-            r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
+            r = requests.post(url, data=query_string, headers=_headers(), timeout=10, proxies=_proxies)
         elif method == "DELETE":
             r = requests.delete(f"{url}?{query_string}", headers=_headers(), timeout=10, proxies=_proxies)
         else:
@@ -184,7 +184,7 @@ def _request(method: str, path: str, params: dict = None, signed: bool = True) -
                 if method == "GET":
                     r = requests.get(f"{url}?{retry_query_string}", headers=_headers(), timeout=10, proxies=_proxies)
                 elif method == "POST":
-                    r = requests.post(url, data=params, headers=_headers(), timeout=10, proxies=_proxies)
+                    r = requests.post(url, data=retry_query_string, headers=_headers(), timeout=10, proxies=_proxies)
                 elif method == "DELETE":
                     r = requests.delete(f"{url}?{retry_query_string}", headers=_headers(), timeout=10, proxies=_proxies)
                 body = r.json()
