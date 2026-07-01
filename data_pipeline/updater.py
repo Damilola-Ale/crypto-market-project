@@ -569,30 +569,69 @@ def update_symbol(symbol: str):
     # early). Without this, a bar fetched moments after opening gets
     # permanently frozen at that near-empty snapshot.
     # --------------------------------------------------
-    LLTF_REVALIDATE_BARS = 6  # 30 minutes — 5m bars settle faster than 1h,
-                               # but a wider window catches post-redeploy
-                               # cold-fetch snapshots too.
+    LLTF_REVALIDATE_BARS = 6  # 30 minutes — normal recent-bar settle window
     lltf_revalidate_end   = now_full - timedelta(minutes=5)
     lltf_revalidate_start = lltf_revalidate_end - timedelta(minutes=5 * (LLTF_REVALIDATE_BARS - 1))
 
-    if lltf_revalidate_start in df_lltf.index or lltf_revalidate_end in df_lltf.index:
-        from data_pipeline.rate_limiter import rate_limiter
-        rate_limiter.wait_if_needed_for_symbol(
-            symbol       = f"{symbol}/5m_revalidate",
-            n_timeframes = 1,
-            pages_per_tf = 1,
+    # ── CONTINUITY SCAN — catch bars cached mid-formation, no matter how
+    # old they are. A real candle's open must equal the previous candle's
+    # close (within float tolerance). Any bar that breaks continuity was
+    # almost certainly frozen at a partial snapshot and never corrected,
+    # because the fixed 30-minute window above only looks at recent bars.
+    # This also serves as a one-time (and ongoing) cleanup for cache
+    # files that already contain corrupted bars from before this fix —
+    # no manual intervention needed, it self-heals on the next run.
+    CONTINUITY_TOLERANCE_PCT = 0.001  # 0.1% — real ticks never gap more than this on 5m closes
+    MAX_CONTINUITY_REFETCHES_PER_RUN = 20  # safety cap — avoid runaway refetch storms
+
+    df_lltf_sorted = df_lltf.sort_index()
+    prev_close = df_lltf_sorted["close"].shift(1)
+    prev_ts    = df_lltf_sorted.index.to_series().shift(1)
+    gap_pct = (df_lltf_sorted["open"] - prev_close).abs() / prev_close.replace(0, pd.NA)
+
+    is_adjacent = (df_lltf_sorted.index.to_series() - prev_ts) == pd.Timedelta(minutes=5)
+    suspicious_mask = (gap_pct > CONTINUITY_TOLERANCE_PCT) & is_adjacent
+    suspicious_ts = df_lltf_sorted.index[suspicious_mask.fillna(False)]
+
+    if len(suspicious_ts) > MAX_CONTINUITY_REFETCHES_PER_RUN:
+        print(
+            f"[CONTINUITY SCAN] {symbol} — {len(suspicious_ts)} suspicious bars found, "
+            f"capping refetch to oldest {MAX_CONTINUITY_REFETCHES_PER_RUN} this run "
+            f"(remainder will be caught on subsequent runs)"
         )
-        lltf_revalidated = _fetch_all(symbol, LLTF_INTERVAL, lltf_revalidate_start, lltf_revalidate_end)
-        if not lltf_revalidated.empty:
-            before = df_lltf.loc[df_lltf.index.isin(lltf_revalidated.index)]
-            for ts in lltf_revalidated.index:
-                if ts in before.index:
-                    old_close = before.loc[ts, "close"]
-                    new_close = lltf_revalidated.loc[ts, "close"]
-                    if abs(old_close - new_close) > 1e-12:
-                        print(f"[REVALIDATE LLTF] {symbol} {ts} close corrected {old_close} → {new_close}")
-            df_lltf = pd.concat([df_lltf, lltf_revalidated])
-            df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+        suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
+
+    revalidate_targets = set()
+    if lltf_revalidate_start in df_lltf.index or lltf_revalidate_end in df_lltf.index:
+        revalidate_targets.add((lltf_revalidate_start, lltf_revalidate_end))
+
+    for ts in suspicious_ts:
+        win_start = ts - timedelta(minutes=5)
+        win_end   = ts + timedelta(minutes=5)
+        revalidate_targets.add((win_start, win_end))
+        print(f"[CONTINUITY GAP] {symbol} {ts} — open vs prev close diverged >{CONTINUITY_TOLERANCE_PCT*100:.2f}%, flagging for refetch")
+
+    if revalidate_targets:
+        from data_pipeline.rate_limiter import rate_limiter
+        for r_start, r_end in revalidate_targets:
+            rate_limiter.wait_if_needed_for_symbol(
+                symbol       = f"{symbol}/5m_revalidate",
+                n_timeframes = 1,
+                pages_per_tf = 1,
+            )
+            lltf_revalidated = _fetch_all(symbol, LLTF_INTERVAL, r_start, r_end)
+            if not lltf_revalidated.empty:
+                before = df_lltf.loc[df_lltf.index.isin(lltf_revalidated.index)]
+                for ts in lltf_revalidated.index:
+                    if ts in before.index:
+                        old_close = before.loc[ts, "close"]
+                        new_close = lltf_revalidated.loc[ts, "close"]
+                        if abs(old_close - new_close) > 1e-12:
+                            print(f"[REVALIDATE LLTF] {symbol} {ts} close corrected {old_close} → {new_close}")
+                df_lltf = pd.concat([df_lltf, lltf_revalidated])
+                df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+
+        df_lltf = df_lltf.sort_index()
 
     df_lltf = df_lltf.sort_index()
     df_lltf = df_lltf[df_lltf.index >= start_required]
