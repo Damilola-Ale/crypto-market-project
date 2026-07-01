@@ -73,6 +73,68 @@ def _fetch_all(symbol: str, interval: str, start: datetime, end: datetime) -> pd
     result = result.sort_index()
     return result
 
+
+def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: datetime) -> pd.DataFrame:
+    """
+    Scans a 5m dataframe for candles that broke continuity (a bar's open
+    doesn't match the prior bar's close within tolerance) — the signature
+    of a candle cached mid-formation and never corrected. Refetches any
+    flagged bars from Binance and overwrites them in place.
+
+    This is called from EVERY code path that can write the 5m cache —
+    not just the full update_symbol() rebuild — because a partial write
+    from any path can introduce a corrupted bar.
+    """
+    if df_lltf is None or df_lltf.empty or len(df_lltf) < 3:
+        return df_lltf
+
+    CONTINUITY_TOLERANCE_PCT = 0.001  # 0.1% — real ticks never gap more than this on 5m closes
+    MAX_CONTINUITY_REFETCHES_PER_RUN = 20  # safety cap — avoid runaway refetch storms
+
+    df_sorted = df_lltf.sort_index()
+    prev_close = df_sorted["close"].shift(1)
+    prev_ts    = df_sorted.index.to_series().shift(1)
+    gap_pct = (df_sorted["open"] - prev_close).abs() / prev_close.replace(0, pd.NA)
+
+    is_adjacent = (df_sorted.index.to_series() - prev_ts) == pd.Timedelta(minutes=5)
+    suspicious_mask = (gap_pct > CONTINUITY_TOLERANCE_PCT) & is_adjacent
+    suspicious_ts = df_sorted.index[suspicious_mask.fillna(False)]
+    suspicious_ts = suspicious_ts[suspicious_ts >= start_required]
+
+    if suspicious_ts.empty:
+        return df_lltf
+
+    if len(suspicious_ts) > MAX_CONTINUITY_REFETCHES_PER_RUN:
+        print(
+            f"[CONTINUITY SCAN] {symbol} — {len(suspicious_ts)} suspicious bars found, "
+            f"capping refetch to oldest {MAX_CONTINUITY_REFETCHES_PER_RUN} this run"
+        )
+        suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
+
+    from data_pipeline.rate_limiter import rate_limiter
+    for ts in suspicious_ts:
+        print(f"[CONTINUITY GAP] {symbol} {ts} — open vs prev close diverged >{CONTINUITY_TOLERANCE_PCT*100:.2f}%, refetching")
+        win_start = ts - timedelta(minutes=5)
+        win_end   = ts + timedelta(minutes=5)
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/5m_continuity",
+            n_timeframes = 1,
+            pages_per_tf = 1,
+        )
+        revalidated = _fetch_all(symbol, LLTF_INTERVAL, win_start, win_end)
+        if not revalidated.empty:
+            before = df_lltf.loc[df_lltf.index.isin(revalidated.index)]
+            for rts in revalidated.index:
+                if rts in before.index:
+                    old_close = before.loc[rts, "close"]
+                    new_close = revalidated.loc[rts, "close"]
+                    if abs(old_close - new_close) > 1e-12:
+                        print(f"[CONTINUITY FIX] {symbol} {rts} close corrected {old_close} → {new_close}")
+            df_lltf = pd.concat([df_lltf, revalidated])
+            df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+
+    return df_lltf.sort_index()
+
 def update_symbol(symbol: str):
 
     print(f"\n========== UPDATE {symbol} ==========")
@@ -158,6 +220,16 @@ def update_symbol(symbol: str):
 
                 df_lltf = pd.read_parquet(path_lltf)
                 df_lltf.index = pd.to_datetime(df_lltf.index, utc=True)
+
+                # Continuity scan runs on EVERY fast-exit tick, not just
+                # full rebuilds — this path serves ~99% of ticks, so this
+                # is where corrupted mid-formation bars actually get caught.
+                _fix_start_required = now_hour - timedelta(hours=HOURS_LOOKBACK)
+                df_lltf = continuity_fix_5m(symbol, df_lltf, _fix_start_required)
+                tmp_fix = path_lltf + ".tmp"
+                df_lltf.to_parquet(tmp_fix)
+                os.replace(tmp_fix, path_lltf)
+
                 df = ltf_check
                 df_htf  = pd.read_parquet(path_htf)
                 df_htf.index  = pd.to_datetime(df_htf.index,  utc=True)

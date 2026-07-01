@@ -995,7 +995,7 @@ def run_hourly_for_symbol(
                                         except Exception:
                                             pass
                             else:
-                                from data_pipeline.updater import _fetch_all
+                                from data_pipeline.updater import _fetch_all, continuity_fix_5m, HOURS_LOOKBACK
                                 lltf_fetch_start = lltf_df.index[-1] + pd.Timedelta(minutes=5)
                                 lltf_fetch_end = pd.Timestamp(now_utc_c).tz_localize("UTC") if now_utc_c.tzinfo is None else pd.Timestamp(now_utc_c)
                                 new_lltf = _fetch_all(symbol, "5m", lltf_fetch_start, lltf_fetch_end)
@@ -1003,6 +1003,10 @@ def run_hourly_for_symbol(
                                     lltf_df = pd.concat([lltf_df, new_lltf])
                                     lltf_df = lltf_df[~lltf_df.index.duplicated(keep="last")]
                                     lltf_df = lltf_df.sort_index()
+                                    # Same corruption source as update_symbol's fast-exit path —
+                                    # this append can also write a mid-formation bar. Scan it too.
+                                    _fix_start_required = now_hour_c - timedelta(hours=HOURS_LOOKBACK)
+                                    lltf_df = continuity_fix_5m(symbol, lltf_df, _fix_start_required)
                                     tmp = _cache_path(symbol, "5m") + ".tmp"
                                     lltf_df.to_parquet(tmp)
                                     os.replace(tmp, _cache_path(symbol, "5m"))
