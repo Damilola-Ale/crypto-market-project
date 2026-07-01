@@ -550,6 +550,38 @@ def update_symbol(symbol: str):
     if df_lltf is None or df_lltf.empty:
         raise RuntimeError(f"[{symbol}] No LLTF data available after fetch")
 
+    # --------------------------------------------------
+    # REVALIDATE LAST CLOSED 5M BARS — same reasoning as the 1H block:
+    # Binance can revise a bar's high/low/close/volume for a short window
+    # after it closes (or even while it's still forming, if fetched too
+    # early). Without this, a bar fetched moments after opening gets
+    # permanently frozen at that near-empty snapshot.
+    # --------------------------------------------------
+    LLTF_REVALIDATE_BARS = 6  # 30 minutes — 5m bars settle faster than 1h,
+                               # but a wider window catches post-redeploy
+                               # cold-fetch snapshots too.
+    lltf_revalidate_end   = now_full - timedelta(minutes=5)
+    lltf_revalidate_start = lltf_revalidate_end - timedelta(minutes=5 * (LLTF_REVALIDATE_BARS - 1))
+
+    if lltf_revalidate_start in df_lltf.index or lltf_revalidate_end in df_lltf.index:
+        from data_pipeline.rate_limiter import rate_limiter
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/5m_revalidate",
+            n_timeframes = 1,
+            pages_per_tf = 1,
+        )
+        lltf_revalidated = _fetch_all(symbol, LLTF_INTERVAL, lltf_revalidate_start, lltf_revalidate_end)
+        if not lltf_revalidated.empty:
+            before = df_lltf.loc[df_lltf.index.isin(lltf_revalidated.index)]
+            for ts in lltf_revalidated.index:
+                if ts in before.index:
+                    old_close = before.loc[ts, "close"]
+                    new_close = lltf_revalidated.loc[ts, "close"]
+                    if abs(old_close - new_close) > 1e-12:
+                        print(f"[REVALIDATE LLTF] {symbol} {ts} close corrected {old_close} → {new_close}")
+            df_lltf = pd.concat([df_lltf, lltf_revalidated])
+            df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+
     df_lltf = df_lltf.sort_index()
     df_lltf = df_lltf[df_lltf.index >= start_required]
     df_lltf = df_lltf.iloc[-(HOURS_LOOKBACK * 12):]
