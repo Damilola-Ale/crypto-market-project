@@ -667,32 +667,52 @@ def debug_candle_dump():
         abort(403)
 
     import pandas as pd
+    from datetime import datetime, timezone, timedelta
 
     symbol = request.args.get("symbol", "ICXUSDT").upper()
-    tf     = request.args.get("tf", "1h")
-    start  = request.args.get("start", "2026-06-12 17:00:00")
-    end    = request.args.get("end",   "2026-06-13 02:00:00")
 
-    path = f"data/cache/{symbol}_{tf}.parquet"
-    if not os.path.exists(path):
-        return {"exists": False, "path": path}, 404
+    # Optional overrides — omit to get "last 4 hours, right now"
+    hours_back = float(request.args.get("hours_back", 4))
+    start_arg  = request.args.get("start")
+    end_arg    = request.args.get("end")
 
-    df = pd.read_parquet(path)
-    df.index = pd.to_datetime(df.index, utc=True)
+    now_utc = datetime.now(timezone.utc)
+    end_ts   = pd.Timestamp(end_arg, tz="UTC") if end_arg else pd.Timestamp(now_utc)
+    start_ts = pd.Timestamp(start_arg, tz="UTC") if start_arg else end_ts - timedelta(hours=hours_back)
 
-    start_ts = pd.Timestamp(start, tz="UTC")
-    end_ts   = pd.Timestamp(end, tz="UTC")
-
-    window = df.loc[start_ts:end_ts, ["open", "high", "low", "close", "volume"]]
-
-    return {
+    result = {
         "symbol": symbol,
-        "tf": tf,
-        "rows": len(window),
-        "data": {
-            str(ts): row.to_dict() for ts, row in window.iterrows()
-        }
-    }, 200
+        "server_time_utc": now_utc.isoformat(),
+        "window_start": str(start_ts),
+        "window_end": str(end_ts),
+        "timeframes": {},
+    }
+
+    for tf in ("5m", "1h", "4h"):
+        path = f"data/cache/{symbol}_{tf}.parquet"
+
+        if not os.path.exists(path):
+            result["timeframes"][tf] = {"exists": False, "path": path}
+            continue
+
+        try:
+            df = pd.read_parquet(path)
+            df.index = pd.to_datetime(df.index, utc=True)
+            window = df.loc[start_ts:end_ts, ["open", "high", "low", "close", "volume"]]
+
+            result["timeframes"][tf] = {
+                "exists": True,
+                "cache_first": str(df.index[0]),
+                "cache_last": str(df.index[-1]),
+                "rows_in_window": len(window),
+                "data": {
+                    str(ts): row.to_dict() for ts, row in window.iterrows()
+                },
+            }
+        except Exception as e:
+            result["timeframes"][tf] = {"exists": True, "error": str(e)}
+
+    return result, 200
 
 # ==================================================
 # ENTRYPOINT

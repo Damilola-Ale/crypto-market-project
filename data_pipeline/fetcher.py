@@ -5,9 +5,9 @@ import time
 
 import os as _os
 _PROXY_URL    = _os.getenv("PROXY_URL", "").strip()
-_BINANCE_BASE = "https://api.binance.com"
-BASE_URL = f"{_BINANCE_BASE}/api/v3/klines"
-PING_URL = f"{_BINANCE_BASE}/api/v3/ping"
+_BINANCE_BASE = "https://fapi.binance.com"
+BASE_URL = f"{_BINANCE_BASE}/fapi/v1/klines"
+PING_URL = f"{_BINANCE_BASE}/fapi/v1/ping"
 
 # Build a proxies dict if PROXY_URL is set.
 # requests handles user:pass@host:port auth correctly this way.
