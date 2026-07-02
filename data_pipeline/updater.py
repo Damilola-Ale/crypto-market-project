@@ -139,10 +139,10 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
             df_lltf = pd.concat([df_lltf, revalidated])
             df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
 
-    # ── PASS 2: BLIND TRAILING REVALIDATION (open-invisible drift) ────
-    REVALIDATE_WINDOW_HOURS = 1  # shortened from 3h — cuts per-call cost/latency
+        # ── PASS 2: BLIND TRAILING REVALIDATION (open-invisible drift) ────
+    REVALIDATE_WINDOW_MINUTES = 45  # shortened from 1h — confirmed cache-consistent at this window
     now_ts = pd.Timestamp.now(tz="UTC")
-    reval_start = now_ts - timedelta(hours=REVALIDATE_WINDOW_HOURS)
+    reval_start = now_ts - timedelta(minutes=REVALIDATE_WINDOW_MINUTES)
 
     df_sorted = df_lltf.sort_index()
     reval_start = max(reval_start, start_required)
@@ -689,30 +689,69 @@ def update_symbol(symbol: str):
     # ── CONTINUITY SCAN — catch bars cached mid-formation, no matter how
     # old they are. A real candle's open must equal the previous candle's
     # close (within float tolerance). Any bar that breaks continuity was
-    # almost certainly frozen at a partial snapshot and never corrected,
-    # because the fixed 30-minute window above only looks at recent bars.
-    # This also serves as a one-time (and ongoing) cleanup for cache
-    # files that already contain corrupted bars from before this fix —
-    # no manual intervention needed, it self-heals on the next run.
+    # almost certainly frozen at a partial snapshot and never corrected.
+    #
+    # GATED TO ONCE PER 24H PER SYMBOL. This scan reads the full 900-hour
+    # (10800-bar) lookback and can find hundreds/thousands of suspicious
+    # bars on a dirty cache, each capped refetch being a real Binance call
+    # with a rate-limiter wait attached. Running it every single xx:00
+    # tick — forever, even after the cache is clean — was burning 10-20+
+    # seconds PER SYMBOL on every hourly run, which cascaded past the
+    # 5-minute window and delayed/dropped xx:05+ reports and entries for
+    # every symbol queued behind it. This is a one-time data-repair pass;
+    # once a day is enough to catch anything new without blocking the
+    # hourly cycle.
     CONTINUITY_TOLERANCE_PCT = 0.001  # 0.1% — real ticks never gap more than this on 5m closes
     MAX_CONTINUITY_REFETCHES_PER_RUN = 20  # safety cap — avoid runaway refetch storms
+    CONTINUITY_SCAN_INTERVAL_HOURS = 24
 
-    df_lltf_sorted = df_lltf.sort_index()
-    prev_close = df_lltf_sorted["close"].shift(1)
-    prev_ts    = df_lltf_sorted.index.to_series().shift(1)
-    gap_pct = (df_lltf_sorted["open"] - prev_close).abs() / prev_close.replace(0, pd.NA)
+    _continuity_sentinel = _cache_path(symbol, "continuity_scan_meta")
+    _last_scan_ts = None
+    if os.path.exists(_continuity_sentinel):
+        try:
+            with open(_continuity_sentinel) as _f:
+                _last_scan_ts = datetime.fromisoformat(_json.load(_f).get("last_scan"))
+                if _last_scan_ts.tzinfo is None:
+                    _last_scan_ts = _last_scan_ts.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
 
-    is_adjacent = (df_lltf_sorted.index.to_series() - prev_ts) == pd.Timedelta(minutes=5)
-    suspicious_mask = (gap_pct > CONTINUITY_TOLERANCE_PCT) & is_adjacent
-    suspicious_ts = df_lltf_sorted.index[suspicious_mask.fillna(False)]
+    _scan_due = (
+        _last_scan_ts is None
+        or (now_full - _last_scan_ts).total_seconds() >= CONTINUITY_SCAN_INTERVAL_HOURS * 3600
+    )
 
-    if len(suspicious_ts) > MAX_CONTINUITY_REFETCHES_PER_RUN:
+    if _scan_due:
+        df_lltf_sorted = df_lltf.sort_index()
+        prev_close = df_lltf_sorted["close"].shift(1)
+        prev_ts    = df_lltf_sorted.index.to_series().shift(1)
+        gap_pct = (df_lltf_sorted["open"] - prev_close).abs() / prev_close.replace(0, pd.NA)
+
+        is_adjacent = (df_lltf_sorted.index.to_series() - prev_ts) == pd.Timedelta(minutes=5)
+        suspicious_mask = (gap_pct > CONTINUITY_TOLERANCE_PCT) & is_adjacent
+        suspicious_ts = df_lltf_sorted.index[suspicious_mask.fillna(False)]
+
+        if len(suspicious_ts) > MAX_CONTINUITY_REFETCHES_PER_RUN:
+            print(
+                f"[CONTINUITY SCAN] {symbol} — {len(suspicious_ts)} suspicious bars found, "
+                f"capping refetch to oldest {MAX_CONTINUITY_REFETCHES_PER_RUN} this run "
+                f"(remainder will be caught on subsequent daily scans)"
+            )
+            suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
+
+        try:
+            with open(_continuity_sentinel + ".tmp", "w") as _f:
+                _json.dump({"last_scan": now_full.isoformat()}, _f)
+            os.replace(_continuity_sentinel + ".tmp", _continuity_sentinel)
+        except Exception:
+            pass
+    else:
         print(
-            f"[CONTINUITY SCAN] {symbol} — {len(suspicious_ts)} suspicious bars found, "
-            f"capping refetch to oldest {MAX_CONTINUITY_REFETCHES_PER_RUN} this run "
-            f"(remainder will be caught on subsequent runs)"
+            f"[CONTINUITY SCAN] {symbol} — skipped, last ran "
+            f"{(now_full - _last_scan_ts).total_seconds()/3600:.1f}h ago "
+            f"(runs every {CONTINUITY_SCAN_INTERVAL_HOURS}h)"
         )
-        suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
+        suspicious_ts = pd.DatetimeIndex([])
 
     # Trailing revalidation window — mirrors continuity_fix_5m's Pass 2.
     # 30 minutes was proven insufficient (see continuity_fix_5m comments):
