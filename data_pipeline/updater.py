@@ -83,7 +83,7 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
        style corruption where the WHOLE bar was wrong).
 
     2. BLIND TRAILING REVALIDATION — unconditionally refetches every bar
-       in the last REVALIDATE_WINDOW_HOURS, regardless of continuity.
+       in the last REVALIDATE_WINDOW_MINUTES, regardless of continuity.
        Catches a second failure mode: Binance keeps revising a bar's
        high/low/close/volume for HOURS after it closes, while `open`
        stays untouched. Since open never changes, the continuity check
@@ -169,7 +169,7 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
             if changed_count:
                 print(
                     f"[BLIND REVALIDATE] {symbol} — {changed_count} bar(s) in trailing "
-                    f"{REVALIDATE_WINDOW_HOURS}h had stale close/volume (open-invisible drift), corrected"
+                    f"{REVALIDATE_WINDOW_MINUTES}h had stale close/volume (open-invisible drift), corrected"
                 )
             df_lltf = pd.concat([df_lltf, blind_revalidated])
             df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
