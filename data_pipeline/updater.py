@@ -76,18 +76,28 @@ def _fetch_all(symbol: str, interval: str, start: datetime, end: datetime) -> pd
 
 def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: datetime) -> pd.DataFrame:
     """
-    Scans a 5m dataframe for candles that broke continuity (a bar's open
-    doesn't match the prior bar's close within tolerance) — the signature
-    of a candle cached mid-formation and never corrected. Refetches any
-    flagged bars from Binance and overwrites them in place.
+    Two independent passes to catch two different staleness failure modes:
 
-    This is called from EVERY code path that can write the 5m cache —
-    not just the full update_symbol() rebuild — because a partial write
-    from any path can introduce a corrupted bar.
+    1. CONTINUITY SCAN — a bar's open doesn't match the prior bar's close.
+       Catches candles cached mid-formation (the original bug: 16:45/20:10
+       style corruption where the WHOLE bar was wrong).
+
+    2. BLIND TRAILING REVALIDATION — unconditionally refetches every bar
+       in the last REVALIDATE_WINDOW_HOURS, regardless of continuity.
+       Catches a second failure mode: Binance keeps revising a bar's
+       high/low/close/volume for HOURS after it closes, while `open`
+       stays untouched. Since open never changes, the continuity check
+       is structurally blind to this — a stale bar with a correct open
+       but wrong close/volume passes the continuity check every time.
+       This is why LLTF_REVALIDATE_BARS's 30-minute window wasn't enough:
+       Binance settlement can lag well past 30 minutes on volatile bars.
     """
     if df_lltf is None or df_lltf.empty or len(df_lltf) < 3:
         return df_lltf
 
+    from data_pipeline.rate_limiter import rate_limiter
+
+    # ── PASS 1: CONTINUITY SCAN (open vs prev close) ──────────────────
     CONTINUITY_TOLERANCE_PCT = 0.001  # 0.1% — real ticks never gap more than this on 5m closes
     MAX_CONTINUITY_REFETCHES_PER_RUN = 20  # safety cap — avoid runaway refetch storms
 
@@ -101,9 +111,6 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
     suspicious_ts = df_sorted.index[suspicious_mask.fillna(False)]
     suspicious_ts = suspicious_ts[suspicious_ts >= start_required]
 
-    if suspicious_ts.empty:
-        return df_lltf
-
     if len(suspicious_ts) > MAX_CONTINUITY_REFETCHES_PER_RUN:
         print(
             f"[CONTINUITY SCAN] {symbol} — {len(suspicious_ts)} suspicious bars found, "
@@ -111,7 +118,6 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
         )
         suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
 
-    from data_pipeline.rate_limiter import rate_limiter
     for ts in suspicious_ts:
         print(f"[CONTINUITY GAP] {symbol} {ts} — open vs prev close diverged >{CONTINUITY_TOLERANCE_PCT*100:.2f}%, refetching")
         win_start = ts - timedelta(minutes=5)
@@ -131,6 +137,41 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
                     if abs(old_close - new_close) > 1e-12:
                         print(f"[CONTINUITY FIX] {symbol} {rts} close corrected {old_close} → {new_close}")
             df_lltf = pd.concat([df_lltf, revalidated])
+            df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
+
+    # ── PASS 2: BLIND TRAILING REVALIDATION (open-invisible drift) ────
+    REVALIDATE_WINDOW_HOURS = 3  # Binance settlement can lag well past 30 min
+    now_ts = pd.Timestamp.now(tz="UTC")
+    reval_start = now_ts - timedelta(hours=REVALIDATE_WINDOW_HOURS)
+
+    df_sorted = df_lltf.sort_index()
+    reval_start = max(reval_start, start_required)
+    window_df = df_sorted[df_sorted.index >= reval_start]
+
+    if not window_df.empty:
+        rate_limiter.wait_if_needed_for_symbol(
+            symbol       = f"{symbol}/5m_blind_revalidate",
+            n_timeframes = 1,
+            pages_per_tf = _estimate_pages(reval_start, now_ts, LLTF_INTERVAL),
+        )
+        blind_revalidated = _fetch_all(symbol, LLTF_INTERVAL, reval_start, now_ts)
+        if not blind_revalidated.empty:
+            before = df_lltf.loc[df_lltf.index.isin(blind_revalidated.index)]
+            changed_count = 0
+            for rts in blind_revalidated.index:
+                if rts in before.index:
+                    old_close = before.loc[rts, "close"]
+                    new_close = blind_revalidated.loc[rts, "close"]
+                    old_vol   = before.loc[rts, "volume"]
+                    new_vol   = blind_revalidated.loc[rts, "volume"]
+                    if abs(old_close - new_close) > 1e-12 or abs(old_vol - new_vol) > 1e-6:
+                        changed_count += 1
+            if changed_count:
+                print(
+                    f"[BLIND REVALIDATE] {symbol} — {changed_count} bar(s) in trailing "
+                    f"{REVALIDATE_WINDOW_HOURS}h had stale close/volume (open-invisible drift), corrected"
+                )
+            df_lltf = pd.concat([df_lltf, blind_revalidated])
             df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
 
     return df_lltf.sort_index()
