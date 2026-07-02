@@ -903,13 +903,21 @@ def run_hourly_for_symbol(
                 _now_utc_c = datetime.now(timezone.utc)
                 _is_new_hour = _now_utc_c.minute < 5  # first 5 minutes of the hour
                 _has_open_position = symbol in pm.positions
-                # Only do the full update_symbol (1h + 4h + 5m) when:
-                # - It's a new hour (need fresh 1h/4h bars)
-                # - No 5m cache exists yet
-                # - Symbol has an open position (need accurate data for exit checks)
-                # For normal symbols at non-hour boundaries, skip straight to
-                # cache-serve which only fetches the missing 5m bars.
-                if _is_new_hour or not os.path.exists(_cache_path(symbol, "5m")) or _has_open_position:
+                # Full update_symbol (1h + 4h + 5m, with continuity scan + blind
+                # revalidation) now runs ONLY at the xx:00 boundary — the only point
+                # 1h/4h bars actually need fresh data + revalidation.
+                #
+                # Open positions no longer force this path. They don't need
+                # revalidation of bars before entry — only the price from the first
+                # fully-closed candle forward, which the cache-serve branch below
+                # already delivers (it fetches missing 5m bars and runs
+                # continuity_fix_5m only on what it just appended). Forcing the full
+                # update_symbol() every ~10s cron tick for an open position was
+                # triggering a fresh blind-revalidation Binance fetch on EVERY tick
+                # instead of once per 5m close — that's what was delaying entry
+                # notifications, collapsing xx:05/xx:10/xx:15 reports into one, and
+                # burning rate-limiter weight ahead of other priority symbols.
+                if _is_new_hour or not os.path.exists(_cache_path(symbol, "5m")):
                     df, htf_df, lltf_df, htf_scores = update_symbol(symbol)
                 else:
                     # between 5m boundaries — serve 1H/4H from cache.

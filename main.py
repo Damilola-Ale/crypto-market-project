@@ -226,23 +226,37 @@ def load_or_fetch(symbol, interval, limit, now_utc):
         else:
             print(f"[CACHE] {symbol} {interval} — cache current at {last_ts}")
 
-        # ── STEP 2.5: REVALIDATE last few closed bars ──
-        # Binance can finalize a bar's close/volume after it closes, and a
-        # previous run may have cached it mid-formation. Refetch the last
-        # few bars and overwrite with current values.
-        REVALIDATE_BARS = 3
+        # ── STEP 2.5: REVALIDATE recently closed bars ──
+        # Binance can finalize a bar's close/high/low/volume for HOURS
+        # after it closes, while `open` never changes. A fixed 3-bar
+        # window isn't enough to catch this — mirrors the live pipeline's
+        # continuity_fix_5m() Pass 2 ("blind trailing revalidation"),
+        # which uses a 3-hour trailing window for 5m bars for the same
+        # reason. Without this, the backtest cache and live cache
+        # (data/cache) diverge on any bar that settled after the first
+        # narrower revalidation pass touched it.
+        REVALIDATE_WINDOW_HOURS = {"5m": 3, "1h": 3, "4h": 6}.get(interval, 3)
         revalidate_end   = last_ts
-        revalidate_start = revalidate_end - (REVALIDATE_BARS - 1) * interval_td
+        revalidate_start = revalidate_end - pd.Timedelta(hours=REVALIDATE_WINDOW_HOURS)
+
+        # Never revalidate further back than the cache actually starts
+        revalidate_start = max(revalidate_start, cached.index[0])
 
         revalidated = fetch_binance_range(symbol, interval, revalidate_start, revalidate_end)
         if not revalidated.empty:
             before = cached.loc[cached.index.isin(revalidated.index)]
+            changed_count = 0
             for ts in revalidated.index:
                 if ts in before.index:
                     old_close = before.loc[ts, "close"]
                     new_close = revalidated.loc[ts, "close"]
-                    if abs(old_close - new_close) > 1e-12:
-                        print(f"[REVALIDATE] {symbol} {interval} {ts} close corrected {old_close} → {new_close}")
+                    old_vol   = before.loc[ts, "volume"]
+                    new_vol   = revalidated.loc[ts, "volume"]
+                    if abs(old_close - new_close) > 1e-12 or abs(old_vol - new_vol) > 1e-6:
+                        changed_count += 1
+                        print(f"[REVALIDATE] {symbol} {interval} {ts} close corrected {old_close} → {new_close}, volume {old_vol} → {new_vol}")
+            if changed_count:
+                print(f"[REVALIDATE] {symbol} {interval} — {changed_count} bar(s) corrected in trailing {REVALIDATE_WINDOW_HOURS}h window")
             cached = pd.concat([cached, revalidated])
             cached = cached[~cached.index.duplicated(keep="last")]
             cached = cached.sort_index()

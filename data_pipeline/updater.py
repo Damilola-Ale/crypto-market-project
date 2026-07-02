@@ -140,7 +140,7 @@ def continuity_fix_5m(symbol: str, df_lltf: pd.DataFrame, start_required: dateti
             df_lltf = df_lltf[~df_lltf.index.duplicated(keep="last")]
 
     # ── PASS 2: BLIND TRAILING REVALIDATION (open-invisible drift) ────
-    REVALIDATE_WINDOW_HOURS = 3  # Binance settlement can lag well past 30 min
+    REVALIDATE_WINDOW_HOURS = 1  # shortened from 3h — cuts per-call cost/latency
     now_ts = pd.Timestamp.now(tz="UTC")
     reval_start = now_ts - timedelta(hours=REVALIDATE_WINDOW_HOURS)
 
@@ -402,7 +402,7 @@ def update_symbol(symbol: str):
     # cron tick may have cached it mid-formation. Always refetch
     # the last few closed bars and overwrite the cache copies.
     # --------------------------------------------------
-    REVALIDATE_BARS = 3
+    REVALIDATE_BARS = 1
     revalidate_start = (now_hour - timedelta(hours=1)) - timedelta(hours=REVALIDATE_BARS - 1)
     revalidate_end   = now_hour - timedelta(hours=1)
 
