@@ -458,8 +458,33 @@ def run_hourly():
     except Exception:
         _open_symbols = set()
 
-    _priority = [s for s in SYMBOLS if s in _open_symbols]
-    _normal   = [s for s in SYMBOLS if s not in _open_symbols]
+    TOP_SCORE_PRIORITY_COUNT = 15  # how many highest-scored symbols also skip the queue
+
+    _open_priority = [s for s in SYMBOLS if s in _open_symbols]
+    _candidates    = [s for s in SYMBOLS if s not in _open_symbols]
+
+    # Score ALL non-open symbols upfront so we know which ones deserve
+    # priority BEFORE deciding run order — not after, which is too late
+    # to matter for this tick.
+    try:
+        _scores = {s: _symbol_priority_score(s) for s in _candidates}
+        _candidates_sorted = sorted(_candidates, key=lambda s: _scores[s], reverse=True)
+        print(
+            "[RUN ORDER] scores: "
+            + ", ".join(f"{s}={_scores[s]:.0f}" for s in _candidates_sorted)
+        )
+    except Exception as _score_err:
+        print(f"[RUN ORDER] scoring failed ({_score_err}) — falling back to declared order")
+        _candidates_sorted = _candidates
+
+    # Priority pass = open positions FIRST (exit checks always come first),
+    # then the top N scored symbols — so a high-signal symbol's fresh
+    # candle is never delayed behind a low-priority symbol's continuity
+    # scan / blind revalidation, which can burn 20+ sequential Binance
+    # calls and several seconds of weight-gate waiting per symbol.
+    _score_priority = _candidates_sorted[:TOP_SCORE_PRIORITY_COUNT]
+    _priority = _open_priority + _score_priority
+    _normal_sorted = _candidates_sorted[TOP_SCORE_PRIORITY_COUNT:]
 
     # Must be initialized BEFORE the priority pass loop below, since
     # that loop appends to all three on every iteration.
@@ -468,9 +493,11 @@ def run_hourly():
     ip_ban_wait = None
 
     # Process all priority symbols FIRST in their own pass before any
-    # normal symbol runs. This guarantees open positions get exit checks
-    # on the current bar even if the normal symbol loop takes minutes.
-    print(f"[PRIORITY PASS] processing {len(_priority)} open symbols first: {_priority}")
+    # normal symbol runs. This guarantees open positions AND top-scored
+    # symbols get their current-bar update even if the low-priority
+    # symbol loop (with its continuity-scan overhead) takes minutes.
+    print(f"[PRIORITY PASS] processing {len(_priority)} symbols first "
+          f"({len(_open_priority)} open positions + {len(_score_priority)} top-scored): {_priority}")
     for symbol in _priority:
         from data_pipeline.rate_limiter import rate_limiter as _rl
         _rl.wait_if_needed_for_symbol(symbol, n_timeframes=3, pages_per_tf=2)
@@ -491,21 +518,10 @@ def run_hourly():
             failed_symbols.append(symbol)
             symbol_summaries.append((symbol, None))
 
-    try:
-        _scores = {s: _symbol_priority_score(s) for s in _normal}
-        _normal_sorted = sorted(_normal, key=lambda s: _scores[s], reverse=True)
-        print(
-            "[RUN ORDER] scores: "
-            + ", ".join(f"{s}={_scores[s]:.0f}" for s in _normal_sorted)
-        )
-    except Exception as _score_err:
-        print(f"[RUN ORDER] scoring failed ({_score_err}) — falling back to declared order")
-        _normal_sorted = _normal
-
     _run_order = _priority + _normal_sorted
 
     if _priority:
-        print(f"[RUN ORDER] priority symbols (open positions): {_priority}")
+        print(f"[RUN ORDER] priority symbols (open positions + top {TOP_SCORE_PRIORITY_COUNT} scored): {_priority}")
 
     def _read_5m_cursor(symbol: str):
         cf = _last_5m_file(symbol, True)

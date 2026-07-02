@@ -714,9 +714,14 @@ def update_symbol(symbol: str):
         )
         suspicious_ts = suspicious_ts[:MAX_CONTINUITY_REFETCHES_PER_RUN]
 
+    # Trailing revalidation window — mirrors continuity_fix_5m's Pass 2.
+    # 30 minutes was proven insufficient (see continuity_fix_5m comments):
+    # Binance can revise close/high/low/volume for hours after a bar closes.
+    # Reuse the same 3-hour blind-revalidation logic here so the slow path
+    # (restarts, new-hour boundaries, cache gaps) gets the same protection
+    # as the fast-exit path, instead of a separate, shorter window.
+    df_lltf = continuity_fix_5m(symbol, df_lltf, start_required)
     revalidate_targets = set()
-    if lltf_revalidate_start in df_lltf.index or lltf_revalidate_end in df_lltf.index:
-        revalidate_targets.add((lltf_revalidate_start, lltf_revalidate_end))
 
     for ts in suspicious_ts:
         win_start = ts - timedelta(minutes=5)
